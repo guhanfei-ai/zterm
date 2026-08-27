@@ -1,0 +1,153 @@
+import { Annotation } from '@langchain/langgraph'
+import { SafetyCheck } from './safetyGuard'
+
+// ---- Step record kept in graph state (serializable) ----
+export interface StepRecord {
+  stepNumber: number
+  plan: string
+  command?: string
+  commandOutput?: string
+  observation: string
+  safetyCheck?: SafetyCheck
+  status: 'pending' | 'executing' | 'done' | 'blocked' | 'skipped'
+  startedAt?: string
+  duration?: number
+}
+
+// ---- One turn in the Agent's natural conversation history ----
+// 持久化到 agentContextStore，让"重启后继续追问"能找回上文。
+export interface ChatTurn {
+  role: 'user' | 'assistant'
+  content: string
+  // 标记这条发言是否触发了真实命令执行（仅 assistant 侧有意义）。
+  // true 时是执行结果自然回复，false 时是纯聊天。
+  isFromExecution?: boolean
+  createdAt: string
+}
+
+// ---- Parsed model response ----
+export interface ParsedModelResponse {
+  plan?: string
+  command?: string
+  observation?: string
+  done?: boolean
+}
+
+// ---- System probe info ----
+export interface SystemInfo {
+  kernel: string
+  distroName: string
+  distroVersion: string
+  packageManager: string
+  rawOutput: string
+}
+
+// ---- Node execution phase (for UI state mapping) ----
+export type GraphPhase =
+  | 'idle'
+  | 'probing'
+  | 'planning'
+  | 'safety_check'
+  | 'awaiting_confirmation'
+  | 'executing'
+  | 'observing'
+  | 'summarizing'
+  | 'completed'
+  | 'failed'
+  | 'stopped'
+  | 'stepLimitReached'
+
+// ---- Stop reason ----
+export type StopReason = 'ROUND_LIMIT' | 'USER_INTERRUPT' | 'ERROR' | 'COMPLETED' | null
+
+/**
+ * LangGraph Annotation for the Agent graph state.
+ * Uses default "last value wins" reducers for all fields.
+ */
+export const AgentStateAnnotation = Annotation.Root({
+  // ---- Task identity ----
+  taskId: Annotation<string>(),
+  taskDescription: Annotation<string>(),
+  chatTabId: Annotation<string>(),
+
+  // ---- Step tracking ----
+  currentStep: Annotation<number>(),
+  maxSteps: Annotation<number>(),
+
+  // ---- Current step data ----
+  planText: Annotation<string>(),
+  pendingCommand: Annotation<string>(),
+  commandOutput: Annotation<string>(),
+  observation: Annotation<string>(),
+  safetyResult: Annotation<SafetyCheck | null>(),
+  needsConfirmation: Annotation<boolean>(),
+  confirmationApproved: Annotation<boolean | null>(),
+
+  // ---- System info ----
+  systemDetected: Annotation<boolean>(),
+  systemInfo: Annotation<SystemInfo>(),
+
+  // ---- Completed steps history ----
+  steps: Annotation<StepRecord[]>(),
+
+  // ---- Natural conversation history (user/assistant turns) ----
+  // 区别于 steps：steps 只记"执行步骤"，conversationHistory 记所有自然发言。
+  // think 节点 prompt 用它来记住"用户上一句说了什么、助手上一句怎么回"。
+  conversationHistory: Annotation<ChatTurn[]>(),
+
+  // ---- Lifecycle ----
+  aborted: Annotation<boolean>(),
+  phase: Annotation<GraphPhase>(),
+  stopReason: Annotation<StopReason>(),
+
+  // ---- Configuration ----
+  allowWrite: Annotation<boolean>(),
+  autoExecute: Annotation<boolean>(),
+  boundHost: Annotation<string>(),
+
+  // ---- Conclusion ----
+  conclusion: Annotation<string>(),
+
+  // ---- Model response text (raw) ----
+  modelResponseText: Annotation<string>(),
+
+  // ---- Error ----
+  error: Annotation<string>()
+})
+
+/** Inferred type from the annotation */
+export type AgentGraphState = typeof AgentStateAnnotation.State
+
+/** Update type — partial state returned by nodes */
+export type AgentGraphUpdate = typeof AgentStateAnnotation.Update
+
+/** Create a blank initial state */
+export function createInitialState(): AgentGraphState {
+  return {
+    taskId: '',
+    taskDescription: '',
+    chatTabId: '',
+    currentStep: 0,
+    maxSteps: 25,
+    planText: '',
+    pendingCommand: '',
+    commandOutput: '',
+    observation: '',
+    safetyResult: null,
+    needsConfirmation: false,
+    confirmationApproved: null,
+    systemDetected: false,
+    systemInfo: { kernel: '', distroName: '', distroVersion: '', packageManager: '', rawOutput: '' },
+    steps: [],
+    conversationHistory: [],
+    aborted: false,
+    phase: 'idle',
+    stopReason: null,
+    allowWrite: false,
+    autoExecute: false,
+    boundHost: '',
+    conclusion: '',
+    modelResponseText: '',
+    error: ''
+  }
+}

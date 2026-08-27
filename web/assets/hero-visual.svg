@@ -1,0 +1,191 @@
+<svg width="920" height="760" viewBox="0 0 920 760" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- 主背景渐变 -->
+    <linearGradient id="appBg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#f5f5f7"/>
+    </linearGradient>
+    <!-- 顶栏渐变 -->
+    <linearGradient id="topbarBg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#fafafa"/>
+      <stop offset="100%" stop-color="#f0f0f3"/>
+    </linearGradient>
+    <!-- 终端区渐变 -->
+    <linearGradient id="termBg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1e1e2e"/>
+      <stop offset="100%" stop-color="#181825"/>
+    </linearGradient>
+    <!-- indigo 渐变 -->
+    <linearGradient id="indigoGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#6366f1"/>
+      <stop offset="100%" stop-color="#4f46e5"/>
+    </linearGradient>
+    <!-- 卡片阴影 -->
+    <filter id="cardShadow" x="-2%" y="-2%" width="104%" height="108%">
+      <feDropShadow dx="0" dy="2" stdDeviation="6" flood-color="#000" flood-opacity="0.04"/>
+    </filter>
+    <filter id="softShadow" x="-2%" y="-2%" width="104%" height="108%">
+      <feDropShadow dx="0" dy="1" stdDeviation="3" flood-color="#000" flood-opacity="0.03"/>
+    </filter>
+  </defs>
+
+  <!-- 应用窗口主体 -->
+  <rect width="920" height="760" rx="24" fill="url(#appBg)" filter="url(#cardShadow)"/>
+  <rect x="0.5" y="0.5" width="919" height="759" rx="23.5" fill="none" stroke="rgba(0,0,0,0.06)" stroke-width="1"/>
+
+  <!-- 顶栏 -->
+  <rect x="32" y="40" width="856" height="52" rx="14" fill="url(#topbarBg)" filter="url(#softShadow)"/>
+  <rect x="32.5" y="40.5" width="855" height="51" rx="13.5" fill="none" stroke="rgba(0,0,0,0.05)" stroke-width="1"/>
+
+  <!-- 窗口控制按钮 -->
+  <circle cx="58" cy="66" r="6" fill="#ff5f57"/>
+  <circle cx="78" cy="66" r="6" fill="#febc2e"/>
+  <circle cx="98" cy="66" r="6" fill="#28c840"/>
+
+  <!-- 顶栏标题 -->
+  <rect x="140" y="54" width="280" height="24" rx="8" fill="#ffffff" stroke="rgba(0,0,0,0.05)"/>
+  <circle cx="156" cy="66" r="5" fill="url(#indigoGrad)"/>
+  <text x="170" y="70" fill="#1d1d1f" font-family="-apple-system, SF Pro Display, PingFang SC, sans-serif" font-size="13" font-weight="600">zTerm</text>
+  <text x="218" y="70" fill="#86868b" font-family="-apple-system, SF Pro Display, PingFang SC, sans-serif" font-size="12" font-weight="400">终端与 AI 工作台</text>
+
+  <!-- 右侧搜索框 -->
+  <rect x="740" y="52" width="134" height="28" rx="14" fill="#ffffff" stroke="rgba(0,0,0,0.06)"/>
+  <circle cx="754" cy="66" r="4" fill="none" stroke="#86868b" stroke-width="1.5"/>
+  <line x1="757" y1="69" x2="760" y2="72" stroke="#86868b" stroke-width="1.5" stroke-linecap="round"/>
+  <text x="768" y="70" fill="#86868b" font-family="-apple-system, SF Pro Display, sans-serif" font-size="11">搜索…</text>
+
+  <!-- ============ 左侧导航 ============ -->
+  <rect x="32" y="112" width="210" height="616" rx="16" fill="#ffffff" filter="url(#softShadow)"/>
+  <rect x="32.5" y="112.5" width="209" height="615" rx="15.5" fill="none" stroke="rgba(0,0,0,0.05)" stroke-width="1"/>
+
+  <!-- 导航标题 -->
+  <text x="56" y="144" fill="#86868b" font-family="-apple-system, SF Pro Display, sans-serif" font-size="11" font-weight="600" letter-spacing="1">主机与资产</text>
+
+  <!-- 导航项1: 本地终端 (选中态) -->
+  <rect x="48" y="160" width="178" height="48" rx="12" fill="url(#indigoGrad)"/>
+  <rect x="56" y="172" width="24" height="24" rx="7" fill="rgba(255,255,255,0.2)"/>
+  <polyline points="60,188 66,182 60,176" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <line x1="70" y1="190" x2="78" y2="190" stroke="#ffffff" stroke-width="2" stroke-linecap="round"/>
+  <text x="88" y="182" fill="#ffffff" font-family="-apple-system, SF Pro Display, PingFang SC, sans-serif" font-size="13" font-weight="600">本地终端</text>
+  <text x="88" y="198" fill="rgba(255,255,255,0.7)" font-family="-apple-system, SF Pro Display, sans-serif" font-size="10">Shell / PTY / 多标签</text>
+
+  <!-- 导航项2: Jumpserver -->
+  <rect x="48" y="220" width="178" height="48" rx="12" fill="#f5f5f7"/>
+  <rect x="56" y="232" width="24" height="24" rx="7" fill="#eef2ff"/>
+  <path d="M62 244 L68 244 L68 238 L62 238 Z M62 250 L68 250 L68 244 L62 244 Z M70 244 L76 244 L76 238 L70 238 Z M70 250 L76 250 L76 244 L70 244 Z" fill="none" stroke="#4f46e5" stroke-width="1.5" stroke-linejoin="round"/>
+  <text x="88" y="242" fill="#1d1d1f" font-family="-apple-system, SF Pro Display, PingFang SC, sans-serif" font-size="13" font-weight="600">Jumpserver</text>
+  <text x="88" y="258" fill="#86868b" font-family="-apple-system, SF Pro Display, sans-serif" font-size="10">堡垒机 / 资产树</text>
+
+  <!-- 导航项3: SSH 连接 -->
+  <rect x="48" y="280" width="178" height="48" rx="12" fill="transparent"/>
+  <rect x="56" y="292" width="24" height="24" rx="7" fill="#f5f5f7"/>
+  <rect x="60" y="296" width="16" height="16" rx="3" fill="none" stroke="#86868b" stroke-width="1.5"/>
+  <circle cx="68" cy="302" r="2" fill="#86868b"/>
+  <path d="M64 310 L64 308 Q64 306 68 306 Q72 306 72 308 L72 310" fill="none" stroke="#86868b" stroke-width="1.5"/>
+  <text x="88" y="302" fill="#1d1d1f" font-family="-apple-system, SF Pro Display, PingFang SC, sans-serif" font-size="13" font-weight="600">SSH 连接</text>
+  <text x="88" y="318" fill="#86868b" font-family="-apple-system, SF Pro Display, sans-serif" font-size="10">密钥 / 账号管理</text>
+
+  <!-- 分割线 -->
+  <line x1="48" y1="348" x2="226" y2="348" stroke="rgba(0,0,0,0.05)" stroke-width="1"/>
+
+  <!-- 导航标题2 -->
+  <text x="56" y="376" fill="#86868b" font-family="-apple-system, SF Pro Display, sans-serif" font-size="11" font-weight="600" letter-spacing="1">最近使用</text>
+
+  <!-- 最近使用项 -->
+  <rect x="48" y="392" width="178" height="36" rx="10" fill="transparent"/>
+  <circle cx="62" cy="410" r="4" fill="#059669"/>
+  <text x="74" y="414" fill="#424245" font-family="-apple-system, SF Pro Display, sans-serif" font-size="12" font-weight="500">prod-gateway-01</text>
+
+  <rect x="48" y="436" width="178" height="36" rx="10" fill="transparent"/>
+  <circle cx="62" cy="454" r="4" fill="#059669"/>
+  <text x="74" y="458" fill="#424245" font-family="-apple-system, SF Pro Display, sans-serif" font-size="12" font-weight="500">app-server-03</text>
+
+  <rect x="48" y="480" width="178" height="36" rx="10" fill="transparent"/>
+  <circle cx="62" cy="498" r="4" fill="#86868b"/>
+  <text x="74" y="502" fill="#424245" font-family="-apple-system, SF Pro Display, sans-serif" font-size="12" font-weight="500">dev-node-07</text>
+
+  <rect x="48" y="524" width="178" height="36" rx="10" fill="transparent"/>
+  <circle cx="62" cy="542" r="4" fill="#86868b"/>
+  <text x="74" y="546" fill="#424245" font-family="-apple-system, SF Pro Display, sans-serif" font-size="12" font-weight="500">staging-db-02</text>
+
+  <!-- ============ 中间终端区 ============ -->
+  <rect x="262" y="112" width="330" height="616" rx="16" fill="#ffffff" filter="url(#softShadow)"/>
+  <rect x="262.5" y="112.5" width="329" height="615" rx="15.5" fill="none" stroke="rgba(0,0,0,0.05)" stroke-width="1"/>
+
+  <!-- 终端标签栏 -->
+  <rect x="278" y="128" width="298" height="36" rx="10" fill="#f5f5f7"/>
+  <rect x="286" y="134" width="80" height="24" rx="8" fill="#ffffff" filter="url(#softShadow)"/>
+  <circle cx="298" cy="146" r="3" fill="#4f46e5"/>
+  <text x="308" y="150" fill="#1d1d1f" font-family="-apple-system, SF Pro Display, sans-serif" font-size="11" font-weight="600">prod-gw</text>
+  <text x="372" y="150" fill="#86868b" font-family="-apple-system, SF Pro Display, sans-serif" font-size="11">app-03</text>
+  <text x="430" y="150" fill="#86868b" font-family="-apple-system, SF Pro Display, sans-serif" font-size="11">+</text>
+
+  <!-- 终端内容区 -->
+  <rect x="278" y="178" width="298" height="334" rx="12" fill="url(#termBg)"/>
+
+  <!-- 终端文本 -->
+  <text x="296" y="210" fill="#c89b6a" font-family="SF Mono, JetBrains Mono, monospace" font-size="13" font-weight="500">$ ssh prod-gateway</text>
+  <text x="296" y="238" fill="#7fa680" font-family="SF Mono, JetBrains Mono, monospace" font-size="12">Welcome to zTerm Terminal</text>
+  <text x="296" y="266" fill="#86868b" font-family="SF Mono, JetBrains Mono, monospace" font-size="12">Connecting to Jumpserver...</text>
+  <text x="296" y="294" fill="#e8e2d6" font-family="SF Mono, JetBrains Mono, monospace" font-size="12">asset: app-server-03</text>
+  <text x="296" y="322" fill="#818cf8" font-family="SF Mono, JetBrains Mono, monospace" font-size="12">tail -f logs/service.log</text>
+
+  <!-- 终端输出行 -->
+  <rect x="296" y="344" width="180" height="6" rx="3" fill="#4a423b" opacity="0.6"/>
+  <rect x="296" y="362" width="220" height="6" rx="3" fill="#4a423b" opacity="0.5"/>
+  <rect x="296" y="380" width="140" height="6" rx="3" fill="#4a423b" opacity="0.4"/>
+  <rect x="296" y="398" width="200" height="6" rx="3" fill="#c89b6a" opacity="0.4"/>
+
+  <!-- 光标 -->
+  <rect x="296" y="430" width="8" height="16" rx="2" fill="#818cf8">
+    <animate attributeName="opacity" values="1;0;1" dur="1.2s" repeatCount="indefinite"/>
+  </rect>
+
+  <!-- 终端底部状态栏 -->
+  <rect x="278" y="528" width="298" height="36" rx="10" fill="#f5f5f7"/>
+  <circle cx="294" cy="546" r="4" fill="#059669"/>
+  <text x="306" y="550" fill="#424245" font-family="-apple-system, SF Pro Display, sans-serif" font-size="11" font-weight="500">已连接 · 只读模式</text>
+  <rect x="470" y="538" width="44" height="16" rx="8" fill="#fef3c7"/>
+  <text x="492" y="549" fill="#d97706" font-family="-apple-system, SF Pro Display, sans-serif" font-size="9" font-weight="600" text-anchor="middle">READ</text>
+  <text x="524" y="550" fill="#86868b" font-family="SF Mono, monospace" font-size="10">UTF-8</text>
+
+  <!-- ============ 右侧 AI 面板 ============ -->
+  <rect x="612" y="112" width="276" height="616" rx="16" fill="#ffffff" filter="url(#softShadow)"/>
+  <rect x="612.5" y="112.5" width="275" height="615" rx="15.5" fill="none" stroke="rgba(0,0,0,0.05)" stroke-width="1"/>
+
+  <!-- AI 面板头部 -->
+  <rect x="628" y="128" width="244" height="40" rx="12" fill="url(#indigoGrad)"/>
+  <circle cx="648" cy="148" r="10" fill="rgba(255,255,255,0.2)"/>
+  <path d="M644 148 Q648 142 652 148 Q648 154 644 148 Z" fill="#ffffff"/>
+  <text x="666" y="146" fill="#ffffff" font-family="-apple-system, SF Pro Display, PingFang SC, sans-serif" font-size="13" font-weight="700">AI 协作</text>
+  <text x="666" y="160" fill="rgba(255,255,255,0.7)" font-family="-apple-system, SF Pro Display, sans-serif" font-size="10">结合终端上下文</text>
+
+  <!-- AI 消息1: 用户 -->
+  <rect x="628" y="184" width="244" height="56" rx="12" fill="#f5f5f7"/>
+  <text x="644" y="206" fill="#1d1d1f" font-family="-apple-system, SF Pro Display, PingFang SC, sans-serif" font-size="12" font-weight="600">总结当前终端输出</text>
+  <text x="644" y="224" fill="#86868b" font-family="-apple-system, SF Pro Display, sans-serif" font-size="11">最近 20 行日志有什么异常？</text>
+
+  <!-- AI 消息2: 助手 -->
+  <rect x="628" y="252" width="244" height="100" rx="12" fill="#eef2ff" stroke="rgba(79,70,229,0.12)" stroke-width="1"/>
+  <circle cx="644" cy="272" r="7" fill="url(#indigoGrad)"/>
+  <text x="656" y="276" fill="#4f46e5" font-family="-apple-system, SF Pro Display, sans-serif" font-size="11" font-weight="700">AI</text>
+  <text x="644" y="296" fill="#424245" font-family="-apple-system, SF Pro Display, PingFang SC, sans-serif" font-size="11">检测到 3 处 WARN 和 1 处</text>
+  <text x="644" y="312" fill="#424245" font-family="-apple-system, SF Pro Display, PingFang SC, sans-serif" font-size="11">ERROR，集中在 service.log</text>
+  <text x="644" y="328" fill="#424245" font-family="-apple-system, SF Pro Display, PingFang SC, sans-serif" font-size="11">第 142-158 行。</text>
+  <text x="644" y="344" fill="#4f46e5" font-family="-apple-system, SF Pro Display, PingFang SC, sans-serif" font-size="11" font-weight="600">建议检查连接池配置 →</text>
+
+  <!-- AI 操作建议卡片 -->
+  <rect x="628" y="368" width="244" height="68" rx="12" fill="#ffffff" stroke="rgba(0,0,0,0.06)" stroke-width="1"/>
+  <rect x="640" y="380" width="24" height="24" rx="7" fill="#fef3c7"/>
+  <path d="M648 388 L656 388 L656 392 L652 392 L652 400 L648 400 L648 392 L644 392 Z" fill="#d97706"/>
+  <text x="672" y="394" fill="#1d1d1f" font-family="-apple-system, SF Pro Display, PingFang SC, sans-serif" font-size="12" font-weight="600">只读模式保护</text>
+  <text x="672" y="412" fill="#86868b" font-family="-apple-system, SF Pro Display, PingFang SC, sans-serif" font-size="10">危险写操作需二次确认</text>
+  <text x="672" y="426" fill="#86868b" font-family="-apple-system, SF Pro Display, PingFang SC, sans-serif" font-size="10">适合团队统一分发</text>
+
+  <!-- AI 输入框 -->
+  <rect x="628" y="680" width="244" height="36" rx="18" fill="#f5f5f7" stroke="rgba(0,0,0,0.06)"/>
+  <text x="648" y="704" fill="#86868b" font-family="-apple-system, SF Pro Display, PingFang SC, sans-serif" font-size="12">问 AI 关于终端的内容…</text>
+  <circle cx="848" cy="698" r="14" fill="url(#indigoGrad)"/>
+  <line x1="842" y1="698" x2="854" y2="698" stroke="#ffffff" stroke-width="2" stroke-linecap="round"/>
+  <line x1="848" y1="692" x2="848" y2="704" stroke="#ffffff" stroke-width="2" stroke-linecap="round"/>
+</svg>

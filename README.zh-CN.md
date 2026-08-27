@@ -1,0 +1,36 @@
+# zTerm
+
+[English](./README.md) | 简体中文
+
+zTerm 是一个开源的 Electron 终端应用，提供可选的 AI 辅助能力，支持 SSH 与 Jumpserver 连接。
+
+## 开发
+
+```bash
+npm ci
+cp .env.example .env
+npm run dev
+```
+
+设置 `OPENAI_API_KEY` 即可启用 AI 功能。SSH 主机和 Jumpserver 实例均在应用内配置；项目不内置任何服务器或凭据。
+
+## 打包
+
+发布脚本遵循项目统一使用的四阶段工作流：
+
+```bash
+./deploy.sh release       # 更新版本号、创建 release 提交与 tag，并推送（仅限 main 分支）
+./deploy.sh build         # 校验并打包当前系统（Mac 上默认为 macOS）
+./deploy.sh publish       # 将 builds/ 上传到对应的 GitHub Release
+./deploy.sh all           # release → build → publish 一键执行
+```
+
+如需本地指定平台，可使用 `./deploy.sh build mac`、`win` 或 `linux`。发布仅面向 GitHub Releases，不捆绑任何凭据或第三方存储配置。
+
+## 分支与 CI
+
+`main` 为稳定分支，`dev` 为集成分支，短生命周期的 `dev/<topic>` 或 `feature/<topic>` 分支用于承载具体功能开发。每次 push 和 pull request 时，GitHub Actions 会自动验证并打包 macOS、Windows 和 Linux 构建。
+
+## 许可证
+
+MIT

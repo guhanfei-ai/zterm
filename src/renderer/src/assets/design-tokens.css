@@ -1,0 +1,312 @@
+/* ===== zTerm Workbench Design Tokens ===== */
+/* 主题相关 token（颜色 / 阴影 / 输入区 / hover 层 / 强调色 / 语义色 / 文字层级）现在由主题 store 在运行时通过
+   document.documentElement.style.setProperty 注入；本文件只保留与主题无关的几何、间距、字体、过渡以及全局基线样式。 */
+
+:root {
+  /* -- 圆角 — JetBrains 风格更紧致 -- */
+  --radius-container: 6px;
+  --radius-card: 5px;
+  --radius-control: 4px;
+  --radius-sm: 3px;
+
+  /* -- 输入区胶囊形状 — 与主题无关 -- */
+  --radius-input-capsule: 22px;
+  --radius-input-internal: 8px;
+
+  /* -- 间距 — 与主题无关 -- */
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 12px;
+  --space-lg: 16px;
+  --space-xl: 20px;
+
+  /* -- 字型 — 与主题无关 -- */
+  --font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: 'Menlo', 'Monaco', 'Courier New', monospace;
+
+  /* -- 过渡 — 与主题无关 -- */
+  --transition-fast: 0.1s ease;
+  --transition-normal: 0.15s ease;
+}
+
+/* 主题切换时让背景过渡更柔和 */
+html {
+  transition: background-color var(--transition-normal);
+}
+
+html body {
+  transition: background-color var(--transition-normal), color var(--transition-normal);
+}
+
+/* ===== 全局重置 ===== */
+*,
+*::before,
+*::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  font-family: var(--font-family);
+  background: var(--bg);
+  color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ===== 滚动条风格 ===== */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--divider);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-tertiary);
+}
+
+/* ===== 通用按钮基础 ===== */
+.btn {
+  padding: 6px 16px;
+  border-radius: var(--radius-control);
+  border: none;
+  cursor: pointer;
+  font-size: 13px;
+  font-family: var(--font-family);
+  transition: all var(--transition-fast);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-xs);
+}
+
+.btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: #fff;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.btn-primary:active:not(:disabled) {
+  background: var(--accent-pressed);
+}
+
+.btn-secondary {
+  background: var(--surface-alt);
+  color: var(--text-secondary);
+  border: 1px solid var(--divider);
+}
+
+.btn-secondary:hover:not(:disabled) {
+  background: var(--surface-high);
+  color: var(--text-primary);
+  border-color: var(--border-soft);
+}
+
+.btn-danger {
+  background: var(--danger);
+  color: #fff;
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: var(--danger-hover);
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--text-secondary);
+}
+
+.btn-ghost:hover:not(:disabled) {
+  background: var(--hover-overlay);
+  color: var(--text-primary);
+}
+
+/* ===== 通用输入框 ===== */
+.input,
+.dialog-body input,
+.dialog-body select {
+  background: var(--bg);
+  border: 1px solid var(--divider);
+  border-radius: var(--radius-control);
+  color: var(--text-primary);
+  padding: 8px 12px;
+  font-size: 13px;
+  font-family: var(--font-family);
+  outline: none;
+  transition: border-color var(--transition-fast);
+  width: 100%;
+}
+
+.input:focus,
+.dialog-body input:focus,
+.dialog-body select:focus {
+  border-color: var(--accent);
+}
+
+.input::placeholder,
+.dialog-body input::placeholder {
+  color: var(--text-tertiary);
+}
+
+.input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ===== 通用弹窗 ===== */
+.dialog-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  backdrop-filter: blur(1px);
+}
+
+.dialog {
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-container);
+  display: flex;
+  flex-direction: column;
+  box-shadow: var(--shadow-dialog);
+  max-height: 85vh;
+}
+
+.dialog-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--space-lg);
+  border-bottom: 1px solid var(--divider-soft);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  flex-shrink: 0;
+}
+
+.dialog-body {
+  padding: var(--space-lg);
+  overflow-y: auto;
+  flex: 1;
+}
+
+.dialog-footer {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-md) var(--space-lg);
+  border-top: 1px solid var(--divider-soft);
+  flex-shrink: 0;
+}
+
+/* ===== 图标按钮 ===== */
+.btn-icon {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-tertiary);
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-control);
+  cursor: pointer;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--transition-fast);
+  flex-shrink: 0;
+}
+
+.btn-icon:hover {
+  background: var(--surface-alt);
+  border-color: var(--divider);
+  color: var(--text-primary);
+}
+
+.btn-icon.tiny {
+  width: 22px;
+  height: 22px;
+  font-size: 12px;
+}
+
+.btn-icon.btn-danger:hover {
+  background: var(--danger-muted);
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+/* ===== 状态标签 ===== */
+.status-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.status-badge.connected {
+  background: var(--success-muted);
+  color: var(--success);
+}
+
+.status-badge.connecting {
+  background: var(--warning-muted);
+  color: var(--warning);
+}
+
+.status-badge.disconnected {
+  background: var(--danger-muted);
+  color: var(--danger);
+}
+
+/* ===== 空状态 ===== */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  color: var(--text-tertiary);
+  text-align: center;
+  padding: var(--space-xl);
+}
+
+.empty-state .empty-icon {
+  font-size: 28px;
+  margin-bottom: var(--space-sm);
+  opacity: 0.4;
+}
+
+.empty-state .empty-text {
+  font-size: 13px;
+  margin-bottom: var(--space-xs);
+}
+
+.empty-state .empty-hint {
+  font-size: 11px;
+  color: var(--text-disabled);
+}
