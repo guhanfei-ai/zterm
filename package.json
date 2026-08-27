@@ -28,7 +28,7 @@
     "directories": {
       "output": "builds"
     },
-    "icon": "resources/zterm-icon.png",
+    "icon": "resources/zterm-icon-v2.png",
     "mac": {
       "category": "public.app-category.developer-tools",
       "target": [
