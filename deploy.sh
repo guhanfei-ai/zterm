@@ -36,6 +36,17 @@ release_tag() {
   printf 'v%s' "$(package_version)"
 }
 
+repo_slug() {
+  local url
+  url="$(git remote get-url origin)"
+  url="${url#ssh://git@github.com:}"
+  url="${url#git@github.com:}"
+  url="${url#https://github.com/}"
+  url="${url#http://github.com/}"
+  url="${url%.git}"
+  printf '%s' "$url"
+}
+
 guard_main() {
   local branch
   branch="$(git branch --show-current)"
@@ -73,20 +84,26 @@ build_target() {
 usage() {
   cat <<'EOF'
 
-用法：./deploy.sh <all|release|build|publish> [参数]
+用法：./deploy.sh <all|release|build|publish|watch> [参数]
 
   release [patch|minor|major|x.y.z]
       在 main 分支交互确认版本，更新 package.json/package-lock.json，
       创建 release commit 和 v<version> tag，并推送到 origin。
+      推送成功后，GitHub Actions 会自动在 macOS/Windows/Linux runner 上
+      构建全部平台安装包，并创建对应的 GitHub Release。
   build [host|mac|win|linux|all]
-      运行验证并构建 Electron 安装包；默认按当前系统选择目标。
+      本地验证并构建安装包；默认按当前系统选择目标（本机是 Mac 就只出 dmg）。
+  watch
+      跟踪最近一次定版（v<version> tag）触发的 GitHub Actions 构建，
+      构建结束后确认 Release 已发布并展示地址。
   publish
-      将 builds/ 中的安装包上传到对应 GitHub Release；不会发布到 npm 或第三方存储。
+      手动兜底：将本地 builds/ 中的安装包上传到 v<version> 对应的
+      GitHub Release；Release 不存在则创建，已存在则覆盖补传。
   all [版本参数]
-      按 release → build → publish 顺序执行。
+      按 release → watch 顺序执行：定版推送后一直等到 CI 打包发布完成。
 
-本地只改动 Mac 后可执行：./deploy.sh build
-GitHub Actions 会在 macOS、Windows、Linux runner 上分别构建全部平台产物。
+常规发版只需：./deploy.sh all
+本地只想验证 Mac 安装包：./deploy.sh build
 
 EOF
 }
@@ -127,11 +144,15 @@ cmd_release() {
 
   local next_tag="v${next_version}"
   git rev-parse --verify --quiet "refs/tags/${next_tag}" >/dev/null && die "本地 tag 已存在：${next_tag}"
-  confirm "确认发布 ${next_tag}（${current_version} → ${next_tag}），并提交、打 tag、推送？[y/N] " || { printf '已取消\n'; exit 0; }
+  confirm "确认发布 ${next_tag}（${current_version} → ${next_tag}），提交、打 tag、推送并触发 CI 全平台打包？[y/N] " || { printf '已取消\n'; exit 0; }
 
   npm --cache "$NPM_CACHE" version "$next_version" -m "release: %s"
   git push --atomic origin "$RELEASE_BRANCH" "$next_tag"
   banner "版本已锁定：${next_tag}"
+  printf 'GitHub Actions 正在构建三平台安装包并创建 Release：\n'
+  printf '  进度：%s\n' "https://github.com/$(repo_slug)/actions"
+  printf '  产物：%s\n' "https://github.com/$(repo_slug)/releases/tag/${next_tag}"
+  printf '可执行 ./deploy.sh watch 跟踪构建进度。\n'
 }
 
 cmd_build() {
@@ -157,11 +178,12 @@ cmd_build() {
 }
 
 cmd_publish() {
-  banner '开始分发'
+  banner '开始分发（手动兜底）'
   need_cmd git gh
   guard_main
 
-  local tag="$(release_tag)"
+  local tag
+  tag="$(release_tag)"
   guard_tag "$tag"
   gh auth status >/dev/null 2>&1 || die '未登录 GitHub CLI，请先执行 gh auth login'
 
@@ -170,26 +192,51 @@ cmd_publish() {
     assets+=("$asset")
   done < <(find builds -type f \( -name '*.dmg' -o -name '*.exe' -o -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' -o -name '*.zip' -o -name '*.tar.gz' \) -print | sort)
   ((${#assets[@]} > 0)) || die 'builds/ 中没有安装包，请先执行 ./deploy.sh build'
-  gh release view "$tag" >/dev/null 2>&1 && die "GitHub Release 已存在：${tag}"
 
   printf '待上传产物：\n'
   printf '  %s\n' "${assets[@]}"
-  confirm "确认创建 GitHub Release ${tag} 并上传以上产物？[y/N] " || { printf '已取消\n'; exit 0; }
-  gh release create "$tag" --verify-tag --title "$tag" --generate-notes "${assets[@]}"
-  banner "${tag} 发布完成"
+  if gh release view "$tag" >/dev/null 2>&1; then
+    confirm "Release ${tag} 已存在，是否用以上产物覆盖补传？[y/N] " || { printf '已取消\n'; exit 0; }
+    gh release upload "$tag" --clobber "${assets[@]}"
+  else
+    confirm "确认创建 GitHub Release ${tag} 并上传以上产物？[y/N] " || { printf '已取消\n'; exit 0; }
+    gh release create "$tag" --verify-tag --title "$tag" --generate-notes "${assets[@]}"
+  fi
+  banner "${tag} 分发完成：https://github.com/$(repo_slug)/releases/tag/${tag}"
+}
+
+cmd_watch() {
+  banner '跟踪 GitHub Actions 构建'
+  need_cmd gh
+  gh auth status >/dev/null 2>&1 || die '未登录 GitHub CLI，请先执行 gh auth login'
+
+  local tag run_id attempt
+  tag="$(release_tag)"
+  run_id=""
+  for attempt in {1..12}; do
+    run_id="$(gh run list --workflow=release.yml --limit 15 --json databaseId,headBranch --jq ".[] | select(.headBranch == \"${tag}\") | .databaseId" | head -n 1)" || true
+    [[ -n "$run_id" ]] && break
+    printf '尚未发现 %s 触发的构建，5 秒后重试……\n' "$tag"
+    sleep 5
+  done
+  [[ -n "$run_id" ]] || die "没有找到 ${tag} 触发的构建，请到 https://github.com/$(repo_slug)/actions 查看"
+
+  gh run watch "$run_id" --exit-status || die "GitHub Actions 构建失败：https://github.com/$(repo_slug)/actions/runs/${run_id}"
+  gh release view "$tag" >/dev/null 2>&1 || die "构建已结束，但未找到 Release ${tag}"
+  banner "${tag} 发布完成：https://github.com/$(repo_slug)/releases/tag/${tag}"
 }
 
 cmd_all() {
-  banner '一键发布：release → build → publish'
+  banner '一键发布：release → 等待 CI 打包发布'
   cmd_release "${1:-}"
-  cmd_build
-  cmd_publish
+  cmd_watch
 }
 
 case "${1:-}" in
   release) shift; cmd_release "${1:-}" ;;
   build) shift; cmd_build "${1:-}" ;;
   publish) cmd_publish ;;
+  watch) cmd_watch ;;
   all) shift; cmd_all "${1:-}" ;;
   -h|--help|help|'') usage ;;
   *) usage >&2; exit 2 ;;

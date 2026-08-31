@@ -1,21 +1,16 @@
-name: Build
+name: CI
+
+# 日常 push / PR 只做轻量验证（类型检查 + 测试），不打包安装包；
+# 安装包打包与发布由 release.yml 在推送 v* tag 后触发。
 on:
   push:
     branches: [main, dev, '**']
   pull_request:
     branches: [main, dev, '**']
+
 jobs:
-  build:
-    strategy:
-      matrix:
-        include:
-          - os: macos-latest
-            script: build:mac
-          - os: windows-latest
-            script: build:win
-          - os: ubuntu-latest
-            script: build:linux
-    runs-on: ${{ matrix.os }}
+  verify:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -24,8 +19,3 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run verify
-      - run: npm run ${{ matrix.script }}
-      - uses: actions/upload-artifact@v4
-        with:
-          name: zterm-${{ matrix.os }}
-          path: builds/
