@@ -16,9 +16,9 @@
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "postinstall": "electron-builder install-app-deps",
-    "build:mac": "electron-vite build && electron-builder --mac --arm64",
-    "build:win": "electron-vite build && electron-builder --win --x64",
-    "build:linux": "electron-vite build && electron-builder --linux",
+    "build:mac": "electron-vite build && electron-builder --mac --arm64 --publish never",
+    "build:win": "electron-vite build && electron-builder --win --x64 --publish never",
+    "build:linux": "electron-vite build && electron-builder --linux --publish never",
     "verify": "npm run typecheck && npm test -- --run",
     "typecheck": "vue-tsc --noEmit",
     "test": "vitest",
@@ -63,6 +63,14 @@
       "perMachine": false,
       "artifactName": "zterm-${version}-windows-x64-setup.${ext}"
     },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Development",
+      "artifactName": "zterm-${version}-linux-${arch}.${ext}"
+    },
     "files": [
       "out/**/*"
     ]
@@ -91,7 +99,7 @@
     "@vitejs/plugin-vue": "^5.2.1",
     "@vitest/coverage-v8": "^4.1.9",
     "electron": "^33.3.1",
-    "electron-builder": "^25.1.8",
+    "electron-builder": "^26.15.3",
     "electron-vite": "^5.0.0",
     "pinia": "^2.2.8",
     "typescript": "^5.6.3",
