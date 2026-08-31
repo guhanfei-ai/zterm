@@ -42,6 +42,7 @@
         @add-local-tab="tabSync.onAddLocalTab"
         @close-terminal-tab="tabSync.onCloseTerminalTab"
         @disconnect="tabSync.handleDisconnect"
+        @reconnect-terminal-tab="tabSync.reconnectTerminalTab"
       />
 
       <!-- Right Resize Handle -->
@@ -87,6 +88,22 @@
       @confirm="confirmState.onConfirm"
       @cancel="confirmState.onCancel"
     />
+
+    <WorkspaceRestoreDialog
+      v-if="workspaceRestoreDialogState !== 'hidden'"
+      :mode="workspaceRestoreDialogState === 'invalid' ? 'invalid' : 'restore'"
+      :reason="workspaceRestoreDialogReason"
+      @restore="restoreWorkspace"
+      @discard="discardSavedWorkspace"
+    />
+
+    <SshHostTrustDialog
+      v-if="sshHostTrust.isVisible.value && sshHostTrust.request.value"
+      :request="sshHostTrust.request.value"
+      @decision="sshHostTrust.respond"
+      @dismiss="sshHostTrust.dismissChangedTrust"
+      @reset="sshHostTrust.resetChangedTrust"
+    />
   </div>
 </template>
 
@@ -97,6 +114,8 @@ import { useConfirm } from '@/composables/useConfirm'
 import { useDragResize } from '@/composables/useDragResize'
 import { useTerminalEvents } from '@/composables/useTerminalEvents'
 import { useTabSync } from '@/composables/useTabSync'
+import { useWorkspaceRestore } from '@/composables/useWorkspaceRestore'
+import { useSshHostTrust } from '@/composables/useSshHostTrust'
 import { setupAgentGlobalEvents } from '@/composables/useAgentGlobalEvents'
 
 import TitleBar from '@/components/layout/TitleBar.vue'
@@ -110,14 +129,23 @@ import KeyManagerDialog from '@/components/keys/KeyManagerDialog.vue'
 import AppUpdateToast from '@/components/common/AppUpdateToast.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import SettingsPage from '@/components/settings/SettingsPage.vue'
+import WorkspaceRestoreDialog from '@/components/workspace/WorkspaceRestoreDialog.vue'
+import SshHostTrustDialog from '@/components/hosts/SshHostTrustDialog.vue'
 
 // ===== Stores =====
 const hostsStore = useHostsStore()
 
 // ===== Composables =====
 const { leftPanelWidth, rightPanelWidth, isLeftDragging, isDragging, onLeftDragStart, onDragStart } = useDragResize()
-useTerminalEvents() // self-managing lifecycle, no return values needed
+const sshHostTrust = useSshHostTrust()
+useTerminalEvents({ onHostTrustRequired: sshHostTrust.handleHostTrustRequired })
 const tabSync = useTabSync()
+const {
+  dialogState: workspaceRestoreDialogState,
+  dialogReason: workspaceRestoreDialogReason,
+  restoreWorkspace,
+  discardSavedWorkspace
+} = useWorkspaceRestore()
 const { confirmState } = useConfirm()
 // 应用级 Agent 全局事件监听：注册一次、常驻应用存活期。
 // 不随右侧聊天面板 v-if 卸载而注销，避免后台执行中的任务事件丢失。

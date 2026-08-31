@@ -58,11 +58,34 @@ export function useTabSync() {
     await window.electronAPI.terminal.disconnect(terminalStore.activeTabId)
   }
 
+  async function reconnectTerminalTab(tabId: string): Promise<void> {
+    const tab = terminalStore.getTabById(tabId)
+    if (!tab?.reconnectTarget || tab.status === 'connecting') return
+
+    const container = document.querySelector('.terminal-container')
+    const { cols, rows } = estimateTerminalSize(container as HTMLElement | null)
+    terminalStore.setStatusByTabId(tabId, 'connecting')
+    terminalStore.setErrorByTabId(tabId, null)
+
+    const result = tab.reconnectTarget.kind === 'local'
+      ? await window.electronAPI.terminal.connectLocal(tabId, cols, rows)
+      : await window.electronAPI.terminal.reconnect(tabId, tab.reconnectTarget, cols, rows)
+
+    if (typeof result.generation === 'number') {
+      terminalStore.setGenerationByTabId(tabId, result.generation)
+    }
+    if (!result.success) {
+      terminalStore.setStatusByTabId(tabId, 'disconnected')
+      terminalStore.setErrorByTabId(tabId, result.error || '重连失败')
+    }
+  }
+
   return {
     onAddTab,
     onAddLocalTab,
     onCloseTerminalTab,
     onCloseChatTab,
-    handleDisconnect
+    handleDisconnect,
+    reconnectTerminalTab
   }
 }

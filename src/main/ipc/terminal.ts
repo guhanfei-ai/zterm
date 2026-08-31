@@ -21,6 +21,9 @@ export { disposeAllLocalSessions, getAllLocalSessions, getLocalSession, terminal
 import { readFileSync } from 'node:fs'
 import { lookup } from 'node:dns/promises'
 import { isIP } from 'node:net'
+import { normalizeReconnectTarget } from '../model/workspace'
+import type { SshHostTrustResponse } from '../model/sshHostTrust'
+import { resetSshHostTrustRecord } from '../services/sshHostTrust'
 
 const hostPrivateKeyFilePassphraseSecretKey = (id: string): string => `host_pkf_pp_${id}`
 
@@ -41,8 +44,12 @@ function registerSessionEvents(session: TerminalSession): void {
     forwardToRenderer('terminal:onData', { tabId: session.tabId, data: data.toString('utf-8') })
   })
 
-  session.on('connected', (opts) => {
-    forwardToRenderer('terminal:onConnected', { tabId: session.tabId, generation: session.generation, opts })
+  session.on('connected', () => {
+    forwardToRenderer('terminal:onConnected', { tabId: session.tabId, generation: session.generation })
+  })
+
+  session.on('host-trust-required', (data) => {
+    forwardToRenderer('terminal:onHostTrustRequired', data)
   })
 
   // P1-1：closed 事件签名统一（C1）。既支持 SSH（{ reason, hadError }）也兼容本地（void）。
@@ -95,7 +102,7 @@ function registerLocalSessionEvents(session: LocalPtySession): void {
   })
 
   session.on('connected', () => {
-    forwardToRenderer('terminal:onConnected', { tabId: session.tabId, generation: session.generation, opts: {} })
+    forwardToRenderer('terminal:onConnected', { tabId: session.tabId, generation: session.generation })
   })
 
   session.on('closed', (info?: { reason?: string; hadError?: boolean }) => {
@@ -174,93 +181,244 @@ function formatKokoConnectError(err: unknown): string {
     : `koko SSH 连接失败：${translated}`
 }
 
+function formatDirectConnectError(err: unknown): string {
+  if (err instanceof Error && err.message.startsWith('SSH 主机身份')) return err.message
+  if (err instanceof Error && err.message.startsWith('无法验证 SSH 主机身份')) return err.message
+  if (err instanceof Error && err.message.startsWith('无法保存 SSH 主机信任记录')) return err.message
+  return `SSH 连接失败：${translateError(err, 'ssh')}`
+}
+
+type TerminalConnectResult = { success: boolean; generation?: number; error?: string }
+
+async function connectDirectTerminal(data: {
+  tabId: string
+  hostId: string
+  cols: number
+  rows: number
+}): Promise<TerminalConnectResult> {
+  let session: TerminalSession | undefined
+  let password: string | undefined
+  let privateKey: string | undefined
+  let passphrase: string | undefined
+  try {
+    const rawHosts = getStore().get('hosts_list')
+    const hosts: HostRecord[] = Array.isArray(rawHosts) ? (rawHosts as HostRecord[]) : []
+    const host = hosts.find((item) => item.id === data.hostId)
+
+    if (!host) {
+      return { success: false, error: '未找到主机' }
+    }
+
+    if (host.authType === 'password') {
+      password = getSecret(`host_pwd_${host.id}`)
+    } else if (host.authType === 'key' && host.keyId) {
+      privateKey = getSecret(`key_pk_${host.keyId}`)
+      passphrase = getSecret(`key_pp_${host.keyId}`) || undefined
+    } else if (host.authType === 'privateKeyFile') {
+      if (!host.privateKeyFilePath) {
+        return { success: false, error: '未配置 SSH 私钥文件' }
+      }
+
+      try {
+        privateKey = readFileSync(host.privateKeyFilePath, 'utf-8')
+      } catch (err: unknown) {
+        const error = err as NodeJS.ErrnoException
+        if (error.code === 'ENOENT') {
+          return { success: false, error: 'SSH 私钥文件不存在，请重新选择文件' }
+        }
+        if (error.code === 'EACCES' || error.code === 'EPERM') {
+          return { success: false, error: 'SSH 私钥文件不可读，请检查文件权限' }
+        }
+        return { success: false, error: '读取 SSH 私钥文件失败' }
+      }
+
+      if (!privateKey.trim()) {
+        return { success: false, error: 'SSH 私钥文件内容为空' }
+      }
+
+      passphrase = getSecret(hostPrivateKeyFilePassphraseSecretKey(host.id)) || undefined
+    }
+
+    session = terminalSessionManager.createSession(data.tabId)
+    registerSessionEvents(session)
+    notifyConnecting(session)
+    session.sessionMeta = {
+      source: 'direct',
+      displayName: host.name || host.host,
+      displaySecondary: `${host.username}@${host.host}`
+    }
+
+    await session.connect({
+      host: host.host,
+      port: host.port,
+      username: host.username,
+      password,
+      privateKey,
+      passphrase,
+      requireHostTrust: true
+    })
+    await session.openShell(data.cols, data.rows)
+    return { success: true, generation: session.generation }
+  } catch (err: unknown) {
+    if (session && terminalSessionManager.getSession(data.tabId) === session) {
+      terminalSessionManager.removeSession(data.tabId)
+    }
+    return { success: false, generation: session?.generation, error: formatDirectConnectError(err) }
+  } finally {
+    password = undefined
+    privateKey = undefined
+    passphrase = undefined
+  }
+}
+
+async function connectJumpserverTerminal(data: {
+  tabId: string
+  cols: number
+  rows: number
+  configId: string
+  assetId: string
+  accountId: string
+  assetName: string
+  accountName?: string
+}): Promise<TerminalConnectResult> {
+  let session: TerminalSession | undefined
+  let freshToken: { id: string; value: string; clientUrl: string } | undefined
+  try {
+    const resolvedConfig = resolveJumpserverConfigForConnect(data.configId)
+    if (!resolvedConfig.success) {
+      return { success: false, error: resolvedConfig.error }
+    }
+
+    const freshResult = await createJumpserverFreshToken(
+      {
+        baseUrl: resolvedConfig.baseUrl,
+        authMode: 'access_key',
+        accessKeyId: resolvedConfig.accessKeyId,
+        accessKeySecret: resolvedConfig.accessKeySecret,
+        verifyTls: resolvedConfig.verifyTls
+      },
+      data.assetId,
+      data.accountId
+    )
+    if (!freshResult.success || !freshResult.token) {
+      return { success: false, error: `创建连接令牌失败：${freshResult.error || '未知错误'}` }
+    }
+    freshToken = freshResult.token
+
+    const kokoResolve = resolveKokoSshParams(
+      { id: freshToken.id, value: freshToken.value },
+      freshToken.clientUrl,
+      resolvedConfig.baseUrl
+    )
+    if (!kokoResolve.success || !kokoResolve.params) {
+      return { success: false, error: `解析 koko SSH endpoint 失败：${kokoResolve.error || '未知错误'}` }
+    }
+
+    const connectHosts = await resolveSshConnectHosts(kokoResolve.params.host)
+    for (let index = 0; index < connectHosts.length; index += 1) {
+      session = terminalSessionManager.createSession(data.tabId)
+      registerSessionEvents(session)
+      notifyConnecting(session)
+      session.sessionMeta = {
+        source: 'jumpserver',
+        displayName: data.assetName,
+        displaySecondary: data.accountName
+      }
+
+      try {
+        await session.connect({
+          host: connectHosts[index],
+          port: kokoResolve.params.port,
+          username: kokoResolve.params.username,
+          password: kokoResolve.params.password
+        })
+        break
+      } catch (err) {
+        if (index === connectHosts.length - 1) {
+          if (session && terminalSessionManager.getSession(data.tabId) === session) {
+            terminalSessionManager.removeSession(data.tabId)
+          }
+          return {
+            success: false,
+            generation: session?.generation,
+            error: formatKokoConnectError(err)
+          }
+        }
+      }
+    }
+
+    if (!session) {
+      return { success: false, error: 'koko SSH 连接失败：未获取到可用的连接地址' }
+    }
+
+    try {
+      await session.openShell(data.cols, data.rows)
+    } catch (err) {
+      if (terminalSessionManager.getSession(data.tabId) === session) {
+        terminalSessionManager.removeSession(data.tabId)
+      }
+      return {
+        success: false,
+        generation: session.generation,
+        error: `打开终端 shell 失败：${translateError(err, 'ssh')}`
+      }
+    }
+
+    return { success: true, generation: session.generation }
+  } catch (err: unknown) {
+    return { success: false, generation: session?.generation, error: translateError(err, 'ssh') }
+  } finally {
+    if (freshToken) {
+      freshToken.value = ''
+      freshToken = undefined
+    }
+  }
+}
+
 export function registerTerminalIpc(): void {
   ipcMain.handle(
     'terminal:connect',
     async (
       _event,
       data: { tabId: string; hostId: string; cols: number; rows: number }
-    ): Promise<{ success: boolean; generation?: number; error?: string }> => {
-      let session: TerminalSession | undefined
-      let password: string | undefined
-      let privateKey: string | undefined
-      let passphrase: string | undefined
-      try {
-        const rawHosts = getStore().get('hosts_list')
-        const hosts: HostRecord[] = Array.isArray(rawHosts) ? (rawHosts as HostRecord[]) : []
-        const host = hosts.find((h) => h.id === data.hostId)
+    ): Promise<TerminalConnectResult> => connectDirectTerminal(data)
+  )
 
-        if (!host) {
-          return { success: false, error: '未找到主机' }
-        }
-
-        if (host.authType === 'password') {
-          password = getSecret(`host_pwd_${host.id}`)
-        } else if (host.authType === 'key' && host.keyId) {
-          privateKey = getSecret(`key_pk_${host.keyId}`)
-          passphrase = getSecret(`key_pp_${host.keyId}`) || undefined
-        } else if (host.authType === 'privateKeyFile') {
-          if (!host.privateKeyFilePath) {
-            return { success: false, error: '未配置 SSH 私钥文件' }
-          }
-
-          try {
-            privateKey = readFileSync(host.privateKeyFilePath, 'utf-8')
-          } catch (err: unknown) {
-            const error = err as NodeJS.ErrnoException
-            if (error.code === 'ENOENT') {
-              return { success: false, error: 'SSH 私钥文件不存在，请重新选择文件' }
-            }
-            if (error.code === 'EACCES' || error.code === 'EPERM') {
-              return { success: false, error: 'SSH 私钥文件不可读，请检查文件权限' }
-            }
-            return { success: false, error: '读取 SSH 私钥文件失败' }
-          }
-
-          if (!privateKey.trim()) {
-            return { success: false, error: 'SSH 私钥文件内容为空' }
-          }
-
-          passphrase = getSecret(hostPrivateKeyFilePassphraseSecretKey(host.id)) || undefined
-        }
-
-        // Create or reuse a session for this tab
-        session = terminalSessionManager.createSession(data.tabId)
-        registerSessionEvents(session)
-        notifyConnecting(session)
-
-        session.sessionMeta = {
-          source: 'direct',
-          displayName: host.name || host.host,
-          displaySecondary: `${host.username}@${host.host}`
-        }
-
-        await session.connect({
-          host: host.host,
-          port: host.port,
-          username: host.username,
-          password,
-          privateKey,
-          passphrase
-        })
-
-        await session.openShell(data.cols, data.rows)
-
-        return { success: true, generation: session.generation }
-      } catch (err: unknown) {
-        const message = translateError(err, 'ssh')
-        // 清理本次创建的失败会话，避免死 session 残留在会话管理器中
-        if (session && terminalSessionManager.getSession(data.tabId) === session) {
-          terminalSessionManager.removeSession(data.tabId)
-        }
-        return { success: false, generation: session?.generation, error: message }
-      } finally {
-        password = undefined
-        privateKey = undefined
-        passphrase = undefined
+  ipcMain.handle(
+    'terminal:respondHostTrust',
+    (_event, data: unknown): { success: boolean; error?: string } => {
+      if (!data || typeof data !== 'object' || Array.isArray(data)) {
+        return { success: false, error: '主机信任响应无效' }
       }
+      const response = data as Partial<SshHostTrustResponse>
+      if (
+        typeof response.tabId !== 'string' ||
+        !response.tabId ||
+        typeof response.generation !== 'number' ||
+        !Number.isSafeInteger(response.generation) ||
+        typeof response.requestId !== 'string' ||
+        !response.requestId ||
+        !['trust-once', 'trust-always', 'reject'].includes(response.decision || '')
+      ) {
+        return { success: false, error: '主机信任响应无效' }
+      }
+      const session = terminalSessionManager.getSession(response.tabId)
+      if (!session || session.generation !== response.generation) {
+        return { success: false, error: '主机信任请求已失效' }
+      }
+      return session.respondHostTrust(response as SshHostTrustResponse)
     }
   )
+
+  ipcMain.handle('terminal:resetHostTrust', (_event, hostId: unknown): { success: boolean; error?: string } => {
+    if (typeof hostId !== 'string' || !hostId) return { success: false, error: '主机标识无效' }
+    const rawHosts = getStore().get('hosts_list')
+    const hosts: HostRecord[] = Array.isArray(rawHosts) ? (rawHosts as HostRecord[]) : []
+    const host = hosts.find((item) => item.id === hostId)
+    if (!host) return { success: false, error: '未找到主机' }
+    resetSshHostTrustRecord(host.host, host.port)
+    return { success: true }
+  })
 
   // ===== Jumpserver 终端连接入口（v4.3：经 koko SSH 令牌直连）=====
   // 路线：旧 tokenId 查上下文 → 现连现创 fresh 令牌 → resolveKokoSshParams 组装 koko SSH 参数
@@ -271,123 +429,64 @@ export function registerTerminalIpc(): void {
     async (
       _event,
       data: { tabId: string; cols: number; rows: number; tokenId: string; clientUrl: string; assetName: string; accountName?: string }
-    ): Promise<{ success: boolean; generation?: number; error?: string }> => {
-      let session: TerminalSession | undefined
-      // fresh token value 仅在此 handler 内存中短暂持有，finally 中清空（5.3）
-      let freshToken: { id: string; value: string; clientUrl: string } | undefined
-      try {
-        // 1. 用旧 tokenId 查连接上下文（5.1：缓存 key = 旧 tokenId）
-        const context = getJumpserverConnectContext(data.tokenId)
-        if (!context) {
-          // 5.1 兜底：缓存未命中返回分层错误，不复用旧 token、不猜参数
-          return { success: false, error: '连接上下文缺失，请重新选择资产与账号' }
-        }
-
-        // 2. 用缓存中的 configId 解析 Jumpserver 配置 + 凭据（v4.3.1：不再依赖当前活跃配置）
-        const resolvedConfig = resolveJumpserverConfigForConnect(context.configId)
-        if (!resolvedConfig.success) {
-          return { success: false, error: resolvedConfig.error }
-        }
-
-        // 3. 现连现创：主进程重新 create-token 得 fresh {id, value, clientUrl}（5.2）
-        //    旧 tokenId 仅作上下文索引，不作为 SSH 登录令牌
-        const freshResult = await createJumpserverFreshToken(
-          {
-            baseUrl: resolvedConfig.baseUrl,
-            authMode: 'access_key',
-            accessKeyId: resolvedConfig.accessKeyId,
-            accessKeySecret: resolvedConfig.accessKeySecret,
-            verifyTls: resolvedConfig.verifyTls
-          },
-          context.assetId,
-          context.accountId
-        )
-        if (!freshResult.success || !freshResult.token) {
-          return { success: false, error: `创建连接令牌失败：${freshResult.error || '未知错误'}` }
-        }
-        freshToken = freshResult.token
-
-        // 4. 组装 koko SSH 参数（纯函数，不发起连接）
-        //    username=JMS-{id}、password=value、host/port 来自 jms payload endpoint（兜底 baseUrl+2222）
-        const kokoResolve = resolveKokoSshParams(
-          { id: freshToken.id, value: freshToken.value },
-          freshToken.clientUrl,
-          resolvedConfig.baseUrl
-        )
-        if (!kokoResolve.success || !kokoResolve.params) {
-          return { success: false, error: `解析 koko SSH endpoint 失败：${kokoResolve.error || '未知错误'}` }
-        }
-
-        // 5. 创建会话并连接 koko SSH 网关（复用现有 ssh2 终端栈）
-        const createJumpserverSession = (): TerminalSession => {
-          const nextSession = terminalSessionManager.createSession(data.tabId)
-          registerSessionEvents(nextSession)
-          notifyConnecting(nextSession)
-          nextSession.sessionMeta = {
-            source: 'jumpserver',
-            displayName: data.assetName,
-            displaySecondary: data.accountName
-          }
-          return nextSession
-        }
-
-        const connectHosts = await resolveSshConnectHosts(kokoResolve.params.host)
-
-        for (let index = 0; index < connectHosts.length; index += 1) {
-          session = createJumpserverSession()
-
-          try {
-            await session.connect({
-              host: connectHosts[index],
-              port: kokoResolve.params.port,
-              username: kokoResolve.params.username,
-              password: kokoResolve.params.password
-            })
-            break
-          } catch (err) {
-            if (index === connectHosts.length - 1) {
-              // 清理本次创建的失败会话，避免死 session 残留在会话管理器中
-              if (session && terminalSessionManager.getSession(data.tabId) === session) {
-                terminalSessionManager.removeSession(data.tabId)
-              }
-              return {
-                success: false,
-                generation: session?.generation,
-                error: formatKokoConnectError(err)
-              }
-            }
-          }
-        }
-
-        if (!session) {
-          return { success: false, error: 'koko SSH 连接失败：未获取到可用的连接地址' }
-        }
-
-        try {
-          await session.openShell(data.cols, data.rows)
-        } catch (err) {
-          // 清理本次创建的失败会话，避免死 session 残留在会话管理器中
-          if (terminalSessionManager.getSession(data.tabId) === session) {
-            terminalSessionManager.removeSession(data.tabId)
-          }
-          return {
-            success: false,
-            generation: session?.generation,
-            error: `打开终端 shell 失败：${translateError(err, 'ssh')}`
-          }
-        }
-
-        return { success: true, generation: session.generation }
-      } catch (err: unknown) {
-        const message = translateError(err, 'ssh')
-        return { success: false, generation: session?.generation, error: message }
-      } finally {
-        // 5.3 即用即清：连接成功/失败/超时/取消后清空持有 value 的引用，不留引用
-        if (freshToken) {
-          freshToken.value = ''
-          freshToken = undefined
-        }
+    ): Promise<TerminalConnectResult> => {
+      const context = getJumpserverConnectContext(data.tokenId)
+      if (!context) {
+        return { success: false, error: '连接上下文缺失，请重新选择资产与账号' }
       }
+      const target = {
+        kind: 'jumpserver' as const,
+        configId: context.configId,
+        assetId: context.assetId,
+        accountId: context.accountId,
+        assetName: data.assetName,
+        ...(data.accountName ? { accountName: data.accountName } : {})
+      }
+      forwardToRenderer('terminal:onReconnectTarget', { tabId: data.tabId, target })
+      return connectJumpserverTerminal({ tabId: data.tabId, cols: data.cols, rows: data.rows, ...target })
+    }
+  )
+
+  ipcMain.handle(
+    'terminal:reconnect',
+    async (
+      _event,
+      data: { tabId?: unknown; target?: unknown; cols?: unknown; rows?: unknown }
+    ): Promise<TerminalConnectResult> => {
+      if (
+        typeof data.tabId !== 'string' ||
+        !data.tabId ||
+        typeof data.cols !== 'number' ||
+        !Number.isFinite(data.cols) ||
+        data.cols < 1 ||
+        typeof data.rows !== 'number' ||
+        !Number.isFinite(data.rows) ||
+        data.rows < 1
+      ) {
+        return { success: false, error: '重连参数无效' }
+      }
+
+      const target = normalizeReconnectTarget(data.target)
+      if (!target) return { success: false, error: '没有可用的重连目标' }
+
+      if (target.kind === 'direct') {
+        return connectDirectTerminal({
+          tabId: data.tabId,
+          hostId: target.hostId,
+          cols: data.cols,
+          rows: data.rows
+        })
+      }
+      if (target.kind === 'jumpserver') {
+        return connectJumpserverTerminal({
+          tabId: data.tabId,
+          cols: data.cols,
+          rows: data.rows,
+          ...target
+        })
+      }
+
+      return { success: false, error: '本地终端请启动新的 shell' }
     }
   )
 

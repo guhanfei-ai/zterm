@@ -3,6 +3,7 @@ import { useHostsStore } from '@/stores/hosts'
 import { useKeysStore } from '@/stores/keys'
 import { useTerminalStore } from '@/stores/terminal'
 import { useUpdateStore } from '@/stores/update'
+import type { SshHostTrustRequiredEvent } from '../../../main/model/sshHostTrust'
 
 /**
  * Composable that manages terminal IPC lifecycle subscriptions
@@ -11,7 +12,7 @@ import { useUpdateStore } from '@/stores/update'
  *
  * All cleanup is handled in onUnmounted.
  */
-export function useTerminalEvents() {
+export function useTerminalEvents(options: { onHostTrustRequired?: (event: SshHostTrustRequiredEvent) => void } = {}) {
   const hostsStore = useHostsStore()
   const keysStore = useKeysStore()
   const terminalStore = useTerminalStore()
@@ -35,6 +36,10 @@ export function useTerminalEvents() {
       if (terminalStore.isGenerationValid(payload.tabId, payload.generation)) {
         terminalStore.setStatusByTabId(payload.tabId, 'connected')
       }
+    })
+
+    const unsubHostTrustRequired = window.electronAPI.terminal.onHostTrustRequired((payload) => {
+      options.onHostTrustRequired?.(payload)
     })
 
     const unsubError = window.electronAPI.terminal.onError((payload) => {
@@ -75,6 +80,7 @@ export function useTerminalEvents() {
     cleanupTerminal = () => {
       unsubConnecting()
       unsubConnected()
+      unsubHostTrustRequired()
       unsubError()
       unsubClosed()
       unsubShellClosed()

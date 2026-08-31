@@ -58,7 +58,13 @@
           打开命令行
         </button>
       </div>
-      <XtermPane v-for="tab in terminalTabs" :key="tab.id" :tab-id="tab.id" v-show="tab.id === activeTerminalTabId" />
+      <XtermPane
+        v-for="tab in terminalTabs"
+        :key="tab.id"
+        :tab-id="tab.id"
+        v-show="tab.id === activeTerminalTabId"
+        @reconnect="onReconnectTerminalTab"
+      />
     </div>
   </div>
 </template>
@@ -78,6 +84,7 @@ const emit = defineEmits<{
   'add-local-tab': []
   'close-terminal-tab': [id: string]
   'disconnect': []
+  'reconnect-terminal-tab': [id: string]
 }>()
 
 const terminalStore = useTerminalStore()
@@ -110,5 +117,9 @@ function onCloseTerminalTab(id: string): void {
 
 function handleDisconnect(): void {
   emit('disconnect')
+}
+
+function onReconnectTerminalTab(id: string): void {
+  emit('reconnect-terminal-tab', id)
 }
 </script>

@@ -8,6 +8,8 @@ import type { ChatMessage } from '../main/application/chat/chatApplication'
 import type { ChatStreamEvent } from '../main/harness/chat/chatHarness'
 import type { AgentMessage, AgentStatus, SetAllowWriteResult } from '../main/services/agentController'
 import type { AgentContextSnapshot } from '../main/services/agentContextStore'
+import type { WorkspaceSnapshotV1 } from '../main/model/workspace'
+import type { SshHostTrustRequiredEvent, SshHostTrustResponse } from '../main/model/sshHostTrust'
 
 const api = {
   keys: {
@@ -177,6 +179,10 @@ const api = {
     resize: (tabId: string, cols: number, rows: number): Promise<void> =>
       ipcRenderer.invoke('terminal:resize', tabId, cols, rows),
     disconnect: (tabId: string): Promise<{ success: boolean }> => ipcRenderer.invoke('terminal:disconnect', tabId),
+    respondHostTrust: (data: SshHostTrustResponse): Promise<{ success: boolean; error?: string }> =>
+      ipcRenderer.invoke('terminal:respondHostTrust', data),
+    resetHostTrust: (hostId: string): Promise<{ success: boolean; error?: string }> =>
+      ipcRenderer.invoke('terminal:resetHostTrust', hostId),
     getRecentOutput: (tabId: string, lines?: number): Promise<string> =>
       ipcRenderer.invoke('terminal:getRecentOutput', tabId, lines),
     getCurrentHost: (tabId: string): Promise<unknown> => ipcRenderer.invoke('terminal:getCurrentHost', tabId),
@@ -197,6 +203,13 @@ const api = {
       accountName?: string
     ): Promise<{ success: boolean; generation?: number; error?: string }> =>
       ipcRenderer.invoke('terminal:connectJumpserver', { tabId, cols, rows, tokenId, clientUrl, assetName, accountName }),
+    reconnect: (
+      tabId: string,
+      target: import('../main/model/workspace').ReconnectTarget,
+      cols: number,
+      rows: number
+    ): Promise<{ success: boolean; generation?: number; error?: string }> =>
+      ipcRenderer.invoke('terminal:reconnect', { tabId, target, cols, rows }),
     onData: (callback: (data: { tabId: string; data: string }) => void): (() => void) => {
       const handler = (_event: Electron.IpcRendererEvent, data: { tabId: string; data: string }): void => callback(data)
       ipcRenderer.on('terminal:onData', handler)
@@ -211,11 +224,18 @@ const api = {
         ipcRenderer.removeListener('terminal:onConnecting', handler)
       }
     },
-    onConnected: (callback: (data: { tabId: string; generation: number; opts: unknown }) => void): (() => void) => {
-      const handler = (_event: Electron.IpcRendererEvent, data: { tabId: string; generation: number; opts: unknown }): void => callback(data)
+    onConnected: (callback: (data: { tabId: string; generation: number }) => void): (() => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, data: { tabId: string; generation: number }): void => callback(data)
       ipcRenderer.on('terminal:onConnected', handler)
       return () => {
         ipcRenderer.removeListener('terminal:onConnected', handler)
+      }
+    },
+    onHostTrustRequired: (callback: (data: SshHostTrustRequiredEvent) => void): (() => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, data: SshHostTrustRequiredEvent): void => callback(data)
+      ipcRenderer.on('terminal:onHostTrustRequired', handler)
+      return () => {
+        ipcRenderer.removeListener('terminal:onHostTrustRequired', handler)
       }
     },
     onClosed: (callback: (data: { tabId: string; generation: number }) => void): (() => void) => {
@@ -238,7 +258,32 @@ const api = {
       return () => {
         ipcRenderer.removeListener('terminal:onError', handler)
       }
+    },
+    onReconnectTarget: (
+      callback: (data: { tabId: string; target: import('../main/model/workspace').ReconnectTarget }) => void
+    ): (() => void) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        data: { tabId: string; target: import('../main/model/workspace').ReconnectTarget }
+      ): void => callback(data)
+      ipcRenderer.on('terminal:onReconnectTarget', handler)
+      return () => {
+        ipcRenderer.removeListener('terminal:onReconnectTarget', handler)
+      }
     }
+  },
+
+  workspace: {
+    load: (): Promise<
+      | { found: false }
+      | { recoverable: true; snapshot: WorkspaceSnapshotV1 }
+      | { recoverable: false; reason: string }
+    > => ipcRenderer.invoke('workspace:load'),
+    save: (snapshot: WorkspaceSnapshotV1): Promise<
+      | { success: true; snapshot: WorkspaceSnapshotV1 }
+      | { success: false; error: string }
+    > => ipcRenderer.invoke('workspace:save', snapshot),
+    clear: (): Promise<{ success: boolean; error?: string }> => ipcRenderer.invoke('workspace:clear')
   },
 
   jumpserver: {

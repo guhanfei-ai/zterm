@@ -216,8 +216,8 @@ describe('Terminal Store — Map index', () => {
       store.clearStateByTabId(tabId)
       const tab = store.getTabById(tabId)
       expect(tab?.status).toBe('disconnected')
-      expect(tab?.hostId).toBeNull()
-      expect(tab?.hostName).toBe('未连接')
+      expect(tab?.hostId).toBe('host-1')
+      expect(tab?.hostName).toBe('Server')
       expect(tab?.error).toBeNull()
       expect(tab?.recentOutput).toBe('')
     })
@@ -233,10 +233,20 @@ describe('Terminal Store — Map index', () => {
       const tab = store.getTabById(tabId)
       expect(tab?.status).toBe('disconnected') // preserved
       expect(tab?.error).toBe('Connection timed out') // preserved
-      expect(tab?.hostId).toBeNull() // cleared
-      expect(tab?.hostName).toBe('未连接') // cleared
+      expect(tab?.hostId).toBe('host-1') // reconnect metadata preserved
+      expect(tab?.hostName).toBe('Server') // reconnect metadata preserved
       expect(tab?.recentOutput).toBe('') // cleared
       expect(tab?.generation).toBe(0) // cleared
+    })
+
+    it('should preserve a reconnect target when connection state is cleared', () => {
+      const store = useTerminalStore()
+      const tabId = store.addTab()
+      store.setCurrentHostByTabId(tabId, 'host-1', 'Server')
+
+      store.clearConnectionByTabId(tabId)
+
+      expect(store.getTabById(tabId)?.reconnectTarget).toEqual({ kind: 'direct', hostId: 'host-1' })
     })
 
     it('should setGenerationByTabId using Map lookup', () => {

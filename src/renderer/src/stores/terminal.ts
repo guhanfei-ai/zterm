@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { v4 as uuidv4 } from 'uuid'
 import { useHostsStore, type ActiveMode } from './hosts'
+import type { ReconnectTarget, TerminalTabSnapshot } from '../../../main/model/workspace'
 
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected'
 
@@ -17,6 +18,7 @@ export interface TerminalTab {
   recentOutput: string
   generation: number // 当前标签绑定的真实连接代际，由主进程生成
   mode: ActiveMode
+  reconnectTarget: ReconnectTarget | null
 }
 
 function createTerminalTab(mode: ActiveMode, override?: Partial<TerminalTab>): TerminalTab {
@@ -31,6 +33,7 @@ function createTerminalTab(mode: ActiveMode, override?: Partial<TerminalTab>): T
     recentOutput: '',
     generation: 0,
     mode,
+    reconnectTarget: null,
     ...override
   }
 }
@@ -152,6 +155,11 @@ export const useTerminalStore = defineStore('terminal', () => {
     if (hostName) {
       tab.title = hostName
     }
+    if (hostId === '__local__') {
+      tab.reconnectTarget = { kind: 'local' }
+    } else if (hostId) {
+      tab.reconnectTarget = { kind: 'direct', hostId }
+    }
     return true
   }
 
@@ -186,7 +194,9 @@ export const useTerminalStore = defineStore('terminal', () => {
     tab.hostName = '未连接'
     tab.error = null
     tab.recentOutput = ''
-    tab.title = getDefaultTabTitle(tab.mode, tab.id)
+    if (!tab.reconnectTarget) {
+      tab.title = getDefaultTabTitle(tab.mode, tab.id)
+    }
     return true
   }
 
@@ -206,6 +216,18 @@ export const useTerminalStore = defineStore('terminal', () => {
     if (hostName) {
       tab.title = hostName
     }
+    if (hostId === '__local__') {
+      tab.reconnectTarget = { kind: 'local' }
+    } else if (hostId) {
+      tab.reconnectTarget = { kind: 'direct', hostId }
+    }
+    return true
+  }
+
+  function setReconnectTargetByTabId(tabId: string, target: ReconnectTarget): boolean {
+    const tab = _tabMap.get(tabId)
+    if (!tab) return false
+    tab.reconnectTarget = target
     return true
   }
 
@@ -223,12 +245,14 @@ export const useTerminalStore = defineStore('terminal', () => {
     return true
   }
 
-  /** 清除连接相关字段（hostName/hostId/generation），保留 error 和 status */
+  /** 清除运行时连接字段，保留可重连标签的安全身份元数据。 */
   function clearConnectionByTabId(tabId: string): boolean {
     const tab = _tabMap.get(tabId)
     if (!tab) return false
-    tab.hostId = null
-    tab.hostName = '未连接'
+    if (!tab.reconnectTarget) {
+      tab.hostId = null
+      tab.hostName = '未连接'
+    }
     tab.recentOutput = ''
     tab.generation = 0
     return true
@@ -238,12 +262,62 @@ export const useTerminalStore = defineStore('terminal', () => {
     const tab = _tabMap.get(tabId)
     if (!tab) return false
     tab.status = 'disconnected'
-    tab.hostId = null
-    tab.hostName = '未连接'
     tab.error = null
     tab.recentOutput = ''
-    tab.title = getDefaultTabTitle(tab.mode, tab.id)
+    if (!tab.reconnectTarget) {
+      tab.hostId = null
+      tab.hostName = '未连接'
+      tab.title = getDefaultTabTitle(tab.mode, tab.id)
+    }
     return true
+  }
+
+  function serializeWorkspaceTabs(): TerminalTabSnapshot[] {
+    return tabs.value.map((tab) => ({
+      id: tab.id,
+      title: tab.title,
+      defaultTitle: tab.defaultTitle,
+      mode: tab.mode,
+      hostId: tab.hostId,
+      hostName: tab.hostName,
+      reconnectTarget: tab.reconnectTarget ? { ...tab.reconnectTarget } : null
+    }))
+  }
+
+  function hydrateWorkspaceTabs(
+    snapshots: TerminalTabSnapshot[],
+    restoredActiveTabIds: Record<ActiveMode, string>
+  ): void {
+    const hydrated = snapshots.map((snapshot) => createTerminalTab(snapshot.mode, {
+      id: snapshot.id,
+      title: snapshot.title,
+      defaultTitle: snapshot.defaultTitle,
+      hostId: snapshot.hostId,
+      hostName: snapshot.hostName,
+      reconnectTarget: snapshot.reconnectTarget ? { ...snapshot.reconnectTarget } : null,
+      status: 'disconnected',
+      error: null,
+      recentOutput: '',
+      generation: 0
+    }))
+
+    tabs.value.splice(0, tabs.value.length, ...hydrated)
+    _tabMap.clear()
+    for (const tab of tabs.value) {
+      _tabMap.set(tab.id, tab)
+    }
+    activeTabIds.value = {
+      direct: restoredActiveTabIds.direct,
+      jumpserver: restoredActiveTabIds.jumpserver,
+      local: restoredActiveTabIds.local
+    }
+    tabSerial = Math.max(
+      0,
+      ...tabs.value.map((tab) => {
+        const match = tab.defaultTitle.match(/(\d+)$/)
+        return match ? Number(match[1]) : 0
+      })
+    )
   }
 
   function setGenerationByTabId(tabId: string, generation: number): boolean {
@@ -297,12 +371,15 @@ export const useTerminalStore = defineStore('terminal', () => {
     // State mutation by tabId — boolean return, O(1) via Map
     setStatusByTabId,
     setCurrentHostByTabId,
+    setReconnectTargetByTabId,
     setErrorByTabId,
     setRecentOutputByTabId,
     clearStateByTabId,
     clearConnectionByTabId,
     setGenerationByTabId,
     canAcceptConnectingByTabId,
-    isGenerationValid
+    isGenerationValid,
+    serializeWorkspaceTabs,
+    hydrateWorkspaceTabs
   }
 })

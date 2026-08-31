@@ -1,6 +1,18 @@
 import { Client } from 'ssh2'
 import type { ConnectConfig, ClientChannel } from 'ssh2'
 import { EventEmitter } from 'events'
+import { randomUUID } from 'node:crypto'
+import type {
+  SshHostTrustCandidate,
+  SshHostTrustRequiredEvent,
+  SshHostTrustResponse,
+  SshHostTrustResponseResult
+} from '../model/sshHostTrust'
+import {
+  getSshHostTrustRecord,
+  inspectSshHostKey,
+  saveSshHostTrustRecord
+} from './sshHostTrust'
 
 export interface SshConnectionOptions {
   host: string
@@ -9,6 +21,13 @@ export interface SshConnectionOptions {
   password?: string
   privateKey?: string
   passphrase?: string
+  requireHostTrust?: boolean
+}
+
+export interface SshConnectionIdentity {
+  host: string
+  port: number
+  username: string
 }
 
 export interface SessionMeta {
@@ -26,103 +45,232 @@ export interface TerminalEvent {
  * Represents a single SSH session tied to a terminal tab.
  * Emits events scoped to this session only.
  */
+type HostTrustFailure = 'unconfirmed' | 'rejected' | 'timeout' | 'changed' | 'invalid' | 'save-failed' | null
+
+interface PendingHostTrust {
+  requestId: string
+  candidate: SshHostTrustCandidate
+  verify: (allowed: boolean) => void
+  timer: ReturnType<typeof setTimeout>
+}
+
+const HOST_TRUST_TIMEOUT_MS = 60_000
+
 export class TerminalSession extends EventEmitter {
   public tabId: string
   public generation: number
   private conn: Client | null = null
   private stream: ClientChannel | null = null
   public connected = false
-  public currentHost?: SshConnectionOptions
+  public currentHost?: SshConnectionIdentity
   public sessionMeta?: SessionMeta
   private outputBuffer: string[] = []
   private maxBufferLines = 5000
-  private connHadError = false // 记录 SSH 连接层是否因错误关闭
-  private keepaliveTriggered = false // 记录本次关闭是否由 keepalive 失败触发（区分正常断开）
+  private connHadError = false
+  private keepaliveTriggered = false
+  private closedEmitted = false
+  private pendingHostTrust: PendingHostTrust | null = null
+  private hostTrustFailure: HostTrustFailure = null
+  private rejectConnect: ((error: Error) => void) | null = null
+  private connectSettled = false
 
-  constructor(tabId: string, generation: number) {
+  constructor(
+    tabId: string,
+    generation: number,
+    private readonly clientFactory: () => Client = () => new Client()
+  ) {
     super()
     this.tabId = tabId
     this.generation = generation
   }
 
-  private normalizeSessionPrompt(): void {
-    if (!this.stream || !this.stream.writable) return
-    this.stream.write("export PS1=\"${PS1% } \" >/dev/null 2>&1; printf '\\033[1A\\033[2K\\r'\n")
+  private emitClosedOnce(reason: 'user-disconnect' | 'keepalive-timeout' | 'transport-error' | 'normal', hadError: boolean): void {
+    if (this.closedEmitted) return
+    this.closedEmitted = true
+    this.emit('closed', { reason, hadError })
+  }
+
+  private getHostTrustError(): Error | null {
+    const messages: Record<Exclude<HostTrustFailure, null>, string> = {
+      unconfirmed: 'SSH 主机身份未确认，连接已阻断',
+      rejected: 'SSH 主机身份未获信任，连接已阻断',
+      timeout: 'SSH 主机身份未确认，连接已超时',
+      changed: 'SSH 主机身份已变更，连接已阻断',
+      invalid: '无法验证 SSH 主机身份，连接已阻断',
+      'save-failed': '无法保存 SSH 主机信任记录，连接已阻断'
+    }
+    return this.hostTrustFailure ? new Error(messages[this.hostTrustFailure]) : null
+  }
+
+  private settleConnectReject(error: Error): void {
+    if (this.connectSettled) return
+    this.connectSettled = true
+    const reject = this.rejectConnect
+    this.rejectConnect = null
+    reject?.(error)
+  }
+
+  private settlePendingHostTrust(allowed: boolean, failure: HostTrustFailure = null): void {
+    const pending = this.pendingHostTrust
+    if (!pending) return
+    this.pendingHostTrust = null
+    clearTimeout(pending.timer)
+    this.hostTrustFailure = failure
+    pending.verify(allowed)
+  }
+
+  private emitHostTrustRequired(
+    kind: 'unknown' | 'changed',
+    candidate: SshHostTrustCandidate,
+    trusted?: { algorithm: string; fingerprint: string },
+    requestId = randomUUID()
+  ): string {
+    const event: SshHostTrustRequiredEvent = {
+      tabId: this.tabId,
+      generation: this.generation,
+      requestId,
+      kind,
+      host: candidate.host,
+      port: candidate.port,
+      username: candidate.username,
+      algorithm: candidate.algorithm,
+      fingerprint: candidate.fingerprint,
+      ...(trusted ? { trustedAlgorithm: trusted.algorithm, trustedFingerprint: trusted.fingerprint } : {})
+    }
+    this.emit('host-trust-required', event)
+    return requestId
+  }
+
+  private verifyHostKey(opts: SshConnectionOptions, rawHostKey: Buffer, verify: (allowed: boolean) => void): void {
+    const candidate = inspectSshHostKey(rawHostKey, opts)
+    if (!candidate || this.pendingHostTrust) {
+      this.hostTrustFailure = 'invalid'
+      verify(false)
+      return
+    }
+
+    const existing = getSshHostTrustRecord(candidate.host, candidate.port)
+    if (existing) {
+      if (existing.algorithm === candidate.algorithm && existing.fingerprint === candidate.fingerprint) {
+        verify(true)
+        return
+      }
+      this.hostTrustFailure = 'changed'
+      this.emitHostTrustRequired('changed', candidate, existing)
+      verify(false)
+      return
+    }
+
+    const requestId = randomUUID()
+    const timer = setTimeout(() => {
+      this.settlePendingHostTrust(false, 'timeout')
+    }, HOST_TRUST_TIMEOUT_MS)
+    this.pendingHostTrust = { requestId, candidate, verify, timer }
+    this.emitHostTrustRequired('unknown', candidate, undefined, requestId)
+  }
+
+  respondHostTrust(response: SshHostTrustResponse): SshHostTrustResponseResult {
+    const pending = this.pendingHostTrust
+    if (
+      !pending ||
+      response.tabId !== this.tabId ||
+      response.generation !== this.generation ||
+      response.requestId !== pending.requestId
+    ) {
+      return { success: false, error: '主机信任请求已失效' }
+    }
+
+    if (!['trust-once', 'trust-always', 'reject'].includes(response.decision)) {
+      return { success: false, error: '主机信任决定无效' }
+    }
+
+    if (response.decision === 'trust-always') {
+      try {
+        saveSshHostTrustRecord(pending.candidate)
+      } catch {
+        this.settlePendingHostTrust(false, 'save-failed')
+        return { success: false, error: '无法保存主机信任记录' }
+      }
+      this.settlePendingHostTrust(true)
+      return { success: true }
+    }
+
+    if (response.decision === 'trust-once') {
+      this.settlePendingHostTrust(true)
+      return { success: true }
+    }
+
+    this.settlePendingHostTrust(false, 'rejected')
+    return { success: true }
   }
 
   async connect(opts: SshConnectionOptions): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.currentHost = opts
-      this.conn = new Client()
+      this.currentHost = { host: opts.host, port: opts.port || 22, username: opts.username }
+      this.connectSettled = false
+      this.rejectConnect = reject
+      const conn = this.clientFactory()
+      this.conn = conn
 
       const config: ConnectConfig = {
         host: opts.host,
         port: opts.port || 22,
         username: opts.username,
         readyTimeout: 10000,
-        // P8: SSH-level keepalive 防止中间网络设备空闲超时踢断（典型 300s idle timeout）
-        //     每 30s 发一次 keepalive@openssh.com 请求，连续 3 次无响应才判死
         keepaliveInterval: 30000,
         keepaliveCountMax: 3
       }
 
+      if (opts.requireHostTrust) {
+        config.hostVerifier = (key: Buffer, verify: (allowed: boolean) => void) => this.verifyHostKey(opts, key, verify)
+      }
+
       if (opts.privateKey) {
         config.privateKey = opts.privateKey
-        if (opts.passphrase) {
-          config.passphrase = opts.passphrase
-        }
+        if (opts.passphrase) config.passphrase = opts.passphrase
       } else if (opts.password) {
         config.password = opts.password
       }
 
-      this.conn.on('ready', () => {
+      conn.on('ready', () => {
+        if (this.connectSettled || this.hostTrustFailure || this.pendingHostTrust) return
         this.connected = true
-        this.emit('connected', opts)
+        this.connectSettled = true
+        this.rejectConnect = null
+        this.emit('connected')
         resolve()
       })
 
-      // P1-2：keepalive 超时错误会从 error 事件先发，再到 close。
-      // 检测 keepalive 触发的关闭：ssh2 抛出的错误 message 一般带 "Timed out" 字样；
-      // 同时通过连接对象上的 _keepaliveTimeoutCount 内部状态不可见，只能通过 err.message 匹配。
-      this.conn.on('error', (err: Error) => {
+      conn.on('error', (err: Error) => {
         this.connected = false
         if (/keepalive/i.test(err.message) || /Timed out/i.test(err.message)) {
           this.keepaliveTriggered = true
         }
-        this.emit('error', err, 'ssh-connection')
-        reject(err)
+        const error = this.getHostTrustError() || err
+        this.emit('error', error, 'ssh-connection')
+        this.settleConnectReject(error)
       })
 
-      // P1-2：SSH keepalive 失败会通过本事件上报；显式记录用于 close 时的诊断
-      // ssh2 没有 'continue' / 'keepalive-success' 事件，这里仅保留入口作为扩展位
-      void this.keepaliveTriggered // (扩展位)
-
-      this.conn.on('close', (hadError?: boolean) => {
+      conn.on('close', (hadError?: boolean) => {
         this.connected = false
         this.connHadError = hadError === true
-        // 统一 closed 事件签名（C1）：{ reason, hadError }
-        // - 'user-disconnect'：本地主动调用 disconnect()
-        // - 'keepalive-timeout'：keepalive 失败触发的传输层关闭
-        // - 'transport-error'：传输层发生错误
-        // - 'normal'：远端正常关闭
-        let reason: 'user-disconnect' | 'keepalive-timeout' | 'transport-error' | 'normal'
-        if (this.keepaliveTriggered) {
-          reason = 'keepalive-timeout'
-        } else if (hadError === true) {
-          reason = 'transport-error'
-        } else {
-          reason = 'normal'
-        }
-        this.emit('closed', { reason, hadError: hadError === true })
+        this.settlePendingHostTrust(false, 'unconfirmed')
+        this.settleConnectReject(this.getHostTrustError() || new Error('SSH 连接已关闭'))
+        const reason = this.keepaliveTriggered
+          ? 'keepalive-timeout'
+          : hadError === true
+            ? 'transport-error'
+            : 'normal'
+        this.emitClosedOnce(reason, hadError === true)
       })
 
-      this.conn.connect(config)
+      conn.connect(config)
     })
   }
 
   openShell(cols: number, rows: number): Promise<void> {
     return new Promise((resolve, reject) => {
-      if (!this.conn) {
+      if (!this.conn || !this.connected) {
         reject(new Error('SSH 连接不存在'))
         return
       }
@@ -189,6 +337,10 @@ export class TerminalSession extends EventEmitter {
   }
 
   disconnect(): void {
+    this.settlePendingHostTrust(false, 'unconfirmed')
+    if (!this.connected) {
+      this.settleConnectReject(this.getHostTrustError() || new Error('SSH 连接已取消'))
+    }
     try {
       if (this.stream) {
         this.stream.end()
@@ -207,8 +359,7 @@ export class TerminalSession extends EventEmitter {
     this.currentHost = undefined
     this.sessionMeta = undefined
     this.outputBuffer = []
-    // 主动断开时也要按 C1 统一签名发 object
-    this.emit('closed', { reason: 'user-disconnect', hadError: false })
+    this.emitClosedOnce('user-disconnect', false)
     this.removeAllListeners()
   }
 }

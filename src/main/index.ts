@@ -12,6 +12,7 @@ import { registerAgentIpc, setAiClient, disposeAllAgentTabs } from './ipc/agent'
 import { registerUpdateIpc } from './ipc/update'
 import { restoreOnBoot as restoreUpdateState } from './services/updateService'
 import { registerPreferencesIpc } from './ipc/preferences'
+import { registerWorkspaceIpc } from './ipc/workspace'
 import { initStore } from './services/store'
 import { initSecretVault } from './services/secretVault'
 import { calculateWindowOptions } from './services/windowState'
@@ -137,6 +138,7 @@ app.whenReady().then(() => {
   // 启动时清理上次未完成的更新包（防止 SHA 不匹配 / 强杀残留）
   tryInit('updateState', () => restoreUpdateState())
   tryInit('preferencesIpc', () => registerPreferencesIpc())
+  tryInit('workspaceIpc', () => registerWorkspaceIpc())
   tryInit('hostsIpc', () => registerHostsIpc())
   tryInit('jumpserverIpc', () => registerJumpserverIpc())
   tryInit('keysIpc', () => registerKeysIpc())

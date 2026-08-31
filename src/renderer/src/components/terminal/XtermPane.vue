@@ -17,7 +17,14 @@
         <div class="overlay-title">
           {{ tabData.status === 'connecting' ? '正在连接...' : '终端未连接' }}
         </div>
-        <div v-if="tabData.status === 'disconnected'" class="overlay-hint">从左侧选择主机并连接</div>
+        <div v-if="tabData.status === 'disconnected'" class="overlay-hint">
+          {{ reconnectHint }}
+        </div>
+        <button
+          v-if="tabData.status === 'disconnected' && tabData.reconnectTarget"
+          class="btn btn-primary reconnect-button"
+          @click="emit('reconnect', props.tabId)"
+        >{{ reconnectLabel }}</button>
         <div v-if="tabData.error" class="overlay-error">{{ tabData.error }}</div>
       </div>
     </div>
@@ -36,6 +43,10 @@ const props = defineProps<{
   tabId: string
 }>()
 
+const emit = defineEmits<{
+  reconnect: [tabId: string]
+}>()
+
 const terminalStore = useTerminalStore()
 const themeStore = useThemeStore()
 const wrapperRef = ref<HTMLDivElement | null>(null)
@@ -49,7 +60,8 @@ const fallbackTabData = {
   error: null,
   recentOutput: '',
   generation: 0,
-  mode: 'direct' as const
+  mode: 'direct' as const,
+  reconnectTarget: null
 }
 
 const tabData = computed(() =>
@@ -57,6 +69,13 @@ const tabData = computed(() =>
 )
 
 const isConnected = computed(() => tabData.value.status === 'connected')
+const reconnectHint = computed(() => {
+  if (!tabData.value.reconnectTarget) return '从左侧选择主机并连接'
+  return tabData.value.reconnectTarget.kind === 'local'
+    ? '此标签可启动新的本地 shell，不会恢复旧会话或目录'
+    : '可在原标签中手动重连'
+})
+const reconnectLabel = computed(() => tabData.value.reconnectTarget?.kind === 'local' ? '启动新的本地 shell' : '重连')
 
 let term: Terminal | null = null
 let fitAddon: FitAddon | null = null
@@ -324,6 +343,10 @@ onUnmounted(() => {
   font-size: 12px;
   color: var(--text-disabled);
   margin-top: 2px;
+}
+
+.reconnect-button {
+  margin-top: 8px;
 }
 
 .overlay-error {

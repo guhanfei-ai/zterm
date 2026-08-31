@@ -4,6 +4,7 @@ import type { ChatMessage } from '../types/chat'
 import type { AgentMessage, AgentStatus, AgentState } from '../../../main/services/agentController'
 import type { AgentContextSnapshot } from '../../../main/services/agentContextStore'
 import { v4 as uuidv4 } from 'uuid'
+import type { ChatTabSnapshot } from '../../../main/model/workspace'
 
 export type PanelMode = 'chat' | 'agent'
 
@@ -53,6 +54,8 @@ export interface ChatTab {
   contextResolved: boolean
   // Agent 下一轮提交模式：'followup'（默认，保留执行上下文）/ 'new'（下一轮开新任务，清空 steps/conclusion 等）
   agentMode: 'followup' | 'new'
+  linkedTerminalTabId: string | null
+  linkedTerminalUnavailable: boolean
 }
 
 function createChatTab(override?: Partial<ChatTab>): ChatTab {
@@ -74,6 +77,8 @@ function createChatTab(override?: Partial<ChatTab>): ChatTab {
     pendingContext: null,
     contextResolved: true,
     agentMode: 'followup',
+    linkedTerminalTabId: null,
+    linkedTerminalUnavailable: false,
     ...override
   }
 }
@@ -307,6 +312,42 @@ export const useChatStore = defineStore('chat', () => {
     const mode = activeTab.value.agentMode
     activeTab.value.agentMode = 'followup'
     return mode
+  }
+
+  function serializeWorkspaceTabs(): ChatTabSnapshot[] {
+    return tabs.value.map((tab) => ({
+      id: tab.id,
+      title: tab.title,
+      mode: tab.mode,
+      includeTerminalContext: tab.includeTerminalContext,
+      linkedTerminalTabId: tab.linkedTerminalTabId
+    }))
+  }
+
+  function hydrateWorkspaceTabs(snapshots: ChatTabSnapshot[], terminalTabIds: Set<string>, activeId: string): void {
+    const hydrated = snapshots.map((snapshot) => {
+      const linkedTerminalTabId = snapshot.linkedTerminalTabId && terminalTabIds.has(snapshot.linkedTerminalTabId)
+        ? snapshot.linkedTerminalTabId
+        : null
+      return createChatTab({
+        id: snapshot.id,
+        title: snapshot.title,
+        mode: snapshot.mode,
+        includeTerminalContext: snapshot.includeTerminalContext,
+        linkedTerminalTabId,
+        linkedTerminalUnavailable: !!snapshot.linkedTerminalTabId && !linkedTerminalTabId
+      })
+    })
+
+    tabs.value.splice(0, tabs.value.length, ...(hydrated.length ? hydrated : [createChatTab()]))
+    activeTabId.value = tabs.value.some((tab) => tab.id === activeId) ? activeId : tabs.value[0].id
+    tabSerial = Math.max(
+      1,
+      ...tabs.value.map((tab) => {
+        const match = tab.title.match(/(\d+)$/)
+        return match ? Number(match[1]) : 1
+      })
+    )
   }
 
   // ============================================================
@@ -584,6 +625,8 @@ export const useChatStore = defineStore('chat', () => {
     setContextResolved,
     setAgentMode,
     takeAgentMode,
+    serializeWorkspaceTabs,
+    hydrateWorkspaceTabs,
     // Direct-by-tabId (no activeTab switch)
     appendToLastMessageByTabId,
     finishLastMessageByTabId,
