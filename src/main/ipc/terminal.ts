@@ -1,4 +1,4 @@
-import { ipcMain, BrowserWindow } from 'electron'
+import { ipcMain, BrowserWindow, dialog } from 'electron'
 import { TerminalSession } from '../services/terminalSessionManager'
 import { getSecret } from '../services/secretVault'
 import { getStore } from '../services/store'
@@ -19,6 +19,7 @@ import {
 
 export { disposeAllLocalSessions, getAllLocalSessions, getLocalSession, terminalSessionManager } from '../data/terminal/terminalSessionRegistry'
 import { readFileSync } from 'node:fs'
+import fsp from 'node:fs/promises'
 import { lookup } from 'node:dns/promises'
 import { isIP } from 'node:net'
 import { normalizeReconnectTarget } from '../model/workspace'
@@ -599,4 +600,37 @@ export function registerTerminalIpc(): void {
     const localSession = getLocalSession(tabId)
     return localSession?.connected ?? false
   })
+
+  // 导出终端记录：内容（含滚动回溯）由渲染进程从 xterm buffer 读取，
+  // 主进程只负责选路径、写文件，不缓存终端输出。
+  ipcMain.handle(
+    'terminal:exportOutput',
+    async (
+      _event,
+      data: { defaultFileName?: string; content?: unknown }
+    ): Promise<{ success: boolean; filePath?: string; canceled?: boolean; error?: string }> => {
+      const content = typeof data?.content === 'string' ? data.content : ''
+      if (!content.trim()) {
+        return { success: false, error: '终端当前没有可导出的内容' }
+      }
+      const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0]
+      if (!win) return { success: false, error: '找不到可用的窗口' }
+      const safeName = typeof data.defaultFileName === 'string' && data.defaultFileName.trim()
+        ? data.defaultFileName.trim().replace(/[\\/:*?"<>|]/g, '_')
+        : `zterm-${Date.now()}.log`
+      const result = await dialog.showSaveDialog(win, {
+        title: '导出终端记录',
+        defaultPath: safeName.endsWith('.log') ? safeName : `${safeName}.log`
+      })
+      if (result.canceled || !result.filePath) {
+        return { success: true, canceled: true }
+      }
+      try {
+        await fsp.writeFile(result.filePath, content, 'utf8')
+        return { success: true, filePath: result.filePath }
+      } catch (err: unknown) {
+        return { success: false, error: err instanceof Error ? err.message : '写入文件失败' }
+      }
+    }
+  )
 }

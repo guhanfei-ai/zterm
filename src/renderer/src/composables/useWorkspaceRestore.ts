@@ -8,6 +8,7 @@ import { useChatStore } from '@/stores/chat'
 export type WorkspaceRestoreDialogState = 'hidden' | 'restore' | 'invalid'
 
 const SAVE_DELAY_MS = 500
+const CHAT_HISTORY_SAVE_DELAY_MS = 1500
 
 export function useWorkspaceRestore() {
   const hostsStore = useHostsStore()
@@ -19,6 +20,7 @@ export function useWorkspaceRestore() {
   let pendingSnapshot: WorkspaceSnapshotV1 | null = null
   let decisionMade = false
   let saveTimer: ReturnType<typeof setTimeout> | null = null
+  let chatSaveTimer: ReturnType<typeof setTimeout> | null = null
   let unsubscribeReconnectTarget: (() => void) | null = null
 
   function createSnapshot(): WorkspaceSnapshotV1 {
@@ -41,6 +43,14 @@ export function useWorkspaceRestore() {
     }
   }
 
+  async function saveChatHistory(): Promise<void> {
+    if (!decisionMade || dialogState.value !== 'hidden') return
+    const result = await window.electronAPI.chatHistory.save(chatStore.serializeChatHistory())
+    if (!result.success) {
+      console.error('[chatHistory] 保存聊天历史失败')
+    }
+  }
+
   function scheduleSave(): void {
     if (!decisionMade || dialogState.value !== 'hidden') return
     if (saveTimer) clearTimeout(saveTimer)
@@ -48,6 +58,15 @@ export function useWorkspaceRestore() {
       saveTimer = null
       void saveWorkspace()
     }, SAVE_DELAY_MS)
+  }
+
+  function scheduleChatSave(): void {
+    if (!decisionMade || dialogState.value !== 'hidden') return
+    if (chatSaveTimer) clearTimeout(chatSaveTimer)
+    chatSaveTimer = setTimeout(() => {
+      chatSaveTimer = null
+      void saveChatHistory()
+    }, CHAT_HISTORY_SAVE_DELAY_MS)
   }
 
   function resetToEmptyWorkspace(): void {
@@ -70,6 +89,17 @@ export function useWorkspaceRestore() {
     pendingSnapshot = null
     decisionMade = true
     dialogState.value = 'hidden'
+
+    // 工作区恢复后再回填聊天消息：历史缺失或损坏只影响消息正文，
+    // 不阻断标签结构本身的恢复
+    try {
+      const historyResult = await window.electronAPI.chatHistory.load()
+      if ('valid' in historyResult && historyResult.valid) {
+        chatStore.hydrateChatMessages(historyResult.history)
+      }
+    } catch {
+      console.error('[chatHistory] 恢复聊天历史失败')
+    }
   }
 
   async function discardSavedWorkspace(): Promise<void> {
@@ -78,6 +108,8 @@ export function useWorkspaceRestore() {
       dialogReason.value = result.error || '无法丢弃已保存内容'
       return
     }
+    // 聊天历史与工作区同生共死：用户明确丢弃时一并清除
+    await window.electronAPI.chatHistory.clear()
     pendingSnapshot = null
     resetToEmptyWorkspace()
     decisionMade = true
@@ -121,8 +153,15 @@ export function useWorkspaceRestore() {
     { deep: true }
   )
 
+  // 聊天消息单独去抖保存：流式输出期间消息体高频变化，用更长间隔合并写入
+  watch(
+    () => chatStore.serializeChatHistory(),
+    scheduleChatSave
+  )
+
   onUnmounted(() => {
     if (saveTimer) clearTimeout(saveTimer)
+    if (chatSaveTimer) clearTimeout(chatSaveTimer)
     if (unsubscribeReconnectTarget) unsubscribeReconnectTarget()
   })
 

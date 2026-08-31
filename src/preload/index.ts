@@ -10,6 +10,7 @@ import type { AgentMessage, AgentStatus, SetAllowWriteResult } from '../main/ser
 import type { AgentContextSnapshot } from '../main/services/agentContextStore'
 import type { WorkspaceSnapshotV1 } from '../main/model/workspace'
 import type { SshHostTrustRequiredEvent, SshHostTrustResponse } from '../main/model/sshHostTrust'
+import type { ChatHistoryV1 } from '../main/model/chatHistory'
 
 const api = {
   keys: {
@@ -56,7 +57,24 @@ const api = {
     ): Promise<HostRecord | null> => ipcRenderer.invoke('hosts:update', id, data),
     delete: (id: string): Promise<boolean> => ipcRenderer.invoke('hosts:delete', id),
     pickPrivateKeyFile: (): Promise<{ canceled: boolean; filePath?: string; fileName?: string; error?: string }> =>
-      ipcRenderer.invoke('hosts:pickPrivateKeyFile')
+      ipcRenderer.invoke('hosts:pickPrivateKeyFile'),
+    importSshConfig: (): Promise<
+      | { canceled: true }
+      | { canceled: false; error?: string }
+      | {
+          canceled: false
+          hosts: import('../main/services/sshConfigFile').ParsedSshConfigHost[]
+          duplicates: boolean[]
+          skippedBlocks: number
+          totalBlocks: number
+        }
+    > => ipcRenderer.invoke('hosts:importSshConfig'),
+    confirmImportSshConfig: (
+      hosts: import('../main/services/sshConfigFile').ParsedSshConfigHost[]
+    ): Promise<{ success: boolean; created?: number; error?: string }> =>
+      ipcRenderer.invoke('hosts:confirmImportSshConfig', hosts),
+    exportSshConfig: (): Promise<{ success: boolean; filePath?: string; canceled?: boolean; error?: string }> =>
+      ipcRenderer.invoke('hosts:exportSshConfig')
   },
 
   ai: {
@@ -185,6 +203,8 @@ const api = {
       ipcRenderer.invoke('terminal:resetHostTrust', hostId),
     getRecentOutput: (tabId: string, lines?: number): Promise<string> =>
       ipcRenderer.invoke('terminal:getRecentOutput', tabId, lines),
+    exportOutput: (data: { defaultFileName?: string; content: string }): Promise<{ success: boolean; filePath?: string; canceled?: boolean; error?: string }> =>
+      ipcRenderer.invoke('terminal:exportOutput', data),
     getCurrentHost: (tabId: string): Promise<unknown> => ipcRenderer.invoke('terminal:getCurrentHost', tabId),
     isConnected: (tabId: string): Promise<boolean> => ipcRenderer.invoke('terminal:isConnected', tabId),
     connectLocal: (
@@ -284,6 +304,19 @@ const api = {
       | { success: false; error: string }
     > => ipcRenderer.invoke('workspace:save', snapshot),
     clear: (): Promise<{ success: boolean; error?: string }> => ipcRenderer.invoke('workspace:clear')
+  },
+
+  chatHistory: {
+    load: (): Promise<
+      | { found: false }
+      | { valid: true; history: ChatHistoryV1 }
+      | { valid: false; reason: string }
+    > => ipcRenderer.invoke('chatHistory:load'),
+    save: (history: ChatHistoryV1): Promise<
+      | { success: true; history: ChatHistoryV1 }
+      | { success: false; error: string }
+    > => ipcRenderer.invoke('chatHistory:save', history),
+    clear: (): Promise<{ success: boolean; error?: string }> => ipcRenderer.invoke('chatHistory:clear')
   },
 
   jumpserver: {

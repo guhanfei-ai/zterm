@@ -33,6 +33,20 @@
           {{ statusLabel }}
         </span>
         <button
+          class="btn-icon"
+          title="搜索终端 (Cmd/Ctrl+F)"
+          @click="onSearchActive"
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        </button>
+        <button
+          class="btn-icon"
+          title="导出终端记录"
+          @click="onExportActive"
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        </button>
+        <button
           v-if="activeTerminalStatus === 'connected'"
           class="btn-icon btn-danger"
           title="断开连接"
@@ -61,6 +75,7 @@
       <XtermPane
         v-for="tab in terminalTabs"
         :key="tab.id"
+        :ref="(el) => setPaneRef(tab.id, el)"
         :tab-id="tab.id"
         v-show="tab.id === activeTerminalTabId"
         @reconnect="onReconnectTerminalTab"
@@ -91,6 +106,25 @@ const terminalStore = useTerminalStore()
 const terminalTabs = computed(() => terminalStore.getTabsByMode(props.activeMode))
 const activeTerminalTabId = computed(() => terminalStore.getActiveTabIdByMode(props.activeMode))
 const activeTerminalStatus = computed(() => terminalStore.getActiveTabByMode(props.activeMode)?.status || 'disconnected')
+
+// 每个 tab 对应的 XtermPane 实例（v-show 保持挂载，ref 一直有效）
+const paneRefs = new Map<string, InstanceType<typeof XtermPane>>()
+
+function setPaneRef(tabId: string, el: unknown): void {
+  if (el) {
+    paneRefs.set(tabId, el as InstanceType<typeof XtermPane>)
+  } else {
+    paneRefs.delete(tabId)
+  }
+}
+
+function onSearchActive(): void {
+  paneRefs.get(activeTerminalTabId.value)?.openSearch()
+}
+
+function onExportActive(): void {
+  void paneRefs.get(activeTerminalTabId.value)?.exportOutput()
+}
 
 const statusLabel = computed(() => {
   switch (activeTerminalStatus.value) {

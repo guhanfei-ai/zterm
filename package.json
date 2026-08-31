@@ -1,13 +1,15 @@
 {
   "name": "zterm",
-  "version": "0.1.29",
+  "version": "0.2.0",
   "description": "Electron 版最小闭环终端 + AI 聊天应用",
   "main": "./out/main/index.js",
   "author": "zTerm contributors",
   "license": "MIT",
   "repository": "https://github.com/guhanfei-ai/zterm.git",
   "homepage": "https://github.com/guhanfei-ai/zterm",
-  "bugs": { "url": "https://github.com/guhanfei-ai/zterm/issues" },
+  "bugs": {
+    "url": "https://github.com/guhanfei-ai/zterm/issues"
+  },
   "type": "module",
   "scripts": {
     "dev": "electron-vite dev",
@@ -77,7 +79,8 @@
     "ssh2": "^1.16.0",
     "uuid": "^10.0.0",
     "xterm": "^5.3.0",
-    "xterm-addon-fit": "^0.8.0"
+    "xterm-addon-fit": "^0.8.0",
+    "xterm-addon-search": "^0.13.0"
   },
   "devDependencies": {
     "@electron-toolkit/preload": "^3.0.1",

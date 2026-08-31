@@ -1,6 +1,27 @@
 <template>
   <div class="xterm-container" ref="containerRef">
     <div class="xterm-wrapper" ref="wrapperRef" :class="{ 'xterm-hidden': !isConnected }"></div>
+    <!-- 终端内搜索栏（Cmd/Ctrl+F） -->
+    <div v-if="searchVisible" class="terminal-search-bar">
+      <button
+        class="ts-case-btn"
+        :class="{ active: searchCaseSensitive }"
+        title="区分大小写"
+        @click="toggleCaseSensitive"
+      >Aa</button>
+      <input
+        ref="searchInputRef"
+        v-model="searchQuery"
+        class="ts-input"
+        type="text"
+        placeholder="在终端中查找..."
+        @keydown.enter.prevent="onSearchEnter($event)"
+        @keydown.esc.prevent="closeSearch"
+      />
+      <button class="ts-nav-btn" title="上一个 (Shift+Enter)" @click="findPrev">↑</button>
+      <button class="ts-nav-btn" title="下一个 (Enter)" @click="findNext">↓</button>
+      <button class="ts-close-btn" title="关闭 (Esc)" @click="closeSearch">✕</button>
+    </div>
     <!-- State overlay: disconnected / connecting -->
     <div v-if="!isConnected" class="terminal-overlay">
       <div class="overlay-content">
@@ -32,9 +53,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { Terminal } from 'xterm'
 import { FitAddon } from 'xterm-addon-fit'
+import { SearchAddon } from 'xterm-addon-search'
 import 'xterm/css/xterm.css'
 import { useTerminalStore } from '@/stores/terminal'
 import { useThemeStore } from '@/stores/theme'
@@ -79,11 +101,133 @@ const reconnectLabel = computed(() => tabData.value.reconnectTarget?.kind === 'l
 
 let term: Terminal | null = null
 let fitAddon: FitAddon | null = null
+let searchAddon: SearchAddon | null = null
 let unsubscribeData: (() => void) | null = null
 let xtermCleanup: (() => void) | null = null
 let cursorStyleInterceptor: { dispose: () => void } | null = null
 
 let fitTimer: ReturnType<typeof setTimeout> | null = null
+
+// ---- Terminal search state ----
+const searchVisible = ref(false)
+const searchQuery = ref('')
+const searchCaseSensitive = ref(false)
+const searchInputRef = ref<HTMLInputElement | null>(null)
+let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null
+
+const SEARCH_DECORATIONS = {
+  matchBackground: 'rgba(255, 213, 79, 0.35)',
+  activeMatchBackground: 'rgba(255, 152, 0, 0.65)',
+  matchOverviewRuler: 'rgba(255, 213, 79, 0.5)',
+  activeMatchColorOverviewRuler: 'rgba(255, 152, 0, 0.8)'
+}
+
+function runSearch(direction: 'next' | 'prev'): void {
+  const query = searchQuery.value
+  if (!searchAddon || !query) return
+  const options = {
+    caseSensitive: searchCaseSensitive.value,
+    decorations: SEARCH_DECORATIONS
+  }
+  if (direction === 'next') {
+    searchAddon.findNext(query, options)
+  } else {
+    searchAddon.findPrevious(query, options)
+  }
+}
+
+function findNext(): void {
+  runSearch('next')
+}
+
+function findPrev(): void {
+  runSearch('prev')
+}
+
+function onSearchEnter(event: KeyboardEvent): void {
+  if (event.shiftKey) {
+    findPrev()
+  } else {
+    findNext()
+  }
+}
+
+function toggleCaseSensitive(): void {
+  searchCaseSensitive.value = !searchCaseSensitive.value
+  if (searchQuery.value) findNext()
+}
+
+function openSearch(): void {
+  searchVisible.value = true
+  void nextTick(() => {
+    searchInputRef.value?.focus()
+    searchInputRef.value?.select()
+  })
+}
+
+function closeSearch(): void {
+  searchVisible.value = false
+  searchAddon?.clearDecorations()
+  if (searchDebounceTimer) {
+    clearTimeout(searchDebounceTimer)
+    searchDebounceTimer = null
+  }
+  // 关闭搜索后把焦点还给终端，保证可继续输入
+  term?.focus()
+}
+
+// 输入即高亮（去抖），避免每个字符都触发全 buffer 扫描
+watch(searchQuery, (query) => {
+  if (searchDebounceTimer) clearTimeout(searchDebounceTimer)
+  if (!query) {
+    searchAddon?.clearDecorations()
+    return
+  }
+  searchDebounceTimer = setTimeout(() => findNext(), 200)
+})
+
+// ---- Terminal output export ----
+/** 从 xterm buffer 提取全部滚动回溯文本（右侧去空格，丢弃末尾空行） */
+function extractBufferText(): string {
+  if (!term) return ''
+  const buffer = term.buffer.active
+  const lines: string[] = []
+  for (let i = 0; i < buffer.length; i++) {
+    const line = buffer.getLine(i)
+    lines.push(line ? line.translateToString(true) : '')
+  }
+  while (lines.length > 0 && lines[lines.length - 1] === '') lines.pop()
+  return lines.join('\n')
+}
+
+async function exportOutput(): Promise<void> {
+  const content = extractBufferText()
+  if (!content.trim()) {
+    window.alert('终端当前没有可导出的内容')
+    return
+  }
+  const safeTitle = (tabData.value.title || 'terminal').replace(/[\\/:*?"<>|\s]+/g, '_')
+  const stamp = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19)
+  const header = [
+    `# zTerm 终端记录导出`,
+    `# 标签: ${tabData.value.title}`,
+    `# 主机: ${tabData.value.hostName}`,
+    `# 导出时间: ${new Date().toLocaleString()}`,
+    ''
+  ].join('\n')
+  const result = await window.electronAPI.terminal.exportOutput({
+    defaultFileName: `zterm-${safeTitle}-${stamp}.log`,
+    content: header + content + '\n'
+  })
+  if (result.success && result.filePath) {
+    window.alert(`已导出到: ${result.filePath}`)
+  } else if (!result.success) {
+    window.alert(`导出失败: ${result.error || '未知错误'}`)
+  }
+}
+
+// 暴露给父组件（PanelCenter 工具栏）调用
+defineExpose({ openSearch, exportOutput })
 
 // ---- Input ring buffer for offline buffering ----
 const MAX_BUFFER_SIZE = 64 * 1024 // 64KB character limit
@@ -113,6 +257,15 @@ function scheduleFit(delay = 0): void {
   }, delay)
 }
 
+/** Cmd/Ctrl+F 打开终端搜索（仅本标签为当前活动标签时生效） */
+function handleGlobalFindKey(event: KeyboardEvent): void {
+  const isFindKey = (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey &&
+    event.key.toLowerCase() === 'f'
+  if (!isFindKey) return
+  event.preventDefault()
+  openSearch()
+}
+
 onMounted(() => {
   if (!wrapperRef.value) return
 
@@ -128,6 +281,8 @@ onMounted(() => {
 
   fitAddon = new FitAddon()
   term.loadAddon(fitAddon)
+  searchAddon = new SearchAddon()
+  term.loadAddon(searchAddon)
   term.open(wrapperRef.value)
 
   // 锁定光标样式：拦截 DECSCUSR（CSI Ps SP q / \x1b[ q 系列）
@@ -243,6 +398,11 @@ onMounted(() => {
       clearTimeout(fitTimer)
       fitTimer = null
     }
+    if (searchDebounceTimer) {
+      clearTimeout(searchDebounceTimer)
+      searchDebounceTimer = null
+    }
+    window.removeEventListener('keydown', handleGlobalFindKey)
     if (unsubscribeData) {
       unsubscribeData()
       unsubscribeData = null
@@ -257,7 +417,22 @@ onMounted(() => {
       term = null
     }
     fitAddon = null
+    searchAddon = null
   }
+
+  // 仅当本标签可见（活动）时接管 Cmd/Ctrl+F，避免多标签重复响应
+  watch(
+    () => terminalStore.activeTabId === props.tabId,
+    (isActive) => {
+      if (isActive) {
+        window.addEventListener('keydown', handleGlobalFindKey)
+      } else {
+        window.removeEventListener('keydown', handleGlobalFindKey)
+        if (searchVisible.value) closeSearch()
+      }
+    },
+    { immediate: true }
+  )
 })
 
 onUnmounted(() => {
@@ -299,6 +474,61 @@ onUnmounted(() => {
 .xterm-hidden {
   opacity: 0;
   pointer-events: none;
+}
+
+/* ---- 终端搜索栏 ---- */
+.terminal-search-bar {
+  position: absolute;
+  top: 6px;
+  right: 14px;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+}
+
+.ts-input {
+  width: 180px;
+  padding: 3px 8px;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  outline: none;
+}
+
+.ts-input:focus {
+  border-color: var(--accent, #4a9eff);
+}
+
+.ts-case-btn,
+.ts-nav-btn,
+.ts-close-btn {
+  padding: 2px 7px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+}
+
+.ts-case-btn:hover,
+.ts-nav-btn:hover,
+.ts-close-btn:hover {
+  color: var(--text);
+  background: var(--bg-hover, rgba(128, 128, 128, 0.15));
+}
+
+.ts-case-btn.active {
+  color: var(--accent, #4a9eff);
+  background: rgba(74, 158, 255, 0.15);
 }
 
 .terminal-overlay {

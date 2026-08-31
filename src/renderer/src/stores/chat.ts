@@ -5,6 +5,10 @@ import type { AgentMessage, AgentStatus, AgentState } from '../../../main/servic
 import type { AgentContextSnapshot } from '../../../main/services/agentContextStore'
 import { v4 as uuidv4 } from 'uuid'
 import type { ChatTabSnapshot } from '../../../main/model/workspace'
+import type { ChatHistoryV1 } from '../../../main/model/chatHistory'
+
+/** 序列化时每个 tab 保留的最近消息条数（与主进程校验上限一致） */
+const HISTORY_MAX_MESSAGES_PER_TAB = 500
 
 export type PanelMode = 'chat' | 'agent'
 
@@ -350,6 +354,66 @@ export const useChatStore = defineStore('chat', () => {
     )
   }
 
+  // ---- 聊天历史持久化：序列化 / 水合 ----
+
+  /** 导出各 tab 的消息正文（去掉运行态与 details，主进程会再次校验白名单） */
+  function serializeChatHistory(): ChatHistoryV1 {
+    return {
+      version: 1,
+      savedAt: new Date().toISOString(),
+      tabs: tabs.value.map((tab) => ({
+        id: tab.id,
+        title: tab.title,
+        mode: tab.mode,
+        messages: tab.messages.slice(-HISTORY_MAX_MESSAGES_PER_TAB).map((msg) => ({
+          id: msg.id,
+          role: msg.role,
+          text: msg.text,
+          reasoning: msg.reasoning,
+          createdAt: msg.createdAt,
+          isAgentConclusion: msg.isAgentConclusion,
+          isAgentNaturalReply: msg.isAgentNaturalReply,
+          isAgentUserTurn: msg.isAgentUserTurn,
+          isAgentCard: msg.isAgentCard,
+          agentCardType: msg.agentCardType,
+          stepNumber: msg.stepNumber
+        }))
+      }))
+    }
+  }
+
+  /**
+   * 把持久化的消息回填到已水合的标签。只作用于当前 messages 为空的标签，
+   * 恢复的消息统一视为已完成的静态内容（无流式状态、无 details）。
+   */
+  function hydrateChatMessages(history: ChatHistoryV1): void {
+    for (const historyTab of history.tabs) {
+      const tab = getTab(historyTab.id)
+      if (!tab || tab.messages.length > 0) continue
+      tab.messages = historyTab.messages.map((msg) => ({
+        id: msg.id,
+        role: msg.role,
+        text: msg.text,
+        reasoning: msg.reasoning,
+        status: 'done' as const,
+        createdAt: msg.createdAt,
+        isAgentConclusion: msg.isAgentConclusion,
+        isAgentNaturalReply: msg.isAgentNaturalReply,
+        isAgentUserTurn: msg.isAgentUserTurn,
+        isAgentCard: msg.isAgentCard,
+        agentCardType: msg.agentCardType,
+        stepNumber: msg.stepNumber,
+        collapsed: msg.agentCardType === 'thinking' ? true : undefined
+      }))
+    }
+  }
+
+  function clearAllMessages(): void {
+    for (const tab of tabs.value) {
+      tab.messages = []
+    }
+  }
+
   // ============================================================
   // ---- Direct-by-tabId write methods (no activeTab switch) ----
   // ============================================================
@@ -627,6 +691,9 @@ export const useChatStore = defineStore('chat', () => {
     takeAgentMode,
     serializeWorkspaceTabs,
     hydrateWorkspaceTabs,
+    serializeChatHistory,
+    hydrateChatMessages,
+    clearAllMessages,
     // Direct-by-tabId (no activeTab switch)
     appendToLastMessageByTabId,
     finishLastMessageByTabId,

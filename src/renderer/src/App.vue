@@ -24,6 +24,8 @@
         v-if="hostsStore.activeMode !== 'local' && leftPanelVisible"
         :width="leftPanelWidth"
         @add-host="showHostDialog = true"
+        @import-hosts="onImportHosts"
+        @export-hosts="onExportHosts"
         @show-key-manager="showKeyManager = true"
       />
 
@@ -63,6 +65,14 @@
       <!-- Dialogs -->
       <HostFormDialog v-if="showHostDialog" @close="showHostDialog = false" />
       <KeyManagerDialog v-if="showKeyManager" @close="showKeyManager = false" />
+      <SshConfigImportDialog
+        v-if="sshConfigImport"
+        :hosts="sshConfigImport.hosts"
+        :duplicates="sshConfigImport.duplicates"
+        :skipped-blocks="sshConfigImport.skippedBlocks"
+        @confirm="onImportConfirmed"
+        @cancel="sshConfigImport = null"
+      />
       <AppUpdateToast />
 
       <!-- In-app Confirm Dialog：由 app-shell 顶层统一渲染（见下方说明） -->
@@ -126,11 +136,13 @@ import PanelRight from '@/components/layout/PanelRight.vue'
 
 import HostFormDialog from '@/components/hosts/HostFormDialog.vue'
 import KeyManagerDialog from '@/components/keys/KeyManagerDialog.vue'
+import SshConfigImportDialog from '@/components/hosts/SshConfigImportDialog.vue'
 import AppUpdateToast from '@/components/common/AppUpdateToast.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import SettingsPage from '@/components/settings/SettingsPage.vue'
 import WorkspaceRestoreDialog from '@/components/workspace/WorkspaceRestoreDialog.vue'
 import SshHostTrustDialog from '@/components/hosts/SshHostTrustDialog.vue'
+import type { ParsedSshConfigHost } from '../../main/services/sshConfigFile'
 
 // ===== Stores =====
 const hostsStore = useHostsStore()
@@ -175,6 +187,47 @@ const showHostDialog = ref(false)
 const showKeyManager = ref(false)
 const leftPanelVisible = ref(true)
 const rightPanelVisible = ref(true)
+
+// ===== OpenSSH config 导入 / 导出 =====
+const sshConfigImport = ref<{
+  hosts: ParsedSshConfigHost[]
+  duplicates: boolean[]
+  skippedBlocks: number
+} | null>(null)
+
+async function onImportHosts(): Promise<void> {
+  const result = await window.electronAPI.hosts.importSshConfig()
+  if (result.canceled) return
+  if ('error' in result && result.error) {
+    window.alert(`导入失败: ${result.error}`)
+    return
+  }
+  if (!('hosts' in result)) return
+  if (!result.hosts.length) {
+    window.alert('配置文件中没有找到可导入的主机（通配符块和 Match 块不会导入）')
+    return
+  }
+  sshConfigImport.value = {
+    hosts: result.hosts,
+    duplicates: result.duplicates,
+    skippedBlocks: result.skippedBlocks
+  }
+}
+
+async function onImportConfirmed(): Promise<void> {
+  sshConfigImport.value = null
+  await hostsStore.fetchHosts()
+  await hostsStore.applyStoredOrder()
+}
+
+async function onExportHosts(): Promise<void> {
+  const result = await window.electronAPI.hosts.exportSshConfig()
+  if (result.success && result.filePath) {
+    window.alert(`已导出到: ${result.filePath}\n\n注意：密码和密钥内容不会包含在导出文件中`)
+  } else if (!result.success) {
+    window.alert(`导出失败: ${result.error || '未知错误'}`)
+  }
+}
 
 function toggleLeftPanel(): void {
   if (hostsStore.activeMode === 'local') return

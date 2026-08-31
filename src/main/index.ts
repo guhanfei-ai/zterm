@@ -13,6 +13,7 @@ import { registerUpdateIpc } from './ipc/update'
 import { restoreOnBoot as restoreUpdateState } from './services/updateService'
 import { registerPreferencesIpc } from './ipc/preferences'
 import { registerWorkspaceIpc } from './ipc/workspace'
+import { registerChatHistoryIpc } from './ipc/chatHistory'
 import { initStore } from './services/store'
 import { initSecretVault } from './services/secretVault'
 import { calculateWindowOptions } from './services/windowState'
@@ -139,6 +140,7 @@ app.whenReady().then(() => {
   tryInit('updateState', () => restoreUpdateState())
   tryInit('preferencesIpc', () => registerPreferencesIpc())
   tryInit('workspaceIpc', () => registerWorkspaceIpc())
+  tryInit('chatHistoryIpc', () => registerChatHistoryIpc())
   tryInit('hostsIpc', () => registerHostsIpc())
   tryInit('jumpserverIpc', () => registerJumpserverIpc())
   tryInit('keysIpc', () => registerKeysIpc())
