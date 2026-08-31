@@ -3,7 +3,10 @@
   "version": "0.3.2",
   "description": "Electron 版最小闭环终端 + AI 聊天应用",
   "main": "./out/main/index.js",
-  "author": "zTerm contributors",
+  "author": {
+    "name": "zTerm contributors",
+    "email": "taycc3223@gmail.com"
+  },
   "license": "MIT",
   "repository": "https://github.com/guhanfei-ai/zterm.git",
   "homepage": "https://github.com/guhanfei-ai/zterm",
