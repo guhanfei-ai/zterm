@@ -74,6 +74,7 @@
         @cancel="sshConfigImport = null"
       />
       <AppUpdateToast />
+      <ToastHost />
 
       <!-- In-app Confirm Dialog：由 app-shell 顶层统一渲染（见下方说明） -->
     </div>
@@ -121,6 +122,7 @@
 import { ref } from 'vue'
 import { useHostsStore } from '@/stores/hosts'
 import { useConfirm } from '@/composables/useConfirm'
+import { useToast } from '@/composables/useToast'
 import { useDragResize } from '@/composables/useDragResize'
 import { useTerminalEvents } from '@/composables/useTerminalEvents'
 import { useTabSync } from '@/composables/useTabSync'
@@ -139,6 +141,7 @@ import KeyManagerDialog from '@/components/keys/KeyManagerDialog.vue'
 import SshConfigImportDialog from '@/components/hosts/SshConfigImportDialog.vue'
 import AppUpdateToast from '@/components/common/AppUpdateToast.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
+import ToastHost from '@/components/common/ToastHost.vue'
 import SettingsPage from '@/components/settings/SettingsPage.vue'
 import WorkspaceRestoreDialog from '@/components/workspace/WorkspaceRestoreDialog.vue'
 import SshHostTrustDialog from '@/components/hosts/SshHostTrustDialog.vue'
@@ -159,6 +162,7 @@ const {
   discardSavedWorkspace
 } = useWorkspaceRestore()
 const { confirmState } = useConfirm()
+const { info, success, error } = useToast()
 // 应用级 Agent 全局事件监听：注册一次、常驻应用存活期。
 // 不随右侧聊天面板 v-if 卸载而注销，避免后台执行中的任务事件丢失。
 setupAgentGlobalEvents()
@@ -199,12 +203,12 @@ async function onImportHosts(): Promise<void> {
   const result = await window.electronAPI.hosts.importSshConfig()
   if (result.canceled) return
   if ('error' in result && result.error) {
-    window.alert(`导入失败: ${result.error}`)
+    error(`导入失败: ${result.error}`)
     return
   }
   if (!('hosts' in result)) return
   if (!result.hosts.length) {
-    window.alert('配置文件中没有找到可导入的主机（通配符块和 Match 块不会导入）')
+    info('配置文件中没有找到可导入的主机（通配符块和 Match 块不会导入）')
     return
   }
   sshConfigImport.value = {
@@ -223,9 +227,9 @@ async function onImportConfirmed(): Promise<void> {
 async function onExportHosts(): Promise<void> {
   const result = await window.electronAPI.hosts.exportSshConfig()
   if (result.success && result.filePath) {
-    window.alert(`已导出到: ${result.filePath}\n\n注意：密码和密钥内容不会包含在导出文件中`)
+    success(`已导出到: ${result.filePath}\n注意：密码和密钥内容不会包含在导出文件中`)
   } else if (!result.success) {
-    window.alert(`导出失败: ${result.error || '未知错误'}`)
+    error(`导出失败: ${result.error || '未知错误'}`)
   }
 }
 

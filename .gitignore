@@ -36,4 +36,5 @@ UserFeedback.md
 npm-prefix
 tmp/
 ._*
-._*/
+_*
+.agents

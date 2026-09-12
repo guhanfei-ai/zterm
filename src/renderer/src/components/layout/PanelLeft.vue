@@ -21,7 +21,7 @@
         </div>
       </div>
     </div>
-    <HostList />
+    <HostList @add-host="$emit('add-host')" @import-hosts="$emit('import-hosts')" />
   </div>
 </template>
 

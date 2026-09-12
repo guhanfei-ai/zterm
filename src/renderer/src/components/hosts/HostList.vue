@@ -3,8 +3,14 @@
     <!-- 直连模式 -->
     <template v-if="hostsStore.activeMode === 'direct'">
       <div v-if="hostsStore.loading" class="list-placeholder">加载中...</div>
-      <div v-else-if="!hostsStore.hosts.length" class="list-placeholder">
-        暂无主机<br />点击 + 添加一台
+      <div v-else-if="!hostsStore.hosts.length" class="list-placeholder host-empty-state">
+        <div class="jumpserver-empty-icon">🖥️</div>
+        <div class="jumpserver-empty-title">暂无主机</div>
+        <div class="jumpserver-empty-desc">添加一台主机，或从已有的 OpenSSH 配置文件导入</div>
+        <div class="host-empty-actions">
+          <button class="host-empty-btn primary" @click="$emit('add-host')">添加主机</button>
+          <button class="host-empty-btn" @click="$emit('import-hosts')">导入 OpenSSH 配置</button>
+        </div>
       </div>
       <div
         v-for="(host, index) in hostsStore.hosts"
@@ -270,6 +276,12 @@ import { estimateTerminalSize } from '@/utils/terminalSize'
 
 const { confirm } = useConfirm()
 
+// 空主机列表的行动入口：转发给 PanelLeft → App.vue 的添加 / 导入流程
+defineEmits<{
+  'add-host': []
+  'import-hosts': []
+}>()
+
 // 多实例（P14）：在 HostList 内部承接「新建 / 编辑实例」入口，
 // 不再依赖 App.vue 改动。Launcher 用 ref 暴露 open/close，模板里挂一个空挂载点即可。
 const configLauncher = ref<InstanceType<typeof JumpserverConfigLauncher> | null>(null)
@@ -531,6 +543,48 @@ function onDragEnd(): void {
   color: var(--text-tertiary);
   font-size: 12px;
   line-height: 1.7;
+}
+
+/* ===== 直连模式空主机列表 ===== */
+.host-empty-state {
+  padding-top: 40px;
+}
+
+.host-empty-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.host-empty-btn {
+  width: 180px;
+  padding: 7px 12px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: var(--surface-alt);
+  border: 1px solid var(--divider);
+  border-radius: var(--radius-control);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-family: inherit;
+}
+
+.host-empty-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.host-empty-btn.primary {
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.host-empty-btn.primary:hover {
+  opacity: 0.9;
+  color: #fff;
 }
 
 .host-item {

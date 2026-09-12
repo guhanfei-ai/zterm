@@ -59,7 +59,9 @@ import { FitAddon } from 'xterm-addon-fit'
 import { SearchAddon } from 'xterm-addon-search'
 import 'xterm/css/xterm.css'
 import { useTerminalStore } from '@/stores/terminal'
+import { useTerminalPrefsStore } from '@/stores/terminalPrefs'
 import { useThemeStore } from '@/stores/theme'
+import { useToast } from '@/composables/useToast'
 
 const props = defineProps<{
   tabId: string
@@ -71,6 +73,8 @@ const emit = defineEmits<{
 
 const terminalStore = useTerminalStore()
 const themeStore = useThemeStore()
+const prefsStore = useTerminalPrefsStore()
+const { info: toastInfo, success: toastSuccess, error: toastError } = useToast()
 const wrapperRef = ref<HTMLDivElement | null>(null)
 const containerRef = ref<HTMLDivElement | null>(null)
 const fallbackTabData = {
@@ -203,7 +207,7 @@ function extractBufferText(): string {
 async function exportOutput(): Promise<void> {
   const content = extractBufferText()
   if (!content.trim()) {
-    window.alert('终端当前没有可导出的内容')
+    toastInfo('终端当前没有可导出的内容')
     return
   }
   const safeTitle = (tabData.value.title || 'terminal').replace(/[\\/:*?"<>|\s]+/g, '_')
@@ -220,9 +224,9 @@ async function exportOutput(): Promise<void> {
     content: header + content + '\n'
   })
   if (result.success && result.filePath) {
-    window.alert(`已导出到: ${result.filePath}`)
+    toastSuccess(`已导出到: ${result.filePath}`)
   } else if (!result.success) {
-    window.alert(`导出失败: ${result.error || '未知错误'}`)
+    toastError(`导出失败: ${result.error || '未知错误'}`)
   }
 }
 
@@ -270,12 +274,12 @@ onMounted(() => {
   if (!wrapperRef.value) return
 
   term = new Terminal({
-    cursorBlink: true,
-    cursorStyle: 'block',
-    fontSize: 13,
-    fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+    cursorBlink: prefsStore.prefs.cursorBlink,
+    cursorStyle: prefsStore.prefs.cursorStyle,
+    fontSize: prefsStore.prefs.fontSize,
+    fontFamily: prefsStore.prefs.fontFamily,
     theme: themeStore.currentTheme.xterm,
-    scrollback: 10000,
+    scrollback: prefsStore.prefs.scrollback,
     allowProposedApi: true
   })
 
@@ -286,8 +290,8 @@ onMounted(() => {
   term.open(wrapperRef.value)
 
   // 锁定光标样式：拦截 DECSCUSR（CSI Ps SP q / \x1b[ q 系列）
-  // 远程程序（vim、shell 等）经常通过这个序列把方块改成竖线。
-  // 注册一个返回 true 的 handler 把它消费掉，默认 handler 就不会再修改 cursorStyle。
+  // 远程程序（vim、shell 等）经常通过这个序列改光标形状；
+  // 消费掉该序列后，光标样式始终跟随用户在设置中的偏好。
   try {
     cursorStyleInterceptor = term.parser.registerCsiHandler(
       { intermediates: ' ', final: 'q' },
@@ -335,24 +339,38 @@ onMounted(() => {
     }
   })
 
+  // Watch terminal preferences — 即时应用字体 / 字号 / 回溯 / 光标设置
+  const stopPrefsWatch = watch(
+    () => prefsStore.prefs,
+    (p) => {
+      if (!term) return
+      term.options.fontSize = p.fontSize
+      term.options.fontFamily = p.fontFamily
+      term.options.scrollback = p.scrollback
+      term.options.cursorStyle = p.cursorStyle
+      term.options.cursorBlink = p.cursorBlink
+      // 字号变化会改变行列数，需要重新 fit
+      scheduleFit(50)
+    },
+    { deep: true }
+  )
+
   // Watch tab status changes
   const stopWatch = watch(
     () => tabData.value.status,
     (status) => {
       if (!term) return
-      // 锁死方块：任何状态下都把 cursorStyle 强制为 block
-      term.options.cursorStyle = 'block'
+      // 重新断言用户偏好的光标样式（DECSCUSR 已被拦截，此处兜底）
+      term.options.cursorStyle = prefsStore.prefs.cursorStyle
+      term.options.cursorBlink = prefsStore.prefs.cursorBlink
       if (status === 'connected') {
-        term.options.cursorBlink = true
         // Flush any buffered input that accumulated while disconnected
         flushInputBuffer()
         scheduleFit(50)
         scheduleFit(200)
       } else if (status === 'connecting') {
-        term.options.cursorBlink = true
         term.clear()
       } else if (status === 'disconnected') {
-        term.options.cursorBlink = true
         term.writeln('\r\n\x1b[33m--- 连接已断开 ---\x1b[0m\r\n')
       }
     }
@@ -394,6 +412,7 @@ onMounted(() => {
     stopWatch()
     stopActiveWatch()
     stopThemeWatch()
+    stopPrefsWatch()
     if (fitTimer) {
       clearTimeout(fitTimer)
       fitTimer = null

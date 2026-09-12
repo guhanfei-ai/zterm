@@ -37,7 +37,7 @@ For a local platform override, use `./deploy.sh build mac`, `win`, or `linux`. P
 
 ## Branches and CI
 
-`main` is stable, `dev` is the integration branch, and short-lived `dev/<topic>` or `feature/<topic>` branches hold focused work. GitHub Actions verifies and packages macOS, Windows, and Linux builds for pushes and pull requests.
+`main` is stable, `dev` is the integration branch, and short-lived `dev/<topic>` or `feature/<topic>` branches hold focused work. On every push and pull request, GitHub Actions runs type checks and tests. Full macOS, Windows, and Linux packages are built and attached to a GitHub Release only when a `v*` tag is pushed.
 
 ## License
 

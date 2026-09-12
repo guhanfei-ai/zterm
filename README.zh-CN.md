@@ -4,7 +4,7 @@
 
 zTerm 是一个开源的 Electron 终端应用，提供可选的 AI 辅助能力，支持 SSH 与 Jumpserver 连接。
 
-**普通用户请先阅读 [使用指南](./docs/USERGUIDE.zh-CN.md)**（安装、主机配置、导入导出、常见报错排查）。
+**普通用户请先阅读 [使用指南](./_docs/USERGUIDE.zh-CN.md)**（安装、主机配置、导入导出、常见报错排查）。
 
 ## 功能速览
 
@@ -39,7 +39,7 @@ npm run dev
 
 ## 分支与 CI
 
-`main` 为稳定分支，`dev` 为集成分支，短生命周期的 `dev/<topic>` 或 `feature/<topic>` 分支用于承载具体功能开发。每次 push 和 pull request 时，GitHub Actions 会自动验证并打包 macOS、Windows 和 Linux 构建。
+`main` 为稳定分支，`dev` 为集成分支，短生命周期的 `dev/<topic>` 或 `feature/<topic>` 分支用于承载具体功能开发。每次 push 和 pull request 时，GitHub Actions 会运行类型检查与测试；只有在推送 `v*` 标签时，才会构建 macOS、Windows 和 Linux 安装包并发布到 GitHub Release。
 
 ## 许可证
 

@@ -19,33 +19,15 @@
       <!-- 快捷键设置 -->
       <div v-else-if="activeSection === 'shortcuts'" class="settings-section">
         <h2 class="section-title">快捷键</h2>
-        <p class="section-desc">自定义键盘快捷方式</p>
-        <div class="placeholder-card">
-          <div class="placeholder-icon">
-            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="2" y="4" width="20" height="16" rx="2"/>
-              <path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M8 12h.01M12 12h.01M16 12h.01M7 16h10"/>
-            </svg>
-          </div>
-          <p class="placeholder-text">快捷键编辑器将在后续版本中提供</p>
-          <p class="placeholder-hint">支持自定义所有操作的键盘快捷方式</p>
-        </div>
+        <p class="section-desc">当前版本可用的键盘快捷方式</p>
+        <ShortcutSettings />
       </div>
 
       <!-- 终端设置 -->
       <div v-else-if="activeSection === 'terminal'" class="settings-section">
         <h2 class="section-title">终端</h2>
         <p class="section-desc">配置终端外观和行为</p>
-        <div class="placeholder-card">
-          <div class="placeholder-icon">
-            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="4 17 10 11 4 5"/>
-              <line x1="12" y1="19" x2="20" y2="19"/>
-            </svg>
-          </div>
-          <p class="placeholder-text">终端偏好设置将在后续版本中提供</p>
-          <p class="placeholder-hint">包括字体、字号、光标样式等</p>
-        </div>
+        <TerminalSettings />
       </div>
 
       <!-- 关于 -->
@@ -72,6 +54,8 @@ import { useUpdateStore } from '@/stores/update'
 import SettingsSidebar from './SettingsSidebar.vue'
 import ModelProviderSettingsForm from './ModelProviderSettingsForm.vue'
 import AppearanceSettings from './AppearanceSettings.vue'
+import TerminalSettings from './TerminalSettings.vue'
+import ShortcutSettings from './ShortcutSettings.vue'
 import AppUpdatePanel from '@/components/common/AppUpdatePanel.vue'
 
 const props = withDefaults(defineProps<{
@@ -124,34 +108,6 @@ watch(() => props.initialSection, (val) => {
   font-size: 13px;
   color: var(--text-tertiary);
   margin: 0 0 20px;
-}
-
-.placeholder-card {
-  background: var(--surface);
-  border: 1px solid var(--divider);
-  border-radius: var(--radius-container);
-  padding: 40px 24px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 12px;
-}
-
-.placeholder-icon {
-  color: var(--text-disabled);
-  margin-bottom: 4px;
-}
-
-.placeholder-text {
-  font-size: 14px;
-  color: var(--text-secondary);
-  margin: 0;
-}
-
-.placeholder-hint {
-  font-size: 12px;
-  color: var(--text-tertiary);
-  margin: 0;
 }
 
 .about-card {
