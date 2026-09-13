@@ -307,10 +307,11 @@ export function buildThinkUserPrompt(
   // 自然对话历史（最近 N 轮）—— 让"你刚才说的"这类追问能接上
   if (state.conversationHistory && state.conversationHistory.length > 0) {
     parts.push('\n对话历史（最近的发言）：')
-    const recent = state.conversationHistory.slice(-8)
+    // 保留更完整的近期上下文；持久化历史仍由 contextStore 做总量限制。
+    const recent = state.conversationHistory.slice(-16)
     for (const turn of recent) {
       const tag = turn.role === 'user' ? '用户' : '助手'
-      const text = turn.content.length > 400 ? turn.content.slice(0, 400) + '…' : turn.content
+      const text = turn.content.length > 1000 ? turn.content.slice(0, 1000) + '…' : turn.content
       parts.push(`- ${tag}：${text}`)
     }
   }
@@ -319,11 +320,18 @@ export function buildThinkUserPrompt(
   const completedSteps = state.steps.filter(s => s.status !== 'pending')
   if (completedSteps.length > 0) {
     parts.push('\n已完成步骤回顾：')
-    for (const s of completedSteps.slice(-10)) {
+    for (const s of completedSteps.slice(-20)) {
       parts.push(`- 步骤 ${s.stepNumber}：${s.plan || '(无计划)'}`)
       if (s.command) parts.push(`  命令：\`${s.command}\``)
-      if (s.observation) parts.push(`  结果：${s.observation.slice(0, 300)}`)
+      if (s.observation) parts.push(`  结果：${s.observation.slice(0, 600)}`)
       parts.push(`  状态：${s.status}`)
+    }
+  }
+
+  if (state.recentKeyOutputs && state.recentKeyOutputs.length > 0) {
+    parts.push('\n最近关键命令输出：')
+    for (const output of state.recentKeyOutputs.slice(-6)) {
+      parts.push(`- 步骤 ${output.stepNumber}${output.command ? `（\`${output.command}\`）` : ''}：${output.output.slice(0, 800)}`)
     }
   }
 

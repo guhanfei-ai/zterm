@@ -15,6 +15,7 @@ import {
 } from '../agentGraphState'
 import type { AiClient } from '../aiClient'
 import type { TerminalBridge } from '../terminalBridge'
+import { buildThinkUserPrompt } from '../agentGraphPrompt'
 
 // ================================================================
 //  shouldEmitStateChange — 完成态收敛规则
@@ -106,6 +107,38 @@ describe('shouldEmitStateChange', () => {
       // 两个终态之间的转换：规则 2 不命中（不同），规则 3 不命中（next 是终态）
       expect(shouldEmitStateChange('completed', 'stepLimitReached')).toBe(true)
     })
+  })
+})
+
+describe('buildThinkUserPrompt', () => {
+  it('keeps the stable task goal separate from the current follow-up message', () => {
+    const state = createInitialState()
+    state.taskDescription = '排查磁盘空间问题'
+    state.userMessage = '刚才的输出里，哪个目录增长最快？'
+    state.conversationHistory = [{
+      role: 'user',
+      content: state.userMessage,
+      createdAt: new Date().toISOString()
+    }]
+
+    const prompt = buildThinkUserPrompt(state, state.userMessage, null)
+    expect(prompt).toContain('当前任务：排查磁盘空间问题')
+    expect(prompt).toContain('用户说：刚才的输出里，哪个目录增长最快？')
+  })
+
+  it('includes persisted key command output in the next planning prompt', () => {
+    const state = createInitialState()
+    state.taskDescription = '检查服务状态'
+    state.userMessage = '继续分析'
+    state.recentKeyOutputs = [{
+      stepNumber: 1,
+      command: 'systemctl status demo',
+      output: 'Active: failed (Result: exit-code)'
+    }]
+
+    const prompt = buildThinkUserPrompt(state, state.userMessage, null)
+    expect(prompt).toContain('最近关键命令输出')
+    expect(prompt).toContain('Active: failed')
   })
 })
 

@@ -186,7 +186,7 @@ function createThinkNode(ctx: AgentGraphContext) {
 
     const request = projectThinkModelRequest(
       state,
-      state.taskDescription,
+      state.userMessage || state.taskDescription,
       ctx.callbacks.getTerminalContext(200)
     )
     const text = await invokeModelWithStreaming(ctx, request, 'thinking', nextStep || 1)
@@ -218,8 +218,15 @@ function createThinkNode(ctx: AgentGraphContext) {
         content: text,
         details: { chatResponse: true }
       })
+      // 纯聊天也是一个已完成的 Agent turn。持久化完成态可避免 idle watcher
+      // 把它误判成崩溃任务，弹出恢复栏并锁住输入框。
+      ctx.callbacks.onStepComplete({
+        steps: state.steps,
+        currentStep: state.currentStep,
+        stopReason: 'COMPLETED'
+      })
       ctx.callbacks.emitStateChange('idle')
-      // 不递增 currentStep，不调用 onStepComplete —— 聊天不是"执行步骤"
+      // 不递增 currentStep；聊天不会新增执行步骤，但会落盘为已完成 turn。
       // 显式清空 pendingCommand，避免上一轮残留命令被 routeAfterThink 误判重执行
       return { phase: 'idle', modelResponseText: text, pendingCommand: '' }
     }
@@ -272,7 +279,7 @@ function createRepairActionPlanNode(ctx: AgentGraphContext) {
 
     const request = projectRepairPlanModelRequest(
       state,
-      state.taskDescription,
+      state.userMessage || state.taskDescription,
       callbacks.getTerminalContext(200)
     )
 
@@ -340,6 +347,10 @@ function createCheckSafetyNode(ctx: AgentGraphContext) {
         observation: '无需执行命令',
         status: 'done'
       }
+      callbacks.onStepComplete({
+        steps: [...state.steps, step],
+        currentStep: state.currentStep
+      })
       return { steps: [...state.steps, step] }
     }
 
@@ -369,6 +380,10 @@ function createCheckSafetyNode(ctx: AgentGraphContext) {
         safetyCheck: safetyResult,
         status: 'blocked'
       }
+      callbacks.onStepComplete({
+        steps: [...state.steps, step],
+        currentStep: state.currentStep
+      })
       return {
         safetyResult,
         needsConfirmation: false,
@@ -687,7 +702,7 @@ function routeAfterThink(state: AgentGraphState): string {
   // 不能直接进入 summarize / end。
   const businessSteps = state.steps.filter(s => s.stepNumber > 0).length
   const isFirstInteraction = businessSteps === 0
-  if (isFirstInteraction && shouldRequireInspection(state.taskDescription)) {
+  if (isFirstInteraction && shouldRequireInspection(state.userMessage || state.taskDescription)) {
     const parsed = parseAIResponse(state.modelResponseText)
     const isChattyZeroCommand = parsed.done || !state.pendingCommand
     if (isChattyZeroCommand) {

@@ -87,7 +87,6 @@ export function useWorkspaceRestore() {
     chatStore.hydrateWorkspaceTabs(snapshot.chatTabs, terminalIds, snapshot.activeChatTabId)
     hostsStore.setActiveMode(snapshot.activeMode)
     pendingSnapshot = null
-    decisionMade = true
     dialogState.value = 'hidden'
 
     // 工作区恢复后再回填聊天消息：历史缺失或损坏只影响消息正文，
@@ -100,6 +99,8 @@ export function useWorkspaceRestore() {
     } catch {
       console.error('[chatHistory] 恢复聊天历史失败')
     }
+    // 历史消息完成回填后再允许保存，避免恢复期间的空状态覆盖磁盘快照。
+    decisionMade = true
   }
 
   async function discardSavedWorkspace(): Promise<void> {
@@ -110,10 +111,22 @@ export function useWorkspaceRestore() {
     }
     // 聊天历史与工作区同生共死：用户明确丢弃时一并清除
     await window.electronAPI.chatHistory.clear()
+    // Agent context 独立于工作区文件，需要显式清理，否则重启后会被孤儿认领逻辑复活。
+    const contextTabIds = new Set([
+      ...snapshotChatTabIds(pendingSnapshot),
+      ...chatStore.serializeWorkspaceTabs().map(tab => tab.id)
+    ])
+    await Promise.all([...contextTabIds].map(chatTabId =>
+      window.electronAPI.agent.discardContext({ chatTabId })
+    ))
     pendingSnapshot = null
     resetToEmptyWorkspace()
     decisionMade = true
     dialogState.value = 'hidden'
+  }
+
+  function snapshotChatTabIds(snapshot: WorkspaceSnapshotV1 | null): string[] {
+    return snapshot?.chatTabs.map(tab => tab.id) ?? []
   }
 
   onMounted(() => {

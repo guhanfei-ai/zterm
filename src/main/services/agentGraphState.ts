@@ -25,6 +25,12 @@ export interface ChatTurn {
   createdAt: string
 }
 
+export interface KeyOutput {
+  stepNumber: number
+  command?: string
+  output: string
+}
+
 // ---- Parsed model response ----
 export interface ParsedModelResponse {
   plan?: string
@@ -68,6 +74,8 @@ export const AgentStateAnnotation = Annotation.Root({
   // ---- Task identity ----
   taskId: Annotation<string>(),
   taskDescription: Annotation<string>(),
+  // 当前轮用户发言。taskDescription 是稳定任务目标，二者不能混用。
+  userMessage: Annotation<string>(),
   chatTabId: Annotation<string>(),
 
   // ---- Step tracking ----
@@ -94,6 +102,7 @@ export const AgentStateAnnotation = Annotation.Root({
   // 区别于 steps：steps 只记"执行步骤"，conversationHistory 记所有自然发言。
   // think 节点 prompt 用它来记住"用户上一句说了什么、助手上一句怎么回"。
   conversationHistory: Annotation<ChatTurn[]>(),
+  recentKeyOutputs: Annotation<KeyOutput[]>(),
 
   // ---- Lifecycle ----
   aborted: Annotation<boolean>(),
@@ -126,6 +135,7 @@ export function createInitialState(): AgentGraphState {
   return {
     taskId: '',
     taskDescription: '',
+    userMessage: '',
     chatTabId: '',
     currentStep: 0,
     maxSteps: 25,
@@ -140,6 +150,7 @@ export function createInitialState(): AgentGraphState {
     systemInfo: { kernel: '', distroName: '', distroVersion: '', packageManager: '', rawOutput: '' },
     steps: [],
     conversationHistory: [],
+    recentKeyOutputs: [],
     aborted: false,
     phase: 'idle',
     stopReason: null,

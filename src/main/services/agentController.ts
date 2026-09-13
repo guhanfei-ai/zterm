@@ -369,6 +369,14 @@ export class AgentController extends EventEmitter {
             data.systemDetected && data.systemInfo
               ? `${data.systemInfo.distroName} ${data.systemInfo.distroVersion} (内核 ${data.systemInfo.kernel})`
               : existing?.systemSummary
+          const nextKeyOutputs = data.steps
+            .filter(s => !!s.commandOutput)
+            .slice(-6)
+            .map(s => ({
+              stepNumber: s.stepNumber,
+              command: s.command,
+              output: (s.commandOutput || '').slice(0, 600)
+            }))
 
           updateContext(self.chatTabId, {
             steps: data.steps.map(s => ({
@@ -382,6 +390,7 @@ export class AgentController extends EventEmitter {
             })),
             currentStep: data.currentStep,
             maxSteps: self.maxSteps,
+            recentKeyOutputs: nextKeyOutputs.length > 0 ? nextKeyOutputs : existing?.recentKeyOutputs,
             stopReason: data.stopReason ?? self.stopReason,
             systemInfo: nextSystemInfo,
             systemSummary: nextSystemSummary,
@@ -434,24 +443,23 @@ export class AgentController extends EventEmitter {
         this.confirmResolver = null
       }
     }
-    this.task = {
-      id: Date.now().toString(),
-      description,
-      createdAt: new Date().toISOString()
-    }
-    this.maxSteps = maxSteps
-
-    // Persist new task context
+    // 普通追问属于同一 task；只有显式新任务才创建新的 taskId、目标和预算。
     // 第一轮收口：保留持久化但不再把 description 作为 UI 上的"任务目标"卡片发射。
     // conversationHistory 从持久化恢复（重启后能找回上文）；首次为空数组。
     const persisted = loadContext(this.chatTabId)
     const existingHistory = persisted?.conversationHistory ?? []
+    const keepTask = !isNewTask && !!persisted?.taskDescription
+    const taskCreatedAt = keepTask ? persisted!.createdAt : new Date().toISOString()
+    const taskId = keepTask ? (persisted!.taskId || Date.now().toString()) : Date.now().toString()
+    const taskDescription = keepTask ? persisted!.taskDescription : description
+    this.task = { id: taskId, description: taskDescription, createdAt: taskCreatedAt }
+    this.maxSteps = keepTask ? Math.max(persisted!.maxSteps, maxSteps) : maxSteps
 
     if (isNewTask) {
       saveContext({
         chatTabId: this.chatTabId,
         taskId: this.task.id,
-        taskDescription: description,
+        taskDescription,
         createdAt: this.task.createdAt,
         updatedAt: this.task.createdAt,
         currentStep: 0,
@@ -472,7 +480,7 @@ export class AgentController extends EventEmitter {
       saveContext({
         chatTabId: this.chatTabId,
         taskId: this.task.id,
-        taskDescription: description,
+        taskDescription,
         createdAt: this.task.createdAt,
         updatedAt: this.task.createdAt,
         currentStep: this.currentStep,
@@ -531,8 +539,8 @@ export class AgentController extends EventEmitter {
 
     this.runtime.startTask(
       this.chatTabId,
-      description,
-      maxSteps,
+      taskDescription,
+      this.maxSteps,
       this.bridge,
       this.createCallbacks(),
       {
@@ -540,6 +548,8 @@ export class AgentController extends EventEmitter {
         autoExecute: this.autoExecute,
         boundHost: this.boundHost,
         conversationHistory: historyForGraph,
+        userMessage: description,
+        recentKeyOutputs: persisted?.recentKeyOutputs ?? [],
         restoredState
       }
     ).then(() => {
@@ -754,6 +764,9 @@ export class AgentController extends EventEmitter {
         allowWrite: ctx.allowWrite,
         autoExecute: ctx.autoExecute,
         boundHost: ctx.boundHost,
+        taskId: ctx.taskId || undefined,
+        userMessage: '',
+        recentKeyOutputs: ctx.recentKeyOutputs ?? [],
         // 续接时也把对话历史带回，让 think 节点能看到"上次问过什么"
         conversationHistory: ctx.conversationHistory ?? [],
         // Restore graph state from persisted context
@@ -770,6 +783,7 @@ export class AgentController extends EventEmitter {
           })),
           systemDetected: !!ctxSystemInfo,
           systemInfo: ctxSystemInfo,
+          recentKeyOutputs: ctx.recentKeyOutputs ?? [],
           stopReason: null,
           phase: 'planning' as const
         }

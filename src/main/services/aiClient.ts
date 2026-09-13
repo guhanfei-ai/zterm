@@ -176,7 +176,9 @@ export class AiClient {
 
       const message = translateError(error, 'ai', '流式传输错误')
       if (session.active) onChunk({ done: true, error: message })
-      return { text, reasoning }
+      // 让上层 Agent 感知真实失败并进入 failed/retry 状态，避免把网络/API
+      // 错误伪装成“模型未返回内容”后继续规划。
+      throw new Error(message)
     } finally {
       parser.reset()
       session.active = false

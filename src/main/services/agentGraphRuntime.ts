@@ -20,7 +20,8 @@ import {
   GraphPhase,
   StepRecord,
   StopReason,
-  ChatTurn
+  ChatTurn,
+  KeyOutput
 } from './agentGraphState'
 import { TerminalBridge } from './terminalBridge'
 import { AiClient } from './aiClient'
@@ -140,12 +141,17 @@ export class AgentGraphRuntime {
       // 历史对话（包含 user 与 assistant 发言），startTask 时灌入 graph state，
       // 让 think 节点能看到"上一轮助手说了什么"，实现自然追问
       conversationHistory?: ChatTurn[]
+      // 当前轮用户发言；与稳定的 taskDescription 分离，避免追问覆盖任务目标。
+      userMessage?: string
+      taskId?: string
+      recentKeyOutputs?: KeyOutput[]
       restoredState?: {
         currentStep: number
         steps: StepRecord[]
         systemDetected: boolean
         // 上一轮探测到的系统信息（follow-up turn 必须带回，否则 think 拿不到"上一步命令输出"以外的上下文）
         systemInfo?: AgentGraphState['systemInfo']
+        recentKeyOutputs?: KeyOutput[]
         stopReason: StopReason
         phase: GraphPhase
       }
@@ -157,8 +163,9 @@ export class AgentGraphRuntime {
     tab.running = true
 
     const initialState = createInitialState()
-    initialState.taskId = Date.now().toString()
+    initialState.taskId = options?.taskId ?? Date.now().toString()
     initialState.taskDescription = taskDescription
+    initialState.userMessage = options?.userMessage ?? taskDescription
     initialState.chatTabId = chatTabId
     initialState.maxSteps = maxSteps
     initialState.allowWrite = options?.allowWrite ?? false
@@ -166,6 +173,9 @@ export class AgentGraphRuntime {
     initialState.boundHost = options?.boundHost ?? ''
     if (options?.conversationHistory) {
       initialState.conversationHistory = [...options.conversationHistory]
+    }
+    if (options?.recentKeyOutputs) {
+      initialState.recentKeyOutputs = [...options.recentKeyOutputs]
     }
 
     // Restore graph state from persisted context (post-restart recovery)
@@ -175,6 +185,7 @@ export class AgentGraphRuntime {
       initialState.steps = rs.steps
       initialState.systemDetected = rs.systemDetected
       if (rs.systemInfo) initialState.systemInfo = rs.systemInfo
+      if (rs.recentKeyOutputs) initialState.recentKeyOutputs = [...rs.recentKeyOutputs]
       initialState.stopReason = rs.stopReason
       initialState.phase = rs.phase
     }
