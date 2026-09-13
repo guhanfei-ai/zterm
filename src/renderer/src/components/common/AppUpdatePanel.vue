@@ -177,7 +177,7 @@ async function onInstallUpdate(): Promise<void> {
 .btn-update-download,
 .btn-update-install {
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-contrast, #fff);
 }
 
 .btn-update-check:hover,

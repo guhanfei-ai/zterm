@@ -170,7 +170,7 @@ async function onInstall(): Promise<void> {
 
 .btn-primary {
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-contrast, #fff);
 }
 
 .btn-primary:hover {

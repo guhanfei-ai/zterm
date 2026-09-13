@@ -1,5 +1,5 @@
-import { Client } from 'ssh2'
-import type { ConnectConfig, ClientChannel } from 'ssh2'
+import ssh2 from 'ssh2'
+import type { Client, ConnectConfig, ClientChannel } from 'ssh2'
 import { EventEmitter } from 'events'
 import { randomUUID } from 'node:crypto'
 import type {
@@ -77,7 +77,7 @@ export class TerminalSession extends EventEmitter {
   constructor(
     tabId: string,
     generation: number,
-    private readonly clientFactory: () => Client = () => new Client()
+    private readonly clientFactory: () => Client = () => new ssh2.Client()
   ) {
     super()
     this.tabId = tabId

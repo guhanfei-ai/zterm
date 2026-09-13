@@ -1,5 +1,5 @@
 <template>
-  <div class="app-shell">
+  <div class="app-shell" :style="{ '--nav-rail-width': NAV_RAIL_WIDTH + 'px' }">
     <!-- Custom Title Bar -->
     <TitleBar
       :show-left-panel-toggle="hostsStore.activeMode !== 'local'"
@@ -10,7 +10,7 @@
     />
 
     <!-- Workspace View -->
-    <div v-if="currentView === 'workspace'" class="app-container">
+    <div v-if="currentView === 'workspace'" class="app-container" :class="{ 'is-compact': compactWorkspace }">
       <!-- Nav Rail -->
       <NavRail
         :active-mode="hostsStore.activeMode"
@@ -19,9 +19,16 @@
         @open-about="openAbout"
       />
 
+      <button
+        v-if="compactWorkspace && (leftPanelShown || rightPanelVisible)"
+        class="panel-scrim"
+        aria-label="收起辅助面板"
+        @click="closeAuxiliaryPanels"
+      />
+
       <!-- Left Panel (hidden in local mode) -->
       <PanelLeft
-        v-if="hostsStore.activeMode !== 'local' && leftPanelVisible"
+        v-if="leftPanelShown"
         :width="leftPanelWidth"
         @add-host="showHostDialog = true"
         @import-hosts="onImportHosts"
@@ -31,10 +38,17 @@
 
       <!-- Left Resize Handle -->
       <div
-        v-if="hostsStore.activeMode !== 'local' && leftPanelVisible"
+        v-if="leftPanelShown && !compactWorkspace"
         class="left-resize-handle"
         :class="{ active: isLeftDragging }"
         @mousedown="onLeftDragStart"
+        role="separator"
+        aria-label="调整主机面板宽度"
+        aria-orientation="vertical"
+        :aria-valuenow="leftPanelWidth"
+        tabindex="0"
+        @keydown.left.prevent="resizeLeftBy(-16)"
+        @keydown.right.prevent="resizeLeftBy(16)"
       ></div>
 
       <!-- Center Panel: Terminal -->
@@ -45,14 +59,22 @@
         @close-terminal-tab="tabSync.onCloseTerminalTab"
         @disconnect="tabSync.handleDisconnect"
         @reconnect-terminal-tab="tabSync.reconnectTerminalTab"
+        @show-hosts="showHostPanel"
       />
 
       <!-- Right Resize Handle -->
       <div
-        v-if="rightPanelVisible"
+        v-if="rightPanelVisible && !compactWorkspace"
         class="resize-handle"
         :class="{ active: isDragging }"
         @mousedown="onDragStart"
+        role="separator"
+        aria-label="调整 AI 面板宽度"
+        aria-orientation="vertical"
+        :aria-valuenow="rightPanelWidth"
+        tabindex="0"
+        @keydown.left.prevent="resizeRightBy(16)"
+        @keydown.right.prevent="resizeRightBy(-16)"
       ></div>
 
       <!-- Right Panel: Chat -->
@@ -119,7 +141,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { COMPACT_WORKSPACE_WIDTH, NAV_RAIL_WIDTH } from '@/constants/layout'
 import { useHostsStore } from '@/stores/hosts'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
@@ -149,9 +172,28 @@ import type { ParsedSshConfigHost } from '../../main/services/sshConfigFile'
 
 // ===== Stores =====
 const hostsStore = useHostsStore()
+const compactWorkspace = ref(window.innerWidth < COMPACT_WORKSPACE_WIDTH)
+const leftPanelVisible = ref(!compactWorkspace.value)
+const rightPanelVisible = ref(!compactWorkspace.value)
+const leftPanelShown = computed(() => hostsStore.activeMode !== 'local' && leftPanelVisible.value)
+
+function updateWorkspaceSize(): void {
+  compactWorkspace.value = window.innerWidth < COMPACT_WORKSPACE_WIDTH
+}
+
+function closeAuxiliaryPanels(): void {
+  leftPanelVisible.value = false
+  rightPanelVisible.value = false
+}
+
+watch(compactWorkspace, (compact) => {
+  if (compact) closeAuxiliaryPanels()
+})
+onMounted(() => window.addEventListener('resize', updateWorkspaceSize))
+onUnmounted(() => window.removeEventListener('resize', updateWorkspaceSize))
 
 // ===== Composables =====
-const { leftPanelWidth, rightPanelWidth, isLeftDragging, isDragging, onLeftDragStart, onDragStart } = useDragResize()
+const { leftPanelWidth, rightPanelWidth, isLeftDragging, isDragging, onLeftDragStart, onDragStart, resizeLeftBy, resizeRightBy } = useDragResize({ left: leftPanelShown, right: rightPanelVisible })
 const sshHostTrust = useSshHostTrust()
 useTerminalEvents({ onHostTrustRequired: sshHostTrust.handleHostTrustRequired })
 const tabSync = useTabSync()
@@ -189,8 +231,6 @@ function closeSettings(): void {
 // ===== Dialogs =====
 const showHostDialog = ref(false)
 const showKeyManager = ref(false)
-const leftPanelVisible = ref(true)
-const rightPanelVisible = ref(true)
 
 // ===== OpenSSH config 导入 / 导出 =====
 const sshConfigImport = ref<{
@@ -236,420 +276,300 @@ async function onExportHosts(): Promise<void> {
 function toggleLeftPanel(): void {
   if (hostsStore.activeMode === 'local') return
   leftPanelVisible.value = !leftPanelVisible.value
+  if (compactWorkspace.value && leftPanelVisible.value) rightPanelVisible.value = false
+}
+
+function showHostPanel(): void {
+  leftPanelVisible.value = true
+  if (compactWorkspace.value) rightPanelVisible.value = false
 }
 
 function toggleRightPanel(): void {
   rightPanelVisible.value = !rightPanelVisible.value
+  if (compactWorkspace.value && rightPanelVisible.value) leftPanelVisible.value = false
 }
 </script>
 
 <style>
-.app-shell {
+.app-shell  {
   display: flex;
   flex-direction: column;
   height: 100%;
   width: 100%;
 }
 
-/* ===== 自定义标题栏 ===== */
-.title-bar {
-  display: flex;
-  align-items: center;
-  height: 32px;
-  flex-shrink: 0;
-  background: var(--chrome-bar-bg);
-  border-bottom: 1px solid var(--workbench-border-soft, var(--divider-soft));
-}
-
-.title-bar-side {
-  width: 96px;
-  flex-shrink: 0;
-  -webkit-app-region: drag;
-  user-select: none;
-}
-
-.title-bar-side.mac {
-  width: 96px;
-}
-
-.title-bar-center {
-  flex: 1;
-  display: flex;
-  justify-content: center;
-  -webkit-app-region: drag;
-  user-select: none;
-}
-
-.title-bar-text {
-  font-size: 12px;
-  color: var(--text-tertiary);
-  font-weight: 500;
-  letter-spacing: 0.3px;
-}
-
-.title-bar-controls {
-  display: flex;
-  -webkit-app-region: no-drag;
-}
-
-.win-btn {
-  width: 40px;
-  height: 34px;
-  border: none;
-  background: transparent;
-  color: var(--text-tertiary);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: all var(--transition-fast);
-}
-
-.win-btn:hover {
-  background: var(--workbench-tab-hover-bg, var(--divider));
-  color: var(--text-secondary);
-}
-
-.win-btn-close:hover {
-  background: var(--danger);
-  color: #fff;
-}
-
-/* ===== 三栏工作台布局 ===== */
-.app-container {
+.app-container  {
   display: flex;
   flex: 1;
+  min-height: 0;
+  position: relative;
   overflow: hidden;
 }
 
-.panel {
+.panel  {
   display: flex;
   flex-direction: column;
-  border-right: 1px solid var(--workbench-border, var(--divider));
-  background: var(--workbench-panel-bg, var(--surface));
-}
-
-.panel-left {
-  flex-shrink: 0;
-}
-
-.panel-center {
-  flex: 1;
-  min-width: 300px;
   min-height: 0;
+  background: var(--workbench-panel-bg, var(--surface-muted));
+}
+
+.panel-left  {
+  flex-shrink: 0;
+  border-right: 1px solid var(--workbench-border, var(--divider));
+}
+
+.panel-center  {
+  flex: 1;
+  min-width: 360px;
   background: var(--workbench-terminal-bg, var(--bg));
 }
 
-/* ===== Resize Handles ===== */
-.left-resize-handle {
-  width: 3px;
-  cursor: col-resize;
-  background: transparent;
+.panel-right  {
   flex-shrink: 0;
-  position: relative;
-  z-index: 10;
-  transition: background 0.15s;
+  min-width: 300px;
+  border-left: 1px solid var(--workbench-border, var(--divider));
 }
 
-.left-resize-handle:hover,
-.left-resize-handle.active {
-  background: var(--workbench-resize-hover, var(--accent));
-}
-
-.resize-handle {
-  width: 3px;
-  cursor: col-resize;
-  background: transparent;
-  flex-shrink: 0;
-  position: relative;
-  z-index: 10;
-  transition: background 0.15s;
-}
-
-.resize-handle:hover,
-.resize-handle.active {
-  background: var(--workbench-resize-hover, var(--accent));
-}
-
-.panel-right {
-  min-width: 280px;
-  flex-shrink: 0;
-  border-right: none;
-  border-left: none;
-  background: var(--workbench-panel-muted-bg, var(--surface-muted));
-}
-
-/* ===== 左侧双层顶区 ===== */
-.left-panel-top {
-  display: flex;
-  flex-direction: column;
-  background: var(--workbench-panel-muted-bg, var(--surface-muted));
-  border-bottom: 1px solid var(--workbench-border, var(--divider));
-  flex-shrink: 0;
-}
-
-.left-panel-row {
+.panel-heading  {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  padding: 0 10px;
-  min-height: 34px;
-  flex-shrink: 0;
+  gap: 12px;
+  height: var(--panel-header-height);
+  min-height: var(--panel-header-height);
+  padding: 0 16px;
+  border-bottom: 1px solid var(--divider-soft);
 }
 
-.left-panel-context-title {
-  font-size: 12px;
+.panel-heading h2  {
+  font-size: 14px;
+  line-height: 20px;
   font-weight: 600;
-  color: var(--text-secondary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  letter-spacing: 0.3px;
 }
 
-.panel-actions {
+.left-resize-handle, .resize-handle  {
+  width: 3px;
+  flex-shrink: 0;
+  cursor: col-resize;
+  position: relative;
+  z-index: 10;
+  background: var(--workbench-panel-bg, var(--surface-muted));
+}
+
+.left-resize-handle::after, .resize-handle::after  {
+  content: '';
+  position: absolute;
+  inset: 0 -2px;
+}
+
+.left-resize-handle:hover, .left-resize-handle.active, .resize-handle:hover, .resize-handle.active  {
+  background: var(--accent);
+}
+
+.tab-bar  {
   display: flex;
+  align-items: center;
+  height: var(--tabbar-height);
+  min-height: var(--tabbar-height);
+  background: var(--workbench-tabbar-bg, var(--surface-muted));
+  border-bottom: 1px solid var(--divider-soft);
+  padding: 0 6px;
   gap: 4px;
 }
 
-/* ===== 标签条 ===== */
-.tab-bar {
+.tab-list  {
   display: flex;
-  align-items: center;
-  height: 32px;
-  background: var(--workbench-tabbar-bg, var(--surface-muted));
-  border-bottom: 1px solid var(--workbench-border-soft, var(--divider-soft));
-  flex-shrink: 0;
-  padding: 0 4px;
-  gap: 1px;
-}
-
-.tab-list {
-  display: flex;
-  align-items: center;
-  gap: 2px;
+  align-items: stretch;
+  height: 100%;
   flex: 1;
   min-width: 0;
   overflow-x: auto;
   overflow-y: hidden;
 }
 
-.tab-list::-webkit-scrollbar {
-  height: 0;
+.tab-list::-webkit-scrollbar  {
+  height: 2px;
 }
 
-.tab-item {
+.tab-item  {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 3px 10px;
-  height: 24px;
-  border-radius: var(--radius-sm);
+  gap: 8px;
+  height: 100%;
+  padding: 0 10px;
+  max-width: 200px;
+  min-width: 100px;
+  flex-shrink: 0;
+  border: 0;
+  border-bottom: 0;
+  background: transparent;
+  color: var(--text-secondary);
   cursor: pointer;
   white-space: nowrap;
   font-size: 12px;
-  color: var(--text-tertiary);
-  background: transparent;
-  transition: all var(--transition-fast);
-  flex-shrink: 0;
-  max-width: 160px;
-  border-bottom: 2px solid transparent;
+  position: relative;
+  transition: background var(--transition-fast);
 }
 
-.tab-item:hover {
+.tab-item:hover  {
   background: var(--workbench-tab-hover-bg, var(--hover-overlay));
-  color: var(--text-secondary);
-}
-
-.tab-item.active {
-  background: var(--workbench-tab-active-bg, var(--surface));
   color: var(--text-primary);
-  border-bottom-color: var(--accent);
-  font-weight: 500;
 }
 
-.tab-title {
+.tab-item.active  {
+  background: var(--workbench-tab-active-bg, var(--bg));
+  color: var(--text-primary);
+  box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--accent) 66%, transparent);
+}
+
+.tab-title  {
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.tab-status-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
+.tab-status-dot  {
+  width: 7px;
+  height: 7px;
   flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--text-tertiary);
 }
 
-.tab-status-dot.connected {
+.tab-status-dot.connected  {
   background: var(--success);
 }
 
-.tab-status-dot.connecting {
+.tab-status-dot.connecting  {
   background: var(--warning);
 }
 
-.tab-status-dot.disconnected {
-  background: var(--text-disabled);
-}
-
-.tab-close {
-  display: none;
+.tab-close  {
+  display: flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
-  height: 16px;
-  border: none;
+  opacity: 0;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-tertiary);
-  font-size: 14px;
-  line-height: 1;
   cursor: pointer;
-  border-radius: 3px;
-  flex-shrink: 0;
-  padding: 0;
+  margin-left: auto;
 }
 
-.tab-item:hover .tab-close {
-  display: flex;
+.tab-item:hover .tab-close, .tab-item:focus-within .tab-close, .tab-item.active .tab-close  {
+  opacity: 1;
 }
 
-.tab-close:hover {
-  background: var(--workbench-close-hover-bg, var(--danger-muted));
+.tab-close:hover  {
+  background: var(--danger-muted);
   color: var(--danger);
 }
 
-.tab-add {
+.tab-add  {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
-  border: none;
-  background: transparent;
-  color: var(--text-tertiary);
-  cursor: pointer;
-  border-radius: 6px;
   flex-shrink: 0;
-  transition: all var(--transition-fast);
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
 }
 
-.tab-add:hover {
-  background: var(--workbench-tab-hover-bg, var(--surface-alt));
+.tab-add:hover  {
+  background: var(--hover-overlay);
   color: var(--text-primary);
 }
 
-.tab-bar-actions {
+.tab-bar-actions  {
   display: flex;
   align-items: center;
   gap: 4px;
-  margin-left: auto;
   flex-shrink: 0;
 }
 
-/* ===== 终端容器 ===== */
-.terminal-container {
+.terminal-container  {
   flex: 1;
   min-height: 0;
   overflow: hidden;
-  background: var(--workbench-terminal-bg, var(--bg));
   position: relative;
+  background: var(--workbench-terminal-bg, var(--bg));
 }
 
-/* ===== 终端空状态 ===== */
-.terminal-empty-state {
+.terminal-empty-state  {
   position: absolute;
   inset: 0;
-  gap: var(--space-sm);
+  gap: 10px;
 }
 
-.terminal-empty-state .empty-icon {
-  opacity: 0.3;
-  color: var(--text-secondary);
-  margin-bottom: var(--space-xs);
+.terminal-empty-state .empty-icon  {
+  color: var(--accent);
+  opacity: 0.8;
+  margin-bottom: 14px;
 }
 
-.terminal-empty-btn {
-  margin-top: var(--space-sm);
-  padding: 8px 20px;
+.terminal-empty-state .empty-text  {
+  color: var(--text-primary);
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.4px;
+}
+
+.terminal-empty-state .empty-hint  {
+  max-width: 300px;
   font-size: 13px;
-  gap: 6px;
-  border-radius: var(--radius-control);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
-  transition: all var(--transition-fast);
+  line-height: 1.7;
 }
 
-.terminal-empty-btn:hover:not(:disabled) {
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
-  transform: translateY(-1px);
+.terminal-empty-btn  {
+  margin-top: 16px;
+  padding: 10px 18px;
+  gap: 8px;
 }
 
-.terminal-empty-btn:active:not(:disabled) {
-  transform: translateY(0);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
-}
-
-/* ===== L2：最左竖向导航栏 ===== */
-.nav-rail {
-  width: 48px;
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  background: var(--chrome-rail-bg);
-  border-right: 1px solid var(--chrome-rail-border, var(--divider));
-  user-select: none;
-}
-
-.nav-rail-top {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 20px;
-  padding: 10px 0;
-}
-
-.nav-rail-spacer {
-  flex: 1;
-}
-
-.nav-rail-bottom {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 20px;
-  padding: 10px 0;
-}
-
-.nav-rail-btn {
-  width: 40px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 3px;
-  padding: 4px 0;
-  border: none;
-  background: transparent;
-  color: var(--text-tertiary);
+.panel-scrim  {
+  position: absolute;
+  inset: 0 0 0 var(--nav-rail-width);
+  background: rgba(0, 0, 0, 0.32);
+  border: 0;
+  z-index: 20;
   cursor: pointer;
-  border-radius: 6px;
-  transition: color 0.15s, background 0.15s;
 }
 
-.nav-rail-btn:hover {
-  color: var(--text-secondary);
-  background: var(--workbench-rail-hover-bg, var(--hover-overlay));
+.is-compact .panel-left, .is-compact .panel-right  {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 21;
+  max-width: calc(100% - var(--nav-rail-width) - 16px);
+  box-shadow: var(--shadow-dialog);
 }
 
-.nav-rail-btn.active {
-  color: #fff;
-  background: var(--workbench-rail-active-bg, var(--accent));
+.is-compact .panel-left  {
+  left: var(--nav-rail-width);
 }
 
-.nav-rail-label {
-  font-size: 9px;
-  line-height: 1.2;
-  letter-spacing: 0.2px;
-  text-align: center;
-  word-break: keep-all;
+.is-compact .panel-right  {
+  right: 0;
+}
+
+.is-compact .panel-center  {
+  min-width: 0;
+}
+
+@media (max-width: 600px)  {
+  .panel-heading  {
+    padding: 0 12px;
+  }
+  .panel-right  {
+    min-width: 0;
+  }
 }
 </style>

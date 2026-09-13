@@ -14,23 +14,21 @@
           </span>
         </button>
       </div>
+      <div class="title-brand title-brand-leading" aria-label="zTerm">
+        <span class="title-brand-mark" aria-hidden="true">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="4" width="18" height="16" rx="3" />
+            <polyline points="7 10 10 12 7 14" />
+            <line x1="12.5" y1="15" x2="17" y2="15" />
+          </svg>
+        </span>
+        <span class="title-bar-text">zTerm</span>
+      </div>
     </div>
     <div class="title-bar-center">
-      <span class="title-bar-text">zTerm</span>
+      <span class="title-workspace-label">工作台</span>
     </div>
     <div v-if="isWindows" class="title-bar-controls">
-      <button
-        v-if="showLeftPanelToggle"
-        class="win-btn title-toggle-btn title-toggle-btn--win"
-        :class="{ 'is-collapsed': leftPanelVisible === false }"
-        :title="leftPanelVisible ? '隐藏机器列表' : '显示机器列表'"
-        :aria-label="leftPanelVisible ? '隐藏机器列表' : '显示机器列表'"
-        @click="$emit('toggle-left-panel')"
-      >
-        <span class="title-layout-icon title-layout-icon--left" aria-hidden="true">
-          <span class="title-layout-icon__pane"></span>
-        </span>
-      </button>
       <button
         class="win-btn title-toggle-btn title-toggle-btn--win"
         :class="{ 'is-collapsed': rightPanelVisible === false }"
@@ -105,7 +103,7 @@ function onClose(): void { window.electronAPI.window.close() }
 
 .title-bar-side--leading.mac {
   position: relative;
-  width: 132px;
+  width: 180px;
   padding-right: 12px;
 }
 
@@ -131,7 +129,7 @@ function onClose(): void { window.electronAPI.window.close() }
 
 .title-toggle-btn {
   width: 26px;
-  height: 20px;
+  height: 24px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -192,6 +190,110 @@ function onClose(): void { window.electronAPI.window.close() }
   border-radius: 1px;
   background: currentColor;
 }
+
+/* 紧凑标题栏：保留原生窗口控制与拖拽区域。 */
+.title-bar.title-bar {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  user-select: none;
+  -webkit-app-region: drag;
+  height: var(--titlebar-height);
+  background: var(--chrome-bar-bg, var(--surface-muted));
+  border-bottom: 1px solid var(--workbench-border-soft, var(--divider-soft));
+}
+
+.title-bar-center {
+  display: flex;
+  justify-content: center;
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  align-items: center;
+}
+
+.title-brand-leading {
+  margin-left: 12px;
+}
+
+.title-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--text-secondary);
+}
+
+.title-brand-mark {
+  display: inline-flex;
+  align-items: center;
+  color: var(--accent, #86d4bd);
+}
+
+.title-bar-text {
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+.title-workspace-label {
+  margin-left: 8px;
+  padding-left: 9px;
+  border-left: 1px solid var(--divider, rgba(255,255,255,.12));
+  color: var(--text-tertiary);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.title-bar-center .title-workspace-label {
+  margin-left: 0;
+  padding-left: 0;
+  border-left: 0;
+  font-size: 11px;
+  letter-spacing: 0.4px;
+}
+
+.title-bar-side--leading.mac {
+  width: 180px;
+}
+
+.title-bar-side--leading.mac .title-brand-leading {
+  position: absolute;
+  left: 108px;
+  margin-left: 0;
+}
+
+.title-bar-side--leading:not(.mac) {
+  width: 190px;
+  justify-content: flex-start;
+  padding-left: 12px;
+  gap: 10px;
+}
+
+.title-bar-side--trailing {
+  flex-shrink: 0;
+  width: 132px;
+}
+
+.win-btn {
+  height: var(--titlebar-height);
+  width: 40px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.title-bar-controls { display: flex; flex-shrink: 0; }
+.title-bar button,
+.title-bar-controls,
+.title-bar-action-slot { -webkit-app-region: no-drag; }
+.win-btn:hover { background: var(--hover-overlay); color: var(--text-primary); }
+.win-btn-close:hover { background: var(--danger); color: #fff; }
 
 .title-layout-icon--left::after {
   left: 4px;

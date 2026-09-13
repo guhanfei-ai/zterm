@@ -2,9 +2,13 @@
   <div class="host-list">
     <!-- 直连模式 -->
     <template v-if="hostsStore.activeMode === 'direct'">
+      <label v-if="hostsStore.hosts.length" class="host-search">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="10.5" cy="10.5" r="7"/><path d="m16 16 4 4"/></svg>
+        <input v-model="hostFilter" type="search" aria-label="搜索主机、地址或用户" placeholder="搜索主机、地址或用户" />
+      </label>
       <div v-if="hostsStore.loading" class="list-placeholder">加载中...</div>
       <div v-else-if="!hostsStore.hosts.length" class="list-placeholder host-empty-state">
-        <div class="jumpserver-empty-icon">🖥️</div>
+        <div class="jumpserver-empty-icon"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 6.5h.01M7 17.5h.01"/></svg></div>
         <div class="jumpserver-empty-title">暂无主机</div>
         <div class="jumpserver-empty-desc">添加一台主机，或从已有的 OpenSSH 配置文件导入</div>
         <div class="host-empty-actions">
@@ -13,11 +17,12 @@
         </div>
       </div>
       <div
-        v-for="(host, index) in hostsStore.hosts"
+        v-for="{ host, index } in visibleHosts"
         :key="host.id"
         class="host-item-wrapper"
       >
         <div
+          v-if="!hostFilter.trim()"
           :data-drop-index="index"
           class="drop-indicator-zone"
           @dragover.prevent="onDragOverZone($event, index)"
@@ -27,7 +32,12 @@
           :data-host-id="host.id"
           class="host-item"
           :class="{ active: hostsStore.activeHostId === host.id }"
-          draggable="true"
+          :draggable="!hostFilter.trim()"
+          role="button"
+          tabindex="0"
+          :aria-label="`连接 ${host.name}`"
+          @keydown.enter.self.prevent="onHostClick(host)"
+          @keydown.space.self.prevent="onHostClick(host)"
           @click="onHostClick(host)"
           @dragstart="onDragStart($event, host)"
           @dragover.prevent="onDragOver($event, host)"
@@ -35,7 +45,8 @@
           @dragend="onDragEnd"
           @contextmenu="showContextMenu($event, host)"
         >
-          <div class="drag-handle" title="拖动排序">⋮⋮</div>
+          <div class="drag-handle" :title="hostFilter.trim() ? '清空搜索后可拖动排序' : '拖动排序'"><svg width="12" height="16" viewBox="0 0 12 16" fill="currentColor"><circle cx="4" cy="4" r="1"/><circle cx="8" cy="4" r="1"/><circle cx="4" cy="8" r="1"/><circle cx="8" cy="8" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="8" cy="12" r="1"/></svg></div>
+          <span class="host-connection-dot" :class="{ connected: connectedHostIds.has(host.id) }" :title="connectedHostIds.has(host.id) ? '已有连接' : '未连接'" />
           <div class="host-item-info">
             <div class="host-name">{{ host.name }}</div>
             <div class="host-detail">{{ host.username }}@{{ host.host }}:{{ host.port }}</div>
@@ -46,25 +57,28 @@
               title="编辑主机"
               @click.stop="onEdit(host)"
             >
-              ✎
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m16 4 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z"/></svg>
             </button>
             <button
               class="btn-icon tiny btn-danger"
               title="删除主机"
               @click.stop="onDelete(host)"
             >
-              ✕
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 3h6l1 4H8zm-3 4 1 14h12l1-14M10 11v6m4-6v6"/></svg>
             </button>
           </div>
         </div>
       </div>
 
       <div
+        v-if="!hostFilter.trim()"
         :data-drop-index="hostsStore.hosts.length"
         class="drop-indicator-zone"
         @dragover.prevent="onDragOverZone($event, hostsStore.hosts.length)"
         @drop.prevent="onDropOnZone($event, hostsStore.hosts.length)"
       />
+      <div v-if="hostsStore.hosts.length && !visibleHosts.length" class="list-placeholder">未找到匹配主机</div>
+      <div v-if="hostsStore.hosts.length" class="host-count">{{ hostFilter.trim() ? `${visibleHosts.length} / ${hostsStore.hosts.length}` : hostsStore.hosts.length }} 台主机</div>
     </template>
 
     <!-- 本地终端模式 -->
@@ -95,7 +109,7 @@
 
         <!-- 未配置 -->
         <div v-if="!jumpserverStore.jumpserverConfig" class="list-placeholder jumpserver-empty">
-          <div class="jumpserver-empty-icon">🏢</div>
+          <div class="jumpserver-empty-icon"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 8 4v5c0 5-8 9-8 9s-8-4-8-9V7zM9 12l2 2 4-5"/></svg></div>
           <div class="jumpserver-empty-title">未配置 Jumpserver</div>
           <div class="jumpserver-empty-desc">点击上方实例切换器新建配置</div>
         </div>
@@ -111,7 +125,7 @@
               placeholder="搜索资产..."
               @keyup.enter="onSearch"
             />
-            <button v-if="searchKeyword" class="jumpserver-search-clear" @click="onClearSearch">✕</button>
+            <button v-if="searchKeyword" class="jumpserver-search-clear" title="清空搜索" @click="onClearSearch"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="m6 6 12 12M6 18 18 6"/></svg></button>
             <button
               class="jumpserver-refresh-btn"
               :class="{ spinning: jumpserverStore.jumpserverRefreshing }"
@@ -119,7 +133,7 @@
               title="刷新当前视图"
               @click="onRefresh"
             >
-              ↻
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7v5h-5M4 17v-5h5M6 7a7 7 0 0 1 12-1l2 6M4 12l2 6a7 7 0 0 0 12-1"/></svg>
             </button>
           </div>
 
@@ -257,7 +271,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useHostsStore } from '@/stores/hosts'
 import { useJumpserverStore } from '@/stores/jumpserver'
 import { useTerminalStore } from '@/stores/terminal'
@@ -298,6 +312,16 @@ function onEditInstance(config: JumpserverConfig & { hasCredential: boolean }): 
 const hostsStore = useHostsStore()
 const jumpserverStore = useJumpserverStore()
 const terminalStore = useTerminalStore()
+const hostFilter = ref('')
+const visibleHosts = computed(() => {
+  const keyword = hostFilter.value.trim().toLocaleLowerCase()
+  return hostsStore.hosts.map((host, index) => ({ host, index })).filter(({ host }) =>
+    `${host.name} ${host.host} ${host.username}`.toLocaleLowerCase().includes(keyword)
+  )
+})
+const connectedHostIds = computed(() => new Set(terminalStore.tabs
+  .filter((tab) => tab.status === 'connected' && tab.hostId)
+  .map((tab) => tab.hostId)))
 const editTarget = ref<HostRecord | null | undefined>(undefined)
 const contextMenuHost = ref<HostRecord | null>(null)
 const contextMenuPos = ref({ x: 0, y: 0 })
@@ -533,9 +557,21 @@ function onDragEnd(): void {
 <style scoped>
 .host-list {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
-  padding: 4px 0;
+  padding: 10px 8px;
+  display: flex;
+  flex-direction: column;
 }
+
+.host-search { display: flex; align-items: center; gap: 8px; flex-shrink: 0; margin: 0 2px 12px; padding: 8px 10px; min-height: 34px; border: 1px solid var(--divider); border-radius: var(--radius-control); background: var(--bg); color: var(--text-tertiary); }
+.host-search:focus-within { border-color: var(--accent); }
+.host-search svg { flex-shrink: 0; }
+.host-search input { min-width: 0; width: 100%; font-size: 11px; line-height: 18px; color: var(--text-primary); background: transparent; border: 0; outline: 0; }
+.host-search input::placeholder { color: var(--text-tertiary); }
+.host-count { margin-top: auto; padding: 18px 10px 4px; font-size: 11px; color: var(--text-tertiary); }
+.host-connection-dot { width: 6px; height: 6px; flex-shrink: 0; border-radius: 50%; background: var(--text-tertiary); margin-right: 10px; }
+.host-connection-dot.connected { background: var(--success); }
 
 .list-placeholder {
   padding: 24px 16px;
@@ -577,23 +613,25 @@ function onDragEnd(): void {
 }
 
 .host-empty-btn.primary {
-  color: #fff;
+  color: var(--accent-contrast, #fff);
   background: var(--accent);
   border-color: var(--accent);
 }
 
 .host-empty-btn.primary:hover {
   opacity: 0.9;
-  color: #fff;
+  color: var(--accent-contrast, #fff);
 }
 
 .host-item {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 10px;
+  padding: 10px 8px;
+  min-height: 56px;
   cursor: pointer;
-  border-left: 3px solid transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-card);
   transition: all var(--transition-fast);
   position: relative;
 }
@@ -603,13 +641,15 @@ function onDragEnd(): void {
 }
 
 .host-item.active {
-  background: var(--surface-alt);
-  border-left-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface-muted));
+  border-color: transparent;
+  box-shadow: 0 2px 12px color-mix(in srgb, var(--accent) 8%, transparent);
 }
 
 .host-item-info {
   flex: 1;
   min-width: 0;
+  padding-right: 32px;
 }
 
 .host-name {
@@ -623,18 +663,28 @@ function onDragEnd(): void {
 
 .host-detail {
   font-size: 11px;
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
   margin-top: 3px;
   font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .host-item-actions {
-  display: none;
-  gap: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  position: absolute;
+  right: 6px;
+  top: 4px;
+  opacity: 0;
+  pointer-events: none;
 }
 
-.host-item:hover .host-item-actions {
-  display: flex;
+.host-item:hover .host-item-actions, .host-item:focus-within .host-item-actions {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .btn-icon.tiny {
@@ -646,7 +696,9 @@ function onDragEnd(): void {
 .drag-handle {
   cursor: grab;
   color: var(--text-tertiary);
-  padding: 0 6px 0 0;
+  position: absolute;
+  left: -3px;
+  opacity: 0;
   font-size: 14px;
   letter-spacing: -1px;
   user-select: none;
@@ -689,6 +741,7 @@ function onDragEnd(): void {
 
 .host-item[draggable]:hover .drag-handle {
   color: var(--text-secondary);
+  opacity: 1;
 }
 
 /* ===== 右键菜单 ===== */
@@ -863,9 +916,10 @@ function onDragEnd(): void {
 
 .jumpserver-search-input {
   flex: 1;
-  padding: 4px 8px;
+  min-width: 0;
+  padding: 8px 10px;
   font-size: 12px;
-  background: var(--bg-tertiary);
+  background: var(--bg);
   border: 1px solid var(--divider);
   border-radius: var(--radius-sm);
   color: var(--text-primary);
@@ -994,7 +1048,7 @@ function onDragEnd(): void {
 .lt-add-btn:hover {
   background: var(--accent);
   border-color: var(--accent);
-  color: #fff;
+  color: var(--accent-contrast, #fff);
 }
 
 .lt-add-btn:active {

@@ -433,15 +433,15 @@ function withAlpha(hex: string, alpha: number): string {
 }
 
 .theme-card-kind.kind-dark {
-  color: #b6c7e3;
-  background: rgba(70, 127, 240, 0.10);
-  border-color: rgba(70, 127, 240, 0.25);
+  color: var(--accent-soft);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 25%, transparent);
 }
 
 .theme-card-kind.kind-light {
-  color: #806d4d;
-  background: rgba(184, 152, 95, 0.12);
-  border-color: rgba(184, 152, 95, 0.28);
+  color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
+  border-color: color-mix(in srgb, var(--warning) 28%, transparent);
 }
 
 .theme-card-desc {

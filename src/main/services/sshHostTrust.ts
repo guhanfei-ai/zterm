@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { isIP } from 'node:net'
 import { domainToASCII, URL } from 'node:url'
-import { utils } from 'ssh2'
+import ssh2 from 'ssh2'
 import {
   SSH_HOST_TRUST_STORE_KEY,
   type SshHostTrustCandidate,
@@ -103,7 +103,7 @@ export function inspectSshHostKey(
   rawHostKey: Buffer,
   connection: { host: unknown; port: unknown; username: unknown }
 ): SshHostTrustCandidate | null {
-  const parsedKey = utils.parseKey(rawHostKey)
+  const parsedKey = ssh2.utils.parseKey(rawHostKey)
   if (parsedKey instanceof Error || Array.isArray(parsedKey) || !parsedKey.type) return null
   const fingerprint = createSshHostFingerprint(rawHostKey)
   if (!fingerprint) return null

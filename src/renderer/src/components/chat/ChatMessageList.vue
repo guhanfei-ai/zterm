@@ -2,12 +2,13 @@
   <div class="message-list" ref="listRef">
     <div v-if="!messages.length" class="empty-chat">
       <div class="empty-icon">
-        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.4">
-          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+        <svg width="42" height="42" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="m12 2 1.8 6.2L20 10l-6.2 1.8L12 18l-1.8-6.2L4 10l6.2-1.8L12 2Z"/>
+          <path d="m19 16 .7 2.3L22 19l-2.3.7L19 22l-.7-2.3L16 19l2.3-.7L19 16Z"/>
         </svg>
       </div>
-      <div class="empty-text">与 AI 助手开始对话</div>
-      <div class="empty-hint">按 Enter 发送，Shift+Enter 换行</div>
+      <div class="empty-text">从终端开始协作</div>
+      <div class="empty-hint">解释输出、排查问题，或交给 Agent 执行</div>
     </div>
     <div
       v-for="msg in messages"
@@ -135,7 +136,7 @@ watch(
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: var(--space-md);
+  padding: 20px 16px;
   display: flex;
   flex-direction: column;
   gap: 16px;
@@ -151,22 +152,28 @@ watch(
   flex: 1;
   color: var(--text-tertiary);
   text-align: center;
+  padding: 28px 12px;
 }
 
 .empty-icon {
-  margin-bottom: var(--space-sm);
+  margin-bottom: 14px;
+  color: var(--accent);
+  opacity: .95;
+  filter: drop-shadow(0 0 12px color-mix(in srgb, var(--accent) 18%, transparent));
 }
 
 .empty-text {
-  font-size: 13px;
-  margin-bottom: var(--space-xs);
+  font-size: 17px;
+  font-weight: 650;
+  margin-bottom: 7px;
   color: var(--text-secondary);
 }
 
 .empty-hint {
-  font-size: 11px;
-  color: var(--text-disabled);
+  font-size: 12px;
+  color: var(--text-tertiary);
 }
+
 
 /* ===== 消息块 ===== */
 .message {

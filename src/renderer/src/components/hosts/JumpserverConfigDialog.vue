@@ -468,7 +468,7 @@ async function onDelete(): Promise<void> {
 
 .btn-save {
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-contrast, #fff);
 }
 
 .btn-save:hover:not(:disabled) {

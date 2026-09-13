@@ -2,25 +2,6 @@
   <div class="chat-panel">
     <!-- CHAT MODE -->
     <template v-if="chatStore.mode === 'chat'">
-      <div class="chat-toolbar">
-        <label class="context-toggle" title="将终端输出附带为对话上下文">
-          <input type="checkbox" v-model="chatStore.includeTerminalContext" />
-          <span>附带终端上下文</span>
-        </label>
-        <button
-          v-if="chatStore.messages.length > 0"
-          class="btn-icon tiny"
-          title="清空对话"
-          @click="chatStore.clearMessages()"
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <polyline points="3 6 5 6 21 6"/>
-            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-            <line x1="10" y1="11" x2="10" y2="17"/>
-            <line x1="14" y1="11" x2="14" y2="17"/>
-          </svg>
-        </button>
-      </div>
       <ChatMessageList :messages="chatMessagesInChatMode" :tab-id="chatStore.activeTabId" />
     </template>
 
@@ -130,6 +111,20 @@
     <!-- Unified Input Area (shared by both modes) -->
     <div class="input-container">
       <div v-if="chatStore.error" class="chat-error">{{ chatStore.error }}</div>
+      <div class="input-meta">
+        <label v-if="chatStore.mode === 'chat'" class="context-toggle" title="将当前终端最近输出附带为对话上下文">
+          <input type="checkbox" v-model="chatStore.includeTerminalContext" />
+          <span class="context-toggle-track"><span class="context-toggle-thumb"></span></span>
+          <span>附带终端上下文<span v-if="linkedTerminalDisplay" class="context-terminal-name"> · {{ linkedTerminalDisplay }}</span></span>
+        </label>
+        <span v-else class="input-context-label" :class="{ bound: !!boundHostDisplay }">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="18" rx="2"/><path d="m7 8 3 3-3 3M12 14h5"/></svg>
+          {{ boundHostDisplay ? `已关联终端 · ${boundHostDisplay}` : '请先关联终端' }}
+        </span>
+        <button v-if="chatStore.mode === 'chat' && chatStore.messages.length > 0" class="clear-chat" type="button" title="清空对话" @click="chatStore.clearMessages()">
+          清空
+        </button>
+      </div>
       <div class="input-box">
         <textarea
           ref="inputRef"
@@ -143,16 +138,17 @@
         ></textarea>
         <div class="input-toolbar">
           <div class="toolbar-left">
-            <div class="toolbar-select-wrap">
-              <select class="toolbar-select" :value="chatStore.mode" @change="onModeChange">
+            <div class="toolbar-select-wrap toolbar-mode-select">
+              <select class="toolbar-select" aria-label="对话模式" :value="chatStore.mode" @change="onModeChange">
                 <option value="chat">Chat模式</option>
                 <option value="agent">Agent模式</option>
               </select>
               <svg class="select-arrow" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
             </div>
-            <div class="toolbar-select-wrap" :title="currentBusy ? '输出期间无法切换模型' : ''">
+            <div class="toolbar-select-wrap toolbar-model-select" :title="currentBusy ? '输出期间无法切换模型' : selectedModel">
               <select
                 class="toolbar-select"
+                aria-label="AI 模型"
                 :value="selectedModel"
                 :disabled="currentBusy"
                 @change="onModelChange"
@@ -161,12 +157,14 @@
               </select>
               <svg class="select-arrow" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
             </div>
-
           </div>
           <div class="toolbar-right">
             <button
               v-if="!currentBusy"
               class="btn-send"
+              type="button"
+              title="发送"
+              aria-label="发送"
               :disabled="!currentInput.trim() || currentDisabled"
               @click="onSend"
             >
@@ -175,7 +173,7 @@
                 <polygon points="22 2 15 22 11 13 2 9 22 2"/>
               </svg>
             </button>
-            <button v-else class="btn-send btn-stop" @click="onStop">
+            <button v-else class="btn-send btn-stop" type="button" title="停止生成" aria-label="停止生成" @click="onStop">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
                 <rect x="6" y="6" width="12" height="12" rx="2"/>
               </svg>
@@ -225,7 +223,7 @@ const agentAreaRef = ref<HTMLDivElement | null>(null)
 const agentScrollState = new Map<string, boolean>()
 let agentStarting = false
 
-const TEXTAREA_MIN_HEIGHT = 36
+const TEXTAREA_MIN_HEIGHT = 56
 const TEXTAREA_MAX_HEIGHT = 160
 
 const currentInput = computed({
@@ -393,6 +391,13 @@ const elapsedSteps = computed(() => chatStore.agentStatus?.elapsedSteps ?? 0)
 const maxSteps = computed(() => chatStore.agentStatus?.maxSteps ?? 25)
 
 const boundHostDisplay = computed(() => chatStore.boundHost || chatStore.agentStatus?.boundHost || '')
+const linkedTerminalDisplay = computed(() => {
+  const linkedId = chatStore.activeTab?.linkedTerminalTabId
+  if (!linkedId) return ''
+  const terminal = terminalStore.getTabById(linkedId)
+  if (!terminal) return chatStore.activeTab?.linkedTerminalUnavailable ? '终端已关闭' : ''
+  return terminal.hostName && terminal.hostName !== '未连接' ? terminal.hostName : terminal.title
+})
 
 watch(() => terminalStore.status, (newStatus) => {
   // 只当当前对话绑定了当前断开的终端时，才触发状态刷新，避免多标签污染
@@ -998,15 +1003,73 @@ watch(() => chatStore.tabs.map(t => t.id), (newIds, oldIds) => {
   flex-shrink: 0;
 }
 
-.context-toggle {
+.input-meta {
+  min-height: 26px;
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 11px;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 2px 7px;
+}
+
+.context-toggle {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
   color: var(--text-secondary);
   cursor: pointer;
 }
-.context-toggle input { cursor: pointer; }
+.context-toggle input { position: absolute; opacity: 0; pointer-events: none; }
+.context-toggle-track {
+  flex-shrink: 0;
+  width: 24px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  box-sizing: border-box;
+  border-radius: 99px;
+  background: var(--surface-high);
+  transition: background .15s ease;
+}
+.context-toggle-thumb {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--text-tertiary);
+  transition: transform .15s ease, background .15s ease;
+}
+.context-toggle input:checked + .context-toggle-track { background: color-mix(in srgb, var(--accent) 42%, var(--surface-high)); }
+.context-toggle input:checked + .context-toggle-track .context-toggle-thumb { transform: translateX(10px); background: var(--accent); }
+.context-toggle input:focus-visible + .context-toggle-track { outline: 2px solid var(--accent); outline-offset: 2px; }
+.context-terminal-name { color: var(--text-tertiary); }
+.context-toggle > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.input-context-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+.input-context-label.bound { color: var(--text-secondary); }
+.input-context-label.bound svg { color: var(--accent); }
+.clear-chat {
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-family: inherit;
+  font-size: 12px;
+  padding: 2px 4px;
+  cursor: pointer;
+}
+.clear-chat:hover { color: var(--text-primary); }
 
 .btn-icon.tiny {
   width: 22px; height: 22px; font-size: 12px;
@@ -1068,13 +1131,13 @@ watch(() => chatStore.tabs.map(t => t.id), (newIds, oldIds) => {
   font-size: 12px;
   cursor: pointer;
 }
-.btn-confirm-yes { background: var(--accent); color: #fff; }
+.btn-confirm-yes { background: var(--accent); color: var(--accent-contrast, #fff); }
 .btn-confirm-no { background: var(--surface-alt); color: var(--text-secondary); }
 .btn-confirm-yes:hover { background: var(--accent-hover); }
 .btn-confirm-no:hover { background: var(--surface-high); }
 
 .input-container {
-  padding: 10px 12px 12px;
+  padding: 10px 12px 14px;
   flex-shrink: 0;
 }
 
@@ -1089,12 +1152,14 @@ watch(() => chatStore.tabs.map(t => t.id), (newIds, oldIds) => {
 }
 
 .input-box {
+  display: flex;
+  flex-direction: column;
   border: 1px solid var(--input-shell-border);
-  border-radius: var(--radius-input-capsule);
+  border-radius: 18px;
   background: var(--input-shell-bg);
   overflow: hidden;
   transition: border-color 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
-  min-height: 96px;
+  min-height: 108px;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.045),
     0 1px 3px rgba(0, 0, 0, 0.18);
@@ -1109,16 +1174,18 @@ watch(() => chatStore.tabs.map(t => t.id), (newIds, oldIds) => {
 }
 
 .input-textarea {
+  display: block;
+  flex-shrink: 0;
   width: 100%;
   background: transparent;
   border: none;
   color: var(--text-primary);
-  padding: 14px 16px 4px;
+  padding: 12px 12px 8px;
   font-size: 13px;
   line-height: 1.5;
   outline: none;
   resize: none;
-  min-height: 36px;
+  min-height: 56px;
   max-height: 160px;
   overflow-y: auto;
   font-family: inherit;
@@ -1137,29 +1204,45 @@ watch(() => chatStore.tabs.map(t => t.id), (newIds, oldIds) => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 12px 10px;
+  gap: 8px;
+  flex-shrink: 0;
+  margin-top: auto;
+  padding: 8px 10px 10px;
 }
 
 .toolbar-left {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
 }
 
 .toolbar-select-wrap {
   position: relative;
   display: flex;
   align-items: center;
+  min-width: 0;
 }
 
+.toolbar-mode-select { flex: 0 0 auto; }
+.toolbar-model-select { flex: 1; max-width: 180px; }
+
 .toolbar-select {
+  width: 100%;
+  height: 32px;
+  min-width: 0;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   appearance: none;
-  background: rgba(255, 255, 255, 0.065);
-  border: 1px solid transparent;
+  background: var(--surface-alt);
+  border: 1px solid var(--divider-soft, var(--divider));
   border-radius: var(--radius-input-internal);
   color: var(--text-secondary);
-  font-size: 11px;
-  padding: 4px 22px 4px 10px;
+  font-size: 12px;
+  padding: 0 22px 0 10px;
   outline: none;
   cursor: pointer;
   font-family: inherit;
@@ -1173,9 +1256,9 @@ watch(() => chatStore.tabs.map(t => t.id), (newIds, oldIds) => {
 }
 
 .toolbar-select:hover {
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--hover-overlay);
   color: var(--text-primary);
-  border-color: rgba(255, 255, 255, 0.06);
+  border-color: var(--divider);
 }
 
 .toolbar-select:focus {
@@ -1200,17 +1283,18 @@ watch(() => chatStore.tabs.map(t => t.id), (newIds, oldIds) => {
 .toolbar-right {
   display: flex;
   align-items: center;
+  flex-shrink: 0;
 }
 
 .btn-send {
-  width: 40px;
-  height: 40px;
+  width: 32px;
+  height: 32px;
   padding: 0;
   display: flex;
   align-items: center;
   justify-content: center;
   background: var(--input-send-bg);
-  color: var(--text-primary);
+  color: var(--accent-contrast, var(--text-primary));
   border: none;
   border-radius: 50%;
   cursor: pointer;
@@ -1222,29 +1306,34 @@ watch(() => chatStore.tabs.map(t => t.id), (newIds, oldIds) => {
 .btn-send:disabled {
   opacity: 0.45;
   cursor: not-allowed;
-  background: var(--input-send-disabled-bg);
+  background: var(--input-send-disabled-bg, var(--surface-alt));
+  color: var(--text-tertiary);
   box-shadow: none;
 }
 
 .btn-send:not(:disabled):hover {
   background: var(--input-send-hover-bg);
-  color: var(--text-primary);
+  color: var(--accent-contrast, var(--text-primary));
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
 }
 
 .btn-send:not(:disabled):active {
-  background: var(--input-send-active-bg);
-  color: #fff;
+  background: var(--input-send-active-bg, var(--accent-pressed));
+  color: var(--accent-contrast, var(--text-primary));
   box-shadow: none;
 }
 
 .btn-stop {
   background: var(--danger);
+  color: #fff;
 }
 
 .btn-stop:not(:disabled):hover {
   background: var(--danger-hover);
+  color: #fff;
 }
+
+.btn-stop:not(:disabled):active { background: var(--danger-hover); color: #fff; }
 
 .agent-conclusions {
   margin: 8px 0 4px;
@@ -1443,7 +1532,7 @@ watch(() => chatStore.tabs.map(t => t.id), (newIds, oldIds) => {
 
 .btn-resume-continue {
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-contrast, #fff);
   border-color: var(--accent);
   font-weight: 600;
 }

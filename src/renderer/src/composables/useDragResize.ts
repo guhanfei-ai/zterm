@@ -1,13 +1,11 @@
-import { ref, onMounted, onUnmounted } from 'vue'
-import { useHostsStore } from '@/stores/hosts'
+import { ref, onMounted, onUnmounted, watch, type Ref } from 'vue'
 import {
-  NAV_RAIL_WIDTH,
   LEFT_PANEL_MIN,
   LEFT_PANEL_DEFAULT,
   LEFT_PANEL_MAX,
-  CENTER_MIN_WIDTH,
   RIGHT_PANEL_MIN,
-  RIGHT_PANEL_DEFAULT
+  RIGHT_PANEL_DEFAULT,
+  panelWidthLimit
 } from '@/constants/layout'
 
 /**
@@ -15,8 +13,7 @@ import {
  * and window-resize clamping. Panel widths always start at defaults on
  * every app launch; drag adjustments are session-only and not persisted.
  */
-export function useDragResize() {
-  const hostsStore = useHostsStore()
+export function useDragResize(visibility: { left: Readonly<Ref<boolean>>; right: Readonly<Ref<boolean>> }) {
 
   const leftPanelWidth = ref(LEFT_PANEL_DEFAULT)
   const rightPanelWidth = ref(RIGHT_PANEL_DEFAULT)
@@ -25,7 +22,7 @@ export function useDragResize() {
 
   // ---- Clamping helpers ----
   function getMaxLeftWidth(): number {
-    const available = window.innerWidth - NAV_RAIL_WIDTH - CENTER_MIN_WIDTH - rightPanelWidth.value - 5
+    const available = panelWidthLimit(window.innerWidth, rightPanelWidth.value, visibility.right.value)
     return Math.max(Math.min(available, LEFT_PANEL_MAX), LEFT_PANEL_MIN)
   }
 
@@ -34,8 +31,7 @@ export function useDragResize() {
   }
 
   function getMaxRightWidth(): number {
-    const leftWidth = hostsStore.activeMode === 'local' ? NAV_RAIL_WIDTH : (NAV_RAIL_WIDTH + leftPanelWidth.value)
-    const available = window.innerWidth - leftWidth - CENTER_MIN_WIDTH - 5
+    const available = panelWidthLimit(window.innerWidth, leftPanelWidth.value, visibility.left.value)
     return Math.max(available, RIGHT_PANEL_MIN)
   }
 
@@ -47,6 +43,16 @@ export function useDragResize() {
   function onWindowResize(): void {
     leftPanelWidth.value = clampLeftWidth(leftPanelWidth.value)
     rightPanelWidth.value = clampWidth(rightPanelWidth.value)
+  }
+
+  watch([visibility.left, visibility.right], onWindowResize)
+
+  function resizeLeftBy(delta: number): void {
+    leftPanelWidth.value = clampLeftWidth(leftPanelWidth.value + delta)
+  }
+
+  function resizeRightBy(delta: number): void {
+    rightPanelWidth.value = clampWidth(rightPanelWidth.value + delta)
   }
 
   // ---- Drag handlers ----
@@ -107,6 +113,7 @@ export function useDragResize() {
 
   // ---- Mount: register window resize listener ----
   onMounted(() => {
+    onWindowResize()
     window.addEventListener('resize', onWindowResize)
   })
 
@@ -125,6 +132,8 @@ export function useDragResize() {
     isLeftDragging,
     isDragging,
     onLeftDragStart,
-    onDragStart
+    onDragStart,
+    resizeLeftBy,
+    resizeRightBy
   }
 }

@@ -181,7 +181,7 @@ const bracketLabel = computed(() => {
 /* 绑定状态点缀：轻量 inline 标签 */
 .info-dot {
   display: inline-block;
-  font-size: 10px;
+  font-size: 11px;
   padding: 0 4px;
   border-radius: 3px;
   line-height: 16px;
@@ -212,12 +212,13 @@ const bracketLabel = computed(() => {
 
 /* ---- 操作按钮 ---- */
 .btn-action {
-  padding: 2px 7px;
+  padding: 4px 8px;
+  min-height: 28px;
   border: 1px solid var(--divider);
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-secondary);
-  font-size: 10px;
+  font-size: 11px;
   cursor: pointer;
   transition: all 0.15s;
   white-space: nowrap;
@@ -275,7 +276,7 @@ const bracketLabel = computed(() => {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 1px 2px;
+  padding: 4px 2px;
   border: none;
   background: transparent;
   cursor: pointer;
@@ -296,7 +297,7 @@ const bracketLabel = computed(() => {
 }
 
 .mode-switch-label {
-  color: var(--text-disabled);
+  color: var(--text-tertiary);
   font-weight: 500;
   transition: color 0.15s;
   white-space: nowrap;
@@ -356,10 +357,10 @@ const bracketLabel = computed(() => {
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  font-size: 10px;
-  color: var(--text-disabled);
-  opacity: 0.5;
-  white-space: nowrap;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-tertiary);
+  white-space: normal;
 }
 
 .toolbar-hint svg {

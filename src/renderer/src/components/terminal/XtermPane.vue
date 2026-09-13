@@ -1,5 +1,5 @@
 <template>
-  <div class="xterm-container" ref="containerRef">
+  <div class="xterm-container" ref="containerRef" :style="{ background: themeStore.currentTheme.xterm.background }">
     <div class="xterm-wrapper" ref="wrapperRef" :class="{ 'xterm-hidden': !isConnected }"></div>
     <!-- 终端内搜索栏（Cmd/Ctrl+F） -->
     <div v-if="searchVisible" class="terminal-search-bar">
@@ -18,9 +18,9 @@
         @keydown.enter.prevent="onSearchEnter($event)"
         @keydown.esc.prevent="closeSearch"
       />
-      <button class="ts-nav-btn" title="上一个 (Shift+Enter)" @click="findPrev">↑</button>
-      <button class="ts-nav-btn" title="下一个 (Enter)" @click="findNext">↓</button>
-      <button class="ts-close-btn" title="关闭 (Esc)" @click="closeSearch">✕</button>
+      <button class="ts-nav-btn" title="上一个 (Shift+Enter)" @click="findPrev"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m6 14 6-6 6 6"/></svg></button>
+      <button class="ts-nav-btn" title="下一个 (Enter)" @click="findNext"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m6 10 6 6 6-6"/></svg></button>
+      <button class="ts-close-btn" title="关闭 (Esc)" @click="closeSearch"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="m6 6 12 12M6 18 18 6"/></svg></button>
     </div>
     <!-- State overlay: disconnected / connecting -->
     <div v-if="!isConnected" class="terminal-overlay">
@@ -474,7 +474,7 @@ onUnmounted(() => {
 .xterm-wrapper {
   width: 100%;
   height: 100%;
-  padding-left: 8px;
+  padding: 16px 12px 8px 18px;
 }
 
 .xterm-wrapper :deep(.xterm) {
@@ -498,26 +498,28 @@ onUnmounted(() => {
 /* ---- 终端搜索栏 ---- */
 .terminal-search-bar {
   position: absolute;
-  top: 6px;
+  top: 12px;
   right: 14px;
   z-index: 20;
   display: flex;
   align-items: center;
   gap: 4px;
   padding: 4px 6px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  max-width: calc(100% - 28px);
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
 }
 
 .ts-input {
   width: 180px;
+  min-width: 0;
   padding: 3px 8px;
   font-size: 12px;
-  color: var(--text);
+  color: var(--text-primary);
   background: var(--bg);
-  border: 1px solid var(--border);
+  border: 1px solid var(--divider);
   border-radius: 4px;
   outline: none;
 }
@@ -529,6 +531,11 @@ onUnmounted(() => {
 .ts-case-btn,
 .ts-nav-btn,
 .ts-close-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  height: 28px;
   padding: 2px 7px;
   font-size: 12px;
   color: var(--text-secondary);
@@ -541,7 +548,7 @@ onUnmounted(() => {
 .ts-case-btn:hover,
 .ts-nav-btn:hover,
 .ts-close-btn:hover {
-  color: var(--text);
+  color: var(--text-primary);
   background: var(--bg-hover, rgba(128, 128, 128, 0.15));
 }
 
@@ -565,7 +572,8 @@ onUnmounted(() => {
   flex-direction: column;
   align-items: center;
   text-align: center;
-  gap: 6px;
+  gap: 10px;
+  padding: 24px;
 }
 
 .overlay-icon {
@@ -583,14 +591,15 @@ onUnmounted(() => {
 }
 
 .overlay-title {
-  font-size: 14px;
+  font-size: 19px;
   font-weight: 500;
   color: var(--text-secondary);
 }
 
 .overlay-hint {
   font-size: 12px;
-  color: var(--text-disabled);
+  color: var(--text-tertiary);
+  line-height: 1.7;
   margin-top: 2px;
 }
 

@@ -6,6 +6,12 @@
       @back="$emit('back')"
     />
     <div class="settings-content">
+      <header class="settings-heading">
+        <div>
+          <h1>设置</h1>
+          <p>调整 zTerm 的连接、外观与终端体验</p>
+        </div>
+      </header>
       <!-- 模型设置 -->
       <div v-if="activeSection === 'model'" class="settings-section">
         <ModelProviderSettingsForm />
@@ -79,18 +85,46 @@ watch(() => props.initialSection, (val) => {
 <style scoped>
 .settings-page {
   display: flex;
-  height: 100%;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
   background: var(--bg);
 }
 
 .settings-content {
   flex: 1;
+  min-width: 0;
   overflow-y: auto;
-  padding: 24px 32px;
+  padding: 28px clamp(18px, 4vw, 48px) 40px;
+}
+
+.settings-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 24px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--divider-soft, var(--divider));
+}
+
+.settings-heading h1 {
+  margin: 0 0 5px;
+  color: var(--text-primary);
+  font-size: 22px;
+  line-height: 1.2;
+  font-weight: 700;
+  letter-spacing: -.2px;
+}
+
+.settings-heading p {
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: 12px;
 }
 
 .settings-section {
-  max-width: 640px;
+  max-width: 680px;
 }
 
 .settings-section-wide {
@@ -115,6 +149,12 @@ watch(() => props.initialSection, (val) => {
   border: 1px solid var(--divider);
   border-radius: var(--radius-container);
   padding: 24px;
+}
+
+@media (max-width: 640px) {
+  .settings-content { padding: 20px 16px 32px; }
+  .settings-heading { margin-bottom: 18px; }
+  .settings-heading h1 { font-size: 19px; }
 }
 
 .about-logo {

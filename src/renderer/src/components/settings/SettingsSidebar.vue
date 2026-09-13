@@ -9,16 +9,19 @@
       </button>
     </div>
     <nav class="sidebar-nav">
-      <button
-        v-for="item in navItems"
-        :key="item.id"
-        class="nav-item"
-        :class="{ active: activeSection === item.id }"
-        @click="$emit('navigate', item.id)"
-      >
-        <span class="nav-icon" v-html="item.icon"></span>
-        <span class="nav-label">{{ item.label }}</span>
-      </button>
+      <div v-for="group in navGroups" :key="group.label" class="nav-group">
+        <div class="nav-group-label">{{ group.label }}</div>
+        <button
+          v-for="item in group.items"
+          :key="item.id"
+          class="nav-item"
+          :class="{ active: activeSection === item.id }"
+          @click="$emit('navigate', item.id)"
+        >
+          <span class="nav-icon" v-html="item.icon"></span>
+          <span class="nav-label">{{ item.label }}</span>
+        </button>
+      </div>
     </nav>
   </div>
 </template>
@@ -60,11 +63,16 @@ const navItems = [
     icon: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>'
   }
 ]
+
+const navGroups = [
+  { label: '偏好设置', items: navItems.slice(0, 4) },
+  { label: '关于', items: navItems.slice(4) }
+]
 </script>
 
 <style scoped>
 .settings-sidebar {
-  width: 210px;
+  width: 196px;
   flex-shrink: 0;
   background: var(--surface-muted);
   border-right: 1px solid var(--divider);
@@ -73,7 +81,7 @@ const navItems = [
 }
 
 .sidebar-header {
-  padding: 16px 12px 12px;
+  padding: 14px 12px 12px;
   border-bottom: 1px solid var(--divider-soft);
 }
 
@@ -98,10 +106,25 @@ const navItems = [
 }
 
 .sidebar-nav {
-  padding: 8px 8px 12px;
+  padding: 14px 8px 12px;
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 16px;
+}
+
+.nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.nav-group-label {
+  padding: 0 12px 5px;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: .7px;
+  text-transform: uppercase;
 }
 
 .nav-item {
@@ -113,7 +136,7 @@ const navItems = [
   padding-left: 14px;
   background: transparent;
   border: none;
-  border-radius: var(--radius-control);
+  border-radius: 8px;
   color: var(--text-secondary);
   font-size: 13px;
   cursor: pointer;
@@ -145,10 +168,17 @@ const navItems = [
 }
 
 .nav-item.active {
-  background: var(--surface);
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface));
   color: var(--text-primary);
   font-weight: 500;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+}
+
+@media (max-width: 640px) {
+  .settings-sidebar { width: 154px; }
+  .nav-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sidebar-header { padding-left: 8px; padding-right: 8px; }
+  .btn-back { padding-left: 8px; padding-right: 8px; }
 }
 
 .nav-item.active::before {
