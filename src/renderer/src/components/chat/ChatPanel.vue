@@ -40,7 +40,7 @@
             </div>
             <div class="resume-row">
               <span class="resume-label">当前进度：</span>
-              <span class="resume-value">{{ chatStore.pendingContext.currentStep }} / {{ chatStore.pendingContext.maxSteps }} 步</span>
+              <span class="resume-value">已累计执行 {{ chatStore.pendingContext.steps.length }} 条命令（单轮预算 {{ chatStore.pendingContext.maxSteps }} 步，介入后重置）</span>
               <span v-if="chatStore.pendingContext.stopReason" class="resume-reason-tag" :class="`reason-${chatStore.pendingContext.stopReason.toLowerCase()}`">
                 {{ stopReasonLabel(chatStore.pendingContext.stopReason) }}
               </span>

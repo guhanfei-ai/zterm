@@ -20,10 +20,14 @@ export interface ContextStepSnapshot {
   duration?: number
 }
 
-// 单条自然对话回合（持久化版本，与 graph state 的 ChatTurn 字段语义一致）
+// 单条自然对话回合（持久化版本，与 graph state 的 ChatTurn 字段语义一致）。
+// 2026-09-16 对话优先重构：新增 tool 角色（命令输出 / 拦截反馈），
+// conversationHistory 成为 reply 主循环的跨重启上下文。
 export interface ContextChatTurn {
-  role: 'user' | 'assistant'
+  role: 'user' | 'assistant' | 'tool'
   content: string
+  // tool 角色的来源命令（用户/助手角色无意义）
+  command?: string
   isFromExecution?: boolean
   createdAt: string
 }
@@ -70,7 +74,9 @@ export interface AgentContextSnapshot {
 const RECENT_OUTPUTS_MAX = 6
 const OUTPUT_TRUNCATE_CHARS = 600
 const STEPS_MAX = 50
-const CHAT_HISTORY_MAX = 40   // 最多保留 40 条自然对话（用户/助手各 20 轮左右），够"追问"用且控制文件大小
+const CHAT_HISTORY_MAX = 40   // 最多保留 40 条对话回合（含工具回合），控制文件大小
+/** 工具回合（命令输出）内容的持久化上限 —— 输出可能很长，落盘前截断 */
+const TOOL_TURN_TRUNCATE_CHARS = 2000
 
 function nowIso(): string {
   return new Date().toISOString()
@@ -386,7 +392,8 @@ export function markStop(chatTabId: string, reason: Exclude<StopReason, null>): 
 }
 
 /**
- * 追加一条自然对话回合到上下文末尾。
+ * 追加一条对话回合（用户 / 助手 / 工具）到上下文末尾。
+ * 工具回合（命令输出 / 拦截反馈）内容超长时先截断，避免撑爆 contexts.json。
  * 不存在上下文时静默忽略——startTask 会先建好快照。
  */
 export function appendChatTurn(chatTabId: string, turn: ContextChatTurn): void {
@@ -394,7 +401,10 @@ export function appendChatTurn(chatTabId: string, turn: ContextChatTurn): void {
   const all = safeReadAll()
   const existing = all[chatTabId]
   if (!existing) return
-  const next = [...(existing.conversationHistory || []), turn]
+  const clampedTurn: ContextChatTurn = turn.role === 'tool'
+    ? { ...turn, content: truncate(turn.content, TOOL_TURN_TRUNCATE_CHARS) }
+    : turn
+  const next = [...(existing.conversationHistory || []), clampedTurn]
   all[chatTabId] = {
     ...existing,
     conversationHistory: clampChatHistory(next),

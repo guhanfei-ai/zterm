@@ -14,11 +14,15 @@ export interface StepRecord {
   duration?: number
 }
 
-// ---- One turn in the Agent's natural conversation history ----
+// ---- One turn in the Agent's conversation history ----
 // 持久化到 agentContextStore，让"重启后继续追问"能找回上文。
+// 2026-09-16 对话优先重构：新增 tool 角色 —— 命令输出 / 拦截反馈作为
+// 工具回合进对话，conversationHistory 成为 reply 主循环的上下文主轴。
 export interface ChatTurn {
-  role: 'user' | 'assistant'
+  role: 'user' | 'assistant' | 'tool'
   content: string
+  // tool 角色的来源命令（用户/助手角色无意义）
+  command?: string
   // 标记这条发言是否触发了真实命令执行（仅 assistant 侧有意义）。
   // true 时是执行结果自然回复，false 时是纯聊天。
   isFromExecution?: boolean
@@ -39,7 +43,7 @@ export interface ParsedModelResponse {
   done?: boolean
 }
 
-// ---- One queued command from a think turn (think 可一次出多条命令) ----
+// ---- One queued command from a reply turn (reply 可一次出多条命令) ----
 export interface PendingCommand {
   plan?: string
   command: string
@@ -90,7 +94,7 @@ export const AgentStateAnnotation = Annotation.Root({
   // ---- Current step data ----
   planText: Annotation<string>(),
   pendingCommand: Annotation<string>(),
-  // think 一次规划出的命令队列；pendingCommand 是队列中正在处理的第一条。
+  // reply 一次规划出的命令队列；pendingCommand 是队列中正在处理的第一条。
   // 每条命令独立走安全检查/执行，消耗一个步号；拦截时队列整体作废。
   pendingCommands: Annotation<PendingCommand[]>(),
   commandOutput: Annotation<string>(),
@@ -106,13 +110,16 @@ export const AgentStateAnnotation = Annotation.Root({
 
   // 本轮 turn 开始时已存在的业务步骤数（stepNumber > 0）。
   // startTask 时由 restoredState.steps 推导：新任务为 0，follow-up 为旧任务的步骤数。
-  // 用途：think 输出 DONE 但本轮没有新增执行步骤时，判定为"闲聊式收尾"，
-  // 不走 summarize 生成正式任务报告（防止"你好"被扩写成健康检查报告）。
+  // 用途一：reply 收尾时区分"本轮执行过命令 → completed（最终回复即结论）"
+  // 与"纯聊天 → idle"（旧 checkpoint 缺字段时按 0 安全降级）。
+  // 用途二：单轮预算基准 —— maxSteps 是"一次人类介入后无人值守下最多执行的命令轮数"，
+  // 本轮已执行轮数 = steps 业务步数 - turnStartStepCount；人类每次介入时基准重算，
+  // 预算即从零重记（见 agentGraph.turnBudgetExhausted）。
   turnStartStepCount: Annotation<number>(),
 
-  // ---- Natural conversation history (user/assistant turns) ----
-  // 区别于 steps：steps 只记"执行步骤"，conversationHistory 记所有自然发言。
-  // think 节点 prompt 用它来记住"用户上一句说了什么、助手上一句怎么回"。
+  // ---- Natural conversation history (user/assistant/tool turns) ----
+  // 区别于 steps：steps 只记"执行步骤"（审计用），conversationHistory 记
+  // 用户 / 助手 / 工具三种回合，是 reply 主循环的上下文主轴。
   conversationHistory: Annotation<ChatTurn[]>(),
   recentKeyOutputs: Annotation<KeyOutput[]>(),
 

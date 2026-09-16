@@ -172,8 +172,12 @@ export class AgentController extends EventEmitter {
   state: AgentState = 'idle'
   private task: AgentTask | null = null
   private steps: AgentStep[] = []
+  // 单轮预算：一次人类介入后无人值守下最多执行的命令轮数（人类介入即重置）
   private maxSteps = 25
   private currentStep = 0
+  // 本轮（自上次人类介入以来）开始时已有的业务步骤数，是预算计数的基准，
+  // 同时用于 getStatus 的 elapsedSteps 展示（本轮 x / maxSteps 步）
+  private turnStartStepCount = 0
   private allowWrite = false
   private boundHost: string | undefined = undefined
   private boundTerminalTabId: string | null = null
@@ -231,7 +235,11 @@ export class AgentController extends EventEmitter {
       task: this.task || undefined,
       currentStep: this.currentStep,
       maxSteps: this.maxSteps,
-      elapsedSteps: this.steps.length,
+      // 本轮已执行步数（自上次人类介入起算），与单轮预算 maxSteps 同口径展示
+      elapsedSteps: Math.max(
+        0,
+        this.steps.filter(s => s.stepNumber > 0).length - this.turnStartStepCount
+      ),
       allowWrite: this.allowWrite,
       boundHost: this.boundHost,
       boundTerminalTabId: this.boundTerminalTabId,
@@ -244,17 +252,32 @@ export class AgentController extends EventEmitter {
     const self = this
     return {
       emitMessage(msg) {
-        // 第一轮收口：assistant_reply 是 think 聊天分支的正式气泡，
-        // 同步把助手本轮发言 append 到 conversationHistory 并持久化。
-        if (msg.type === 'assistant_reply' && self.chatTabId) {
-          const turn: ContextChatTurn = {
-            role: 'assistant',
-            content: msg.content,
-            // 边聊边干场景：自然语言部分伴随命令一起输出，标记为执行相关回复
-            isFromExecution: msg.details?.withCommands === true,
-            createdAt: new Date().toISOString()
+        // 对话优先：assistant_reply 与工具回合（命令输出 / 拦截反馈）同步进
+        // conversationHistory 并持久化，跨重启后 reply 主循环仍能接上上下文。
+        if (self.chatTabId) {
+          if (msg.type === 'assistant_reply') {
+            const turn: ContextChatTurn = {
+              role: 'assistant',
+              content: msg.content,
+              // 边聊边干场景：自然语言部分伴随命令一起输出，标记为执行相关回复
+              isFromExecution: msg.details?.withCommands === true,
+              createdAt: new Date().toISOString()
+            }
+            appendChatTurn(self.chatTabId, turn)
+          } else if (
+            (msg.type === 'observation' || msg.type === 'error') &&
+            typeof msg.details?.command === 'string' &&
+            msg.details.command
+          ) {
+            // 只有带 details.command 的消息才是工具回合（模型调用错误等不带）
+            const toolTurn: ContextChatTurn = {
+              role: 'tool',
+              content: msg.content,
+              command: msg.details.command,
+              createdAt: new Date().toISOString()
+            }
+            appendChatTurn(self.chatTabId, toolTurn)
           }
-          appendChatTurn(self.chatTabId, turn)
         }
         const full: AgentMessage = {
           ...msg,
@@ -385,19 +408,16 @@ export class AgentController extends EventEmitter {
     const taskId = keepTask ? (persisted!.taskId || Date.now().toString()) : Date.now().toString()
     const taskDescription = keepTask ? persisted!.taskDescription : description
     this.task = { id: taskId, description: taskDescription, createdAt: taskCreatedAt }
-    this.maxSteps = keepTask ? Math.max(persisted!.maxSteps, maxSteps) : maxSteps
-    // P1 修复：上一轮已触顶（currentStep >= maxSteps）时，普通追问不应"只跑 1 步就再次触顶"，
-    // 自动追加一轮预算。重启场景下 controller 内存中的 currentStep 尚未恢复，以持久化值为准。
+    // 预算语义（2026-09-16）：maxSteps 是"单轮预算"——一次人类介入后无人值守状态下
+    // 最多执行的命令轮数。人类每发一次消息即重置，预算恒为本次传入值（默认 25），
+    // 不随任务生命周期累计（旧"触顶后追加"逻辑已随累计制一并移除）。
+    this.maxSteps = maxSteps
+    // 本轮基准：follow-up = 已有业务步骤数（预算从零重记）；新任务 = 0。
+    // 重启场景下 controller 内存中的 currentStep 尚未恢复，以持久化值为准。
     const effectiveStep = keepTask ? Math.max(persisted!.currentStep ?? 0, this.currentStep) : this.currentStep
-    if (keepTask && effectiveStep >= this.maxSteps) {
-      this.maxSteps = effectiveStep + maxSteps
-      this.emit('message', {
-        id: `${Date.now()}`,
-        type: 'status',
-        content: `检测到已达步数上限，已自动追加 ${maxSteps} 步预算（当前上限 ${this.maxSteps} 步）`,
-        createdAt: new Date().toISOString()
-      })
-    }
+    this.turnStartStepCount = keepTask
+      ? (persisted!.steps ?? []).filter(s => s.stepNumber > 0).length
+      : 0
 
     if (isNewTask) {
       saveContext({
@@ -531,6 +551,7 @@ export class AgentController extends EventEmitter {
     }
     this.steps = []
     this.currentStep = 0
+    this.turnStartStepCount = 0
     this.boundHost = undefined
     this.boundTerminalTabId = null
     this.stopReason = null
@@ -584,7 +605,10 @@ export class AgentController extends EventEmitter {
     if (!this.bridge || !this.bridge.isConnected()) throw new Error('终端未连接')
     if (!this.chatTabId || !this.runtime) throw new Error('Agent 服务未初始化')
 
-    this.maxSteps += additionalSteps
+    // 点"继续"属于人类介入：预算重置为 additionalSteps，而不是累计追加。
+    // 基准同步重算（runtime.continueTask 会把同一基准写入 graph state）。
+    this.maxSteps = additionalSteps
+    this.turnStartStepCount = this.steps.filter(s => s.stepNumber > 0).length
     this.stopReason = null
     this.state = 'planning'
     this.emit('state-change', 'planning')
@@ -621,9 +645,12 @@ export class AgentController extends EventEmitter {
     if (!this.chatTabId || !this.runtime) throw new Error('Agent 服务未初始化')
 
     const isContinue = ctx.stopReason === 'ROUND_LIMIT'
-    const newMaxSteps = isContinue
-      ? ctx.maxSteps + additionalSteps  // continue: 追加步数
-      : Math.max(ctx.currentStep, 0) + additionalSteps  // replan: 从当前步数起追加
+    // 预算语义（2026-09-16）：重启恢复同样属于人类介入 —— 无论 continue 还是 replan，
+    // 本轮预算都重置为 additionalSteps（默认 25），不再在历史 maxSteps 上累计追加。
+    const newMaxSteps = additionalSteps
+    // 本轮基准 = 恢复时已有的业务步骤数；graph 侧 turnStartStepCount 由
+    // runtime.startTask 以同一口径重算，预算从零重新计数。
+    const turnBase = ctx.steps.filter(s => s.stepNumber > 0).length
 
     // Restore local controller state from persisted context
     this.task = {
@@ -642,6 +669,7 @@ export class AgentController extends EventEmitter {
     }))
     this.currentStep = ctx.currentStep
     this.maxSteps = newMaxSteps
+    this.turnStartStepCount = turnBase
     this.allowWrite = ctx.allowWrite
     this.boundHost = ctx.boundHost
     this.stopReason = null
@@ -649,8 +677,8 @@ export class AgentController extends EventEmitter {
     this.emit('state-change', 'planning')
 
     const resumeLabel = isContinue
-      ? `从上次会话恢复，追加 ${additionalSteps} 步（上限 ${newMaxSteps}）`
-      : `基于上次 ${ctx.currentStep} 步历史重新规划（上限 ${newMaxSteps}）`
+      ? `从上次会话恢复，本轮预算重置为 ${additionalSteps} 步`
+      : `基于上次 ${ctx.steps.length} 步历史重新规划（本轮预算 ${additionalSteps} 步）`
 
     this.emit('message', {
       id: `${Date.now()}`,
@@ -686,7 +714,7 @@ export class AgentController extends EventEmitter {
         taskId: ctx.taskId || undefined,
         userMessage: '',
         recentKeyOutputs: ctx.recentKeyOutputs ?? [],
-        // 续接时也把对话历史带回，让 think 节点能看到"上次问过什么"
+        // 续接时也把对话历史带回（含工具回合），让 reply 主循环能看到"上次问过什么"
         conversationHistory: ctx.conversationHistory ?? [],
         // Restore graph state from persisted context
         restoredState: {

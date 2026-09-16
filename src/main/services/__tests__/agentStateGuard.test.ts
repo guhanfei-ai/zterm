@@ -4,7 +4,7 @@ import {
   type AgentState
 } from '../agentController'
 import {
-  createSummarizeNode,
+  createReplyNode,
   type AgentGraphContext,
   type AgentGraphCallbacks
 } from '../agentGraph'
@@ -15,7 +15,7 @@ import {
 } from '../agentGraphState'
 import type { AiClient } from '../aiClient'
 import type { TerminalBridge } from '../terminalBridge'
-import { buildThinkUserPrompt } from '../agentGraphPrompt'
+import { buildReplyUserPrompt } from '../agentGraphPrompt'
 
 // ================================================================
 //  shouldEmitStateChange — 完成态收敛规则
@@ -110,40 +110,66 @@ describe('shouldEmitStateChange', () => {
   })
 })
 
-describe('buildThinkUserPrompt', () => {
-  it('keeps the stable task goal separate from the current follow-up message', () => {
+// ================================================================
+//  buildReplyUserPrompt — 对话优先的上下文投影
+// ================================================================
+describe('buildReplyUserPrompt', () => {
+  it('keeps the stable topic separate from the current follow-up message', () => {
     const state = createInitialState()
     state.taskDescription = '排查磁盘空间问题'
     state.userMessage = '刚才的输出里，哪个目录增长最快？'
-    state.conversationHistory = [{
-      role: 'user',
-      content: state.userMessage,
-      createdAt: new Date().toISOString()
-    }]
 
-    const prompt = buildThinkUserPrompt(state, state.userMessage, null)
-    expect(prompt).toContain('当前任务：排查磁盘空间问题')
-    expect(prompt).toContain('用户说：刚才的输出里，哪个目录增长最快？')
+    const prompt = buildReplyUserPrompt(state, state.userMessage, null)
+    expect(prompt).toContain('当前话题：排查磁盘空间问题')
+    expect(prompt).toContain('用户本轮请求：刚才的输出里，哪个目录增长最快？')
   })
 
-  it('includes persisted key command output in the next planning prompt', () => {
+  it('renders tool turns distinctly from user/assistant turns', () => {
     const state = createInitialState()
-    state.taskDescription = '检查服务状态'
-    state.userMessage = '继续分析'
-    state.recentKeyOutputs = [{
+    state.taskDescription = '查看磁盘'
+    state.userMessage = '查看磁盘'
+    state.conversationHistory = [
+      { role: 'user', content: '查看磁盘', createdAt: new Date().toISOString() },
+      { role: 'assistant', content: '我看下磁盘占用。', isFromExecution: true, createdAt: new Date().toISOString() },
+      { role: 'tool', content: 'Filesystem  Size  Used Avail Use%\n/dev/sda1  50G   40G  10G  80%', command: 'df -h', createdAt: new Date().toISOString() }
+    ]
+
+    const prompt = buildReplyUserPrompt(state, state.userMessage, null)
+    expect(prompt).toContain('- 用户：查看磁盘')
+    expect(prompt).toContain('- 助手：我看下磁盘占用。')
+    expect(prompt).toContain('- 工具结果（`df -h`）：')
+    expect(prompt).toContain('80%')
+  })
+
+  it('injects hard evidence constraint for first-turn inspection requests', () => {
+    const state = createInitialState()
+    state.taskDescription = '看看机器上跑了什么服务'
+    state.userMessage = '看看机器上跑了什么服务'
+
+    const prompt = buildReplyUserPrompt(state, state.userMessage, null)
+    expect(prompt).toContain('执行意图硬约束')
+    expect(prompt).toContain('必须先落至少一条只读命令')
+  })
+
+  it('does not inject the inspection constraint on follow-up turns', () => {
+    const state = createInitialState()
+    state.taskDescription = '看看机器上跑了什么服务'
+    state.userMessage = '谢谢，再看看内存'
+    state.steps = [{
       stepNumber: 1,
-      command: 'systemctl status demo',
-      output: 'Active: failed (Result: exit-code)'
+      plan: '查看运行服务',
+      command: 'ps aux',
+      observation: '正常运行',
+      status: 'done'
     }]
 
-    const prompt = buildThinkUserPrompt(state, state.userMessage, null)
-    expect(prompt).toContain('最近关键命令输出')
-    expect(prompt).toContain('Active: failed')
+    const prompt = buildReplyUserPrompt(state, state.userMessage, null)
+    expect(prompt).not.toContain('执行意图硬约束')
   })
 })
 
 // ================================================================
-//  createSummarizeNode — 完成时序
+//  createReplyNode — 收尾时序（对话优先重构后从 summarize 移植的纪律）
 // ================================================================
 
 /** 记录 callback 调用顺序的 mock。判别联合让 TS 从 kind 自动收窄 payload 类型。 */
@@ -158,12 +184,12 @@ type RecordedCall =
 
 function buildMockContext(
   options?: {
-    summaryText?: string
+    replyText?: string
     onStepCompleteThrows?: Error
   }
 ): { ctx: AgentGraphContext; calls: RecordedCall[] } {
   const calls: RecordedCall[] = []
-  const summaryText = options?.summaryText ?? '' // 默认空 → 走兜底结论
+  const replyText = options?.replyText ?? '好的，没问题。'
 
   const callbacks: AgentGraphCallbacks = {
     emitMessage(msg) {
@@ -181,15 +207,15 @@ function buildMockContext(
     }
   }
 
-  // mock aiClient：根据 summaryText 决定是否通过 onChunk 投递真实内容
+  // mock aiClient：根据 replyText 通过 onChunk 投递内容
   const aiClient = {
     sendStream: async (
       _request: unknown,
       _session: unknown,
       onChunk: (chunk: { text?: string; reasoning?: string }) => void
     ) => {
-      if (summaryText) onChunk({ text: summaryText })
-      return { content: summaryText, reasoning: '' }
+      if (replyText) onChunk({ text: replyText })
+      return { content: replyText, reasoning: '' }
     }
   } as unknown as AiClient
 
@@ -203,22 +229,27 @@ function buildMockContext(
   return { ctx, calls }
 }
 
-function buildSampleState(): AgentGraphState {
+function buildWorkTurnState(): AgentGraphState {
+  // 本轮执行过 2 条命令的 working state（turnStartStepCount = 0）
   const state = createInitialState()
-  state.taskDescription = '查看 nginx 状态并启动'
+  state.taskDescription = '查看磁盘和内存'
+  state.userMessage = '查看磁盘和内存'
+  state.turnStartStepCount = 0
   state.steps = [
     {
       stepNumber: 1,
-      plan: '检查 nginx 状态',
-      command: 'systemctl status nginx',
-      observation: 'nginx 已停止',
+      plan: '查看磁盘',
+      command: 'df -h',
+      commandOutput: 'mock output',
+      observation: '磁盘 80%',
       status: 'done'
     },
     {
       stepNumber: 2,
-      plan: '启动 nginx',
-      command: 'systemctl start nginx',
-      observation: '启动成功',
+      plan: '查看内存',
+      command: 'free -h',
+      commandOutput: 'mock output',
+      observation: '内存 40%',
       status: 'done'
     }
   ]
@@ -227,91 +258,99 @@ function buildSampleState(): AgentGraphState {
   return state
 }
 
-describe('createSummarizeNode completion timing', () => {
-  it('emits onStepComplete(COMPLETED) and completed state BEFORE the "task done" status message', async () => {
-    const { ctx, calls } = buildMockContext({ summaryText: '## 任务完成\nnginx 已成功启动' })
-    const node = createSummarizeNode(ctx)
-    const update = await node(buildSampleState())
+describe('createReplyNode completion timing', () => {
+  it('emits onStepComplete(COMPLETED) and completed state BEFORE the turn-done status message', async () => {
+    const { ctx, calls } = buildMockContext({ replyText: '磁盘 80%，内存 40%，建议清理日志。' })
+    const node = createReplyNode(ctx)
+    const update = await node(buildWorkTurnState())
 
     // 找到关键调用的索引
     const onStepCompleteIdx = calls.findIndex(c => c.kind === 'onStepComplete')
     const completedStateIdx = calls.findIndex(
       c => c.kind === 'emitStateChange' && c.payload === 'completed'
     )
-    const taskDoneIdx = calls.findIndex(
+    const turnDoneIdx = calls.findIndex(
       c =>
         c.kind === 'emitMessage' &&
         c.payload.type === 'status' &&
-        c.payload.content.startsWith('任务完成')
+        c.payload.content.startsWith('本轮完成')
     )
 
     // 三个关键调用都应存在
     expect(onStepCompleteIdx).toBeGreaterThanOrEqual(0)
     expect(completedStateIdx).toBeGreaterThanOrEqual(0)
-    expect(taskDoneIdx).toBeGreaterThanOrEqual(0)
+    expect(turnDoneIdx).toBeGreaterThanOrEqual(0)
 
-    // onStepComplete 必须在"任务完成"文案之前
-    expect(onStepCompleteIdx).toBeLessThan(taskDoneIdx)
-    // completed 状态事件必须在"任务完成"文案之前
-    expect(completedStateIdx).toBeLessThan(taskDoneIdx)
-    // onStepComplete 必须在 completed 状态事件之前（持久化先于事件发射）
+    // 时序纪律（与旧 summarize 一致）：持久化 → completed 状态 → 完成文案
     expect(onStepCompleteIdx).toBeLessThan(completedStateIdx)
+    expect(completedStateIdx).toBeLessThan(turnDoneIdx)
+
+    // 最终回复文本作为 conclusion 持久化
+    const onStepCompleteCalls = calls.filter(c => c.kind === 'onStepComplete')
+    expect(onStepCompleteCalls[0].payload.conclusion).toBe('磁盘 80%，内存 40%，建议清理日志。')
+    expect(onStepCompleteCalls[0].payload.stopReason).toBe<StopReason>('COMPLETED')
 
     // 返回图状态 completed
     expect(update.phase).toBe('completed')
     expect(update.stopReason).toBe('COMPLETED')
   })
 
-  it('passes stopReason: COMPLETED to onStepComplete', async () => {
-    const { ctx, calls } = buildMockContext({ summaryText: '正常总结' })
-    const node = createSummarizeNode(ctx)
-    await node(buildSampleState())
+  it('pure chat turn ends as idle without turn-done status or conclusion overwrite', async () => {
+    const { ctx, calls } = buildMockContext({ replyText: '你好！我在。' })
+    const node = createReplyNode(ctx)
 
+    // 纯聊天：无任何已执行步骤
+    const state = createInitialState()
+    state.taskDescription = '你好'
+    state.userMessage = '你好'
+    state.turnStartStepCount = 0
+    const update = await node(state)
+
+    // idle 收尾，不出现完成文案
+    const idleStateIdx = calls.findIndex(
+      c => c.kind === 'emitStateChange' && c.payload === 'idle'
+    )
+    expect(idleStateIdx).toBeGreaterThanOrEqual(0)
+    expect(calls.some(
+      c => c.kind === 'emitMessage' && c.payload.type === 'status' && c.payload.content.startsWith('本轮完成')
+    )).toBe(false)
+
+    // 持久化 COMPLETED（防空闲监测误判）但不覆盖 lastConclusion
     const onStepCompleteCalls = calls.filter(c => c.kind === 'onStepComplete')
     expect(onStepCompleteCalls).toHaveLength(1)
     expect(onStepCompleteCalls[0].payload.stopReason).toBe<StopReason>('COMPLETED')
+    expect(onStepCompleteCalls[0].payload.conclusion).toBeUndefined()
+
+    expect(update.phase).toBe('idle')
   })
 
-  it('still reaches completed when summary model fails and fallback conclusion is used', async () => {
-    // summaryText 为空 → invokeModelWithStreaming 返回 '(模型未返回内容)' → 走兜底结论
-    const { ctx, calls } = buildMockContext({ summaryText: '' })
-    const node = createSummarizeNode(ctx)
-    const update = await node(buildSampleState())
+  it('strips legacy DONE prefix from the final reply', async () => {
+    const { ctx, calls } = buildMockContext({ replyText: 'DONE: 你好呀！需要我帮你看看这台服务器吗？' })
+    const node = createReplyNode(ctx)
 
-    // 兜底结论仍应进入 completed
-    const completedStateIdx = calls.findIndex(
-      c => c.kind === 'emitStateChange' && c.payload === 'completed'
-    )
-    expect(completedStateIdx).toBeGreaterThanOrEqual(0)
+    const state = createInitialState()
+    state.taskDescription = '你好'
+    state.userMessage = '你好'
+    state.turnStartStepCount = 0
+    await node(state)
 
-    // 仍应投递 conclusion 卡片（兜底结论）
-    const conclusionMsgs = calls.filter(
-      c => c.kind === 'emitMessage' && c.payload.type === 'conclusion'
-    )
-    expect(conclusionMsgs).toHaveLength(1)
-
-    // 仍应投递"任务完成"文案
-    const taskDoneMsgs = calls.filter(
-      c =>
-        c.kind === 'emitMessage' &&
-        c.payload.type === 'status' &&
-        c.payload.content.startsWith('任务完成')
-    )
-    expect(taskDoneMsgs).toHaveLength(1)
-
-    expect(update.phase).toBe('completed')
-    expect(update.stopReason).toBe('COMPLETED')
+    // DONE 前缀被剥掉，作为普通聊天气泡出现
+    const emitCalls = calls.filter(c => c.kind === 'emitMessage')
+    const reply = emitCalls.find(m => m.payload.type === 'assistant_reply')
+    expect(reply).toBeDefined()
+    expect(reply!.payload.content).toBe('你好呀！需要我帮你看看这台服务器吗？')
+    expect(String(reply!.payload.content)).not.toMatch(/^DONE/)
   })
 
   it('converts to failed when onStepComplete (persistence) throws', async () => {
     const { ctx, calls } = buildMockContext({
-      summaryText: '正常总结',
+      replyText: '磁盘 80%，建议清理。',
       onStepCompleteThrows: new Error('持久化失败')
     })
-    const node = createSummarizeNode(ctx)
-    const update = await node(buildSampleState())
+    const node = createReplyNode(ctx)
+    const update = await node(buildWorkTurnState())
 
-    // 持久化失败时不得继续宣告"任务完成"，应转为 failed
+    // 持久化失败时不得继续宣告"本轮完成"，应转为 failed
     const failedStateIdx = calls.findIndex(
       c => c.kind === 'emitStateChange' && c.payload === 'failed'
     )
@@ -323,14 +362,10 @@ describe('createSummarizeNode completion timing', () => {
     )
     expect(completedStateIdx).toBe(-1)
 
-    // 不应投递"任务完成"文案
-    const taskDoneMsgs = calls.filter(
-      c =>
-        c.kind === 'emitMessage' &&
-        c.payload.type === 'status' &&
-        c.payload.content.startsWith('任务完成')
-    )
-    expect(taskDoneMsgs).toHaveLength(0)
+    // 不应投递"本轮完成"文案
+    expect(calls.some(
+      c => c.kind === 'emitMessage' && c.payload.type === 'status' && c.payload.content.startsWith('本轮完成')
+    )).toBe(false)
 
     expect(update.phase).toBe('failed')
     expect(update.stopReason).toBe('ERROR')

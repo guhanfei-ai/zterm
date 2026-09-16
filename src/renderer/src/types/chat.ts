@@ -18,7 +18,7 @@ export interface ChatMessage {
   // Agent conclusion support
   isAgentConclusion?: boolean
   agentDetails?: Record<string, unknown>
-  // Agent 自然聊天（think 节点聊天分支产生，区别于正式任务收尾的 conclusion）
+  // Agent 自然聊天（reply 主循环的无命令回复；conclusion 为旧架构任务收尾卡片，保留兼容历史会话）
   isAgentNaturalReply?: boolean
   // Agent 模式下的用户发言（与 isAgentNaturalReply 对称）。
   // 必须显式标记，否则 chat 模式过滤与 resetAgent 都会漏掉它。

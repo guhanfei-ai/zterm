@@ -189,8 +189,8 @@ export class AgentGraphRuntime {
     }
 
     // 记录本轮 turn 起始时已有的业务步骤数：
-    // 新任务为 0；follow-up 等于旧任务步骤数。think 据此判断
-    // "本轮 DONE 是否属于无执行的闲聊式收尾"（详见 agentGraphPrompt.isChattyDoneTurn）
+    // 新任务为 0；follow-up 等于旧任务步骤数。reply 收尾时据此区分
+    // "本轮执行过命令 → completed"与"纯聊天 → idle"（详见 agentGraph.createReplyNode）
     initialState.turnStartStepCount = initialState.steps.filter(s => s.stepNumber > 0).length
 
     const config = {
@@ -250,7 +250,10 @@ export class AgentGraphRuntime {
       }
 
       const currentState = snapshot.values as AgentGraphState
-      const newMaxSteps = currentState.maxSteps + additionalSteps
+      // 预算语义（2026-09-16）：点"继续"属于人类介入 —— 重置本轮预算基准，
+      // 重新获得满额 additionalSteps 轮，而不是在旧 maxSteps 上累计追加。
+      const turnBase = currentState.steps.filter(s => s.stepNumber > 0).length
+      const newMaxSteps = additionalSteps
 
       // Resume with adequate recursion headroom (per-round jump budget)
       const config = {
@@ -263,16 +266,21 @@ export class AgentGraphRuntime {
 
       tab.graphCtx.callbacks.emitMessage({
         type: 'status',
-        content: `已追加 ${additionalSteps} 步，继续执行（当前上限 ${newMaxSteps} 步）`
+        content: `已重置本轮预算 ${additionalSteps} 步，继续执行`
       })
 
-      // Update maxSteps via Command and resume
+      // Reset turn budget baseline and resume（对话优先重构：续跑回到 reply 主循环）
       try {
         await tab.compiledGraph.invoke(
           new Command({
             resume: null,
-            goto: ['think'] as any,
-            update: { maxSteps: newMaxSteps, aborted: false, stopReason: null } as any
+            goto: ['reply'] as any,
+            update: {
+              maxSteps: newMaxSteps,
+              turnStartStepCount: turnBase,
+              aborted: false,
+              stopReason: null
+            } as any
           }) as any,
           config
         )
