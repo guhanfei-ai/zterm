@@ -318,6 +318,10 @@ export function buildThinkSystemPrompt(allowWrite: boolean): string {
 - 只有当你判断"确实需要执行操作"时才出 PLAN/COMMAND
 - 如果用户的话不需要操作，自然回复就好
 - DONE 与 COMMAND 互斥：给出 DONE 表示整个任务收尾，不要再附带命令
+- 如果用户的新消息只是问候、闲聊或与当前任务无关的普通对话
+  （比如"你好"、"在吗"、"谢谢"、"你觉得AI会取代运维吗"），
+  就像正常聊天一样自然回复：不要继续执行任务、不要重复之前的结论、
+  不要输出 PLAN/COMMAND，也不要输出 DONE。任务保持挂起，等用户给出新指示再继续。
 
 强制约束（关键）：
 - 当用户请求是"检查 / 观察 / 排查 / 状态 / 资源 / 服务 / 进程 / 端口 / 日志"类问题时，
@@ -361,6 +365,10 @@ export function buildThinkUserPrompt(
       parts.push('- 只读模式 = 禁止写，不等于禁止执行只读命令。')
       parts.push('- 此刻不允许 DONE，必须出 PLAN + COMMAND。')
     }
+  } else {
+    // follow-up：新发言必须显式突出。此前 userMessage 只埋在对话历史里，
+    // 被"当前任务 / 已完成步骤"语境淹没，导致用户说"你好"也被当作任务续跑。
+    parts.push(`\n用户刚发来的新消息：${userMessage}`)
   }
 
   // 自然对话历史（最近 N 轮）—— 让"你刚才说的"这类追问能接上
@@ -419,13 +427,37 @@ export function buildThinkUserPrompt(
   }
 
   if (!isFirstInteraction) {
-    parts.push(`\n你刚执行完步骤 ${state.currentStep}，请判断：`)
-    parts.push('1. 是否需要继续执行下一步？如果需要，给出 PLAN + COMMAND（可以一次给多条，也可以先用自然语言解释再出命令）')
-    parts.push('2. 是否任务已完成？如果完成，出 DONE: 结论')
-    parts.push('3. 是否需要跟用户沟通（比如解释结果、询问方向）？如果是，直接聊天回复')
+    parts.push('\n请先判断"用户刚发来的新消息"的意图，再决定怎么回应：')
+    parts.push('1. 只是问候 / 闲聊 / 与任务无关的普通对话 → 直接像聊天一样自然回复；不要执行命令，不要输出 DONE，不要重复已有结论')
+    parts.push('2. 对当前任务的新指示或追问（比如"再查下内存"、"然后呢"）→ 结合上文继续任务：出 PLAN + COMMAND，或任务已完成时出 DONE: 结论')
+    parts.push('3. 全新的独立任务 → 直接按新需求处理')
   } else {
     parts.push('\n请判断用户意图：如果只是聊天/提问，直接回复；如果需要执行操作，可以先说明再出 PLAN + COMMAND（可多条）')
   }
 
   return parts.join('\n')
+}
+
+/**
+ * 判定 think 输出的 DONE 是否属于"本轮无执行的闲聊式收尾"。
+ *
+ * 满足以下全部条件时成立：
+ *   1. 本轮 turn 没有新增业务步骤（businessSteps <= turnStartStepCount）——
+ *      即从 turn 开始到现在没有执行过任何命令；
+ *   2. 不属于"首轮 + 检查型请求"——该场景由 repair_action_plan 强制取证，
+ *      优先级高于闲聊判定（否则"看看机器在跑什么"会被闲聊闸门放走）。
+ *
+ * 用途：think 输出 DONE 且本判定为真时，把 DONE 文本直接作为聊天回复，
+ * 不进入 summarize 重新生成正式任务报告（防止"你好"变成"80 端口健康检查结论"）。
+ * think 节点与 routeAfterThink 共用本函数，避免两处口径漂移。
+ */
+export function isChattyDoneTurn(state: AgentGraphState): boolean {
+  const businessSteps = state.steps.filter(s => s.stepNumber > 0).length
+  // 旧 checkpoint 恢复的会话可能没有该字段：?? 0 时只有"零步骤会话"才可能命中，
+  // follow-up 老会话（businessSteps > 0）安全降级为不走闲聊闸门
+  const noNewSteps = businessSteps <= (state.turnStartStepCount ?? 0)
+  if (!noNewSteps) return false
+  const isFirstInteraction = businessSteps === 0
+  if (isFirstInteraction && shouldRequireInspection(state.userMessage || state.taskDescription)) return false
+  return true
 }

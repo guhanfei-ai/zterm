@@ -113,9 +113,7 @@ const bracketLabel = computed(() => {
 <style scoped>
 /* ---- 工具条容器：透明、无阴影，视作头部的从属区域 ---- */
 .agent-status-bar {
-  /* 左内边距 20px = 上方标题行图标(14px) + 间距(6px)，
-     使状态行/模式行文字与标题文字落在同一竖直轴线上 */
-  padding: 4px 0 2px 20px;
+  padding: 4px 0 2px;
   background: transparent;
   flex-shrink: 0;
   border: none;

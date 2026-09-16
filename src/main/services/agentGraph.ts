@@ -19,6 +19,7 @@ import {
   SystemInfo
 } from './agentGraphState'
 import {
+  isChattyDoneTurn,
   parseAIResponse,
   parseSystemInfo,
   shouldRequireInspection,
@@ -199,6 +200,25 @@ function createThinkNode(ctx: AgentGraphContext) {
 
     // Model says done
     if (parsed.done) {
+      // 闲聊式收尾闸门：本轮没有执行过任何命令时的 DONE 不代表"任务执行完成"
+      // （典型场景：follow-up 时用户只是说"你好"，模型顺着任务语境补了个 DONE）。
+      // 此时不进 summarize 重新生成正式任务报告，直接把 DONE 文本当聊天回复。
+      if (isChattyDoneTurn(state)) {
+        const chatText = text.replace(/^DONE[:：]\s*/i, '').trim() || text
+        ctx.callbacks.emitMessage({
+          type: 'assistant_reply',
+          content: chatText,
+          details: { chatResponse: true }
+        })
+        // 与纯聊天分支同款收尾：落盘为已完成 turn，避免 idle watcher 误判恢复栏
+        ctx.callbacks.onStepComplete({
+          steps: state.steps,
+          currentStep: state.currentStep,
+          stopReason: 'COMPLETED'
+        })
+        ctx.callbacks.emitStateChange('idle')
+        return { phase: 'idle', modelResponseText: text, pendingCommand: '', pendingCommands: [] }
+      }
       return { currentStep: nextStep, modelResponseText: text, phase: 'planning', pendingCommands: [] }
     }
 
@@ -665,7 +685,13 @@ function routeAfterThink(state: AgentGraphState): string {
 
   // Model said done
   const parsed = parseAIResponse(state.modelResponseText)
-  if (parsed.done) return 'summarize'
+  if (parsed.done) {
+    // 闲聊式收尾（本轮无新增执行步骤）→ 不进 summarize 扩写成正式任务报告，
+    // think 节点已把 DONE 文本作为聊天回复投递，这里直接结束。
+    // repair guard 在前：首轮检查型请求的 DONE 仍会被强制取证，不受此闸门影响。
+    if (isChattyDoneTurn(state)) return 'end'
+    return 'summarize'
+  }
 
   // No command → chat response, end gracefully
   if (!state.pendingCommand) return 'end'

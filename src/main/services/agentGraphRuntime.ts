@@ -188,6 +188,11 @@ export class AgentGraphRuntime {
       initialState.phase = rs.phase
     }
 
+    // 记录本轮 turn 起始时已有的业务步骤数：
+    // 新任务为 0；follow-up 等于旧任务步骤数。think 据此判断
+    // "本轮 DONE 是否属于无执行的闲聊式收尾"（详见 agentGraphPrompt.isChattyDoneTurn）
+    initialState.turnStartStepCount = initialState.steps.filter(s => s.stepNumber > 0).length
+
     const config = {
       configurable: {
         thread_id: chatTabId

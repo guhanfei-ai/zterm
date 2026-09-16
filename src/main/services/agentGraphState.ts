@@ -104,6 +104,12 @@ export const AgentStateAnnotation = Annotation.Root({
   // ---- Completed steps history ----
   steps: Annotation<StepRecord[]>(),
 
+  // 本轮 turn 开始时已存在的业务步骤数（stepNumber > 0）。
+  // startTask 时由 restoredState.steps 推导：新任务为 0，follow-up 为旧任务的步骤数。
+  // 用途：think 输出 DONE 但本轮没有新增执行步骤时，判定为"闲聊式收尾"，
+  // 不走 summarize 生成正式任务报告（防止"你好"被扩写成健康检查报告）。
+  turnStartStepCount: Annotation<number>(),
+
   // ---- Natural conversation history (user/assistant turns) ----
   // 区别于 steps：steps 只记"执行步骤"，conversationHistory 记所有自然发言。
   // think 节点 prompt 用它来记住"用户上一句说了什么、助手上一句怎么回"。
@@ -153,6 +159,7 @@ export function createInitialState(): AgentGraphState {
     systemDetected: false,
     systemInfo: { kernel: '', distroName: '', distroVersion: '', packageManager: '', rawOutput: '' },
     steps: [],
+    turnStartStepCount: 0,
     conversationHistory: [],
     recentKeyOutputs: [],
     aborted: false,
