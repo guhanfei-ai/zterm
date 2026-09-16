@@ -10,9 +10,6 @@
         </button>
       </div>
       <div v-if="hostsStore.activeMode === 'direct'" class="panel-actions">
-        <button class="panel-action" title="从 OpenSSH 配置导入主机" @click="$emit('import-hosts')">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg><span>导入</span>
-        </button>
         <button class="panel-action" title="导出主机为 OpenSSH 配置" @click="$emit('export-hosts')">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3"/><path d="m7 8 5-5 5 5"/><path d="M5 21h14"/></svg><span>导出</span>
         </button>
@@ -21,7 +18,7 @@
         </button>
       </div>
     </div>
-    <HostList @add-host="$emit('add-host')" @import-hosts="$emit('import-hosts')" />
+    <HostList @add-host="$emit('add-host')" />
   </div>
 </template>
 
@@ -35,7 +32,6 @@ defineProps<{
 
 defineEmits<{
   'add-host': []
-  'import-hosts': []
   'export-hosts': []
   'show-key-manager': []
 }>()
@@ -68,7 +64,7 @@ const hostsStore = useHostsStore()
   justify-content: space-between;
   gap: 10px;
   min-height: var(--panel-header-height);
-  padding: 0 14px;
+  padding: 0 12px;
 }
 
 .left-panel-context-title {
@@ -77,40 +73,38 @@ const hostsStore = useHostsStore()
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--text-primary);
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
   letter-spacing: 0;
 }
 
 .panel-add-btn {
-  width: 28px;
-  height: 28px;
+  width: 26px;
+  height: 26px;
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   border: 0;
-  box-shadow: var(--shadow-subtle);
-  border-radius: var(--radius-control, 9px);
-  background: var(--surface-alt, transparent);
-  color: var(--text-secondary);
+  border-radius: var(--radius-sm, 6px);
+  background: transparent;
+  color: var(--text-tertiary);
   cursor: pointer;
-  transition: color var(--transition-fast), background-color var(--transition-fast), border-color var(--transition-fast);
+  transition: color var(--transition-fast), background-color var(--transition-fast);
 }
 
 .panel-add-btn:hover {
-  color: var(--accent, #86d4bd);
-  box-shadow: 0 2px 10px color-mix(in srgb, var(--accent, #86d4bd) 14%, transparent);
-  background: color-mix(in srgb, var(--accent, #86d4bd) 10%, transparent);
+  color: var(--text-primary);
+  background: var(--surface-alt, transparent);
 }
 
 .panel-left .panel-actions {
   min-height: var(--tabbar-height);
   display: flex;
   align-items: center;
-  gap: 18px;
-  padding: 0 14px;
-  border-top: 1px solid var(--divider-soft, var(--divider));
+  gap: 14px;
+  padding: 0 12px;
+  border-top: 1px solid var(--workbench-border-soft, var(--divider-soft));
 }
 
 .panel-action {
@@ -128,7 +122,7 @@ const hostsStore = useHostsStore()
 }
 
 .panel-action:hover {
-  color: var(--accent, #86d4bd);
+  color: var(--accent);
 }
 
 .panel-action svg {

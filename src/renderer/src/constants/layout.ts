@@ -3,7 +3,7 @@
  * Extracted from App.vue to avoid hardcoded magic numbers scattered across composables.
  */
 
-export const NAV_RAIL_WIDTH = 44
+export const NAV_RAIL_WIDTH = 56
 export const LEFT_PANEL_MIN = 208
 export const LEFT_PANEL_DEFAULT = 232
 export const LEFT_PANEL_MAX = 420

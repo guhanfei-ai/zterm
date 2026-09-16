@@ -128,34 +128,19 @@ const navGroups = [
 }
 
 .nav-item {
-  position: relative;
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 9px 12px;
-  padding-left: 14px;
   background: transparent;
   border: none;
-  border-radius: 8px;
+  border-radius: var(--radius-control);
   color: var(--text-secondary);
   font-size: 13px;
   cursor: pointer;
-  transition: all var(--transition-fast);
+  transition: background var(--transition-fast), color var(--transition-fast);
   text-align: left;
   width: 100%;
-}
-
-.nav-item::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 3px;
-  height: 0;
-  border-radius: 0 2px 2px 0;
-  background: var(--accent);
-  transition: height var(--transition-normal);
 }
 
 .nav-item:hover {
@@ -163,15 +148,10 @@ const navGroups = [
   color: var(--text-primary);
 }
 
-.nav-item:hover::before {
-  height: 16px;
-}
-
 .nav-item.active {
-  background: color-mix(in srgb, var(--accent) 12%, var(--surface));
+  background: var(--accent-muted);
   color: var(--text-primary);
   font-weight: 500;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
 }
 
 @media (max-width: 640px) {
@@ -179,10 +159,6 @@ const navGroups = [
   .nav-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .sidebar-header { padding-left: 8px; padding-right: 8px; }
   .btn-back { padding-left: 8px; padding-right: 8px; }
-}
-
-.nav-item.active::before {
-  height: 20px;
 }
 
 .nav-icon {

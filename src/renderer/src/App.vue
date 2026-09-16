@@ -31,7 +31,6 @@
         v-if="leftPanelShown"
         :width="leftPanelWidth"
         @add-host="showHostDialog = true"
-        @import-hosts="onImportHosts"
         @export-hosts="onExportHosts"
         @show-key-manager="showKeyManager = true"
       />
@@ -87,14 +86,6 @@
       <!-- Dialogs -->
       <HostFormDialog v-if="showHostDialog" @close="showHostDialog = false" />
       <KeyManagerDialog v-if="showKeyManager" @close="showKeyManager = false" />
-      <SshConfigImportDialog
-        v-if="sshConfigImport"
-        :hosts="sshConfigImport.hosts"
-        :duplicates="sshConfigImport.duplicates"
-        :skipped-blocks="sshConfigImport.skippedBlocks"
-        @confirm="onImportConfirmed"
-        @cancel="sshConfigImport = null"
-      />
       <AppUpdateToast />
       <ToastHost />
 
@@ -161,14 +152,12 @@ import PanelRight from '@/components/layout/PanelRight.vue'
 
 import HostFormDialog from '@/components/hosts/HostFormDialog.vue'
 import KeyManagerDialog from '@/components/keys/KeyManagerDialog.vue'
-import SshConfigImportDialog from '@/components/hosts/SshConfigImportDialog.vue'
 import AppUpdateToast from '@/components/common/AppUpdateToast.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import ToastHost from '@/components/common/ToastHost.vue'
 import SettingsPage from '@/components/settings/SettingsPage.vue'
 import WorkspaceRestoreDialog from '@/components/workspace/WorkspaceRestoreDialog.vue'
 import SshHostTrustDialog from '@/components/hosts/SshHostTrustDialog.vue'
-import type { ParsedSshConfigHost } from '../../main/services/sshConfigFile'
 
 // ===== Stores =====
 const hostsStore = useHostsStore()
@@ -232,37 +221,7 @@ function closeSettings(): void {
 const showHostDialog = ref(false)
 const showKeyManager = ref(false)
 
-// ===== OpenSSH config 导入 / 导出 =====
-const sshConfigImport = ref<{
-  hosts: ParsedSshConfigHost[]
-  duplicates: boolean[]
-  skippedBlocks: number
-} | null>(null)
-
-async function onImportHosts(): Promise<void> {
-  const result = await window.electronAPI.hosts.importSshConfig()
-  if (result.canceled) return
-  if ('error' in result && result.error) {
-    error(`导入失败: ${result.error}`)
-    return
-  }
-  if (!('hosts' in result)) return
-  if (!result.hosts.length) {
-    info('配置文件中没有找到可导入的主机（通配符块和 Match 块不会导入）')
-    return
-  }
-  sshConfigImport.value = {
-    hosts: result.hosts,
-    duplicates: result.duplicates,
-    skippedBlocks: result.skippedBlocks
-  }
-}
-
-async function onImportConfirmed(): Promise<void> {
-  sshConfigImport.value = null
-  await hostsStore.fetchHosts()
-  await hostsStore.applyStoredOrder()
-}
+// ===== OpenSSH config 导出 =====
 
 async function onExportHosts(): Promise<void> {
   const result = await window.electronAPI.hosts.exportSshConfig()
@@ -337,12 +296,12 @@ function toggleRightPanel(): void {
   gap: 12px;
   height: var(--panel-header-height);
   min-height: var(--panel-header-height);
-  padding: 0 16px;
-  border-bottom: 1px solid var(--divider-soft);
+  padding: 0 12px;
+  border-bottom: 1px solid var(--workbench-border-soft, var(--divider-soft));
 }
 
 .panel-heading h2  {
-  font-size: 14px;
+  font-size: 13px;
   line-height: 20px;
   font-weight: 600;
 }
@@ -368,13 +327,13 @@ function toggleRightPanel(): void {
 
 .tab-bar  {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   height: var(--tabbar-height);
   min-height: var(--tabbar-height);
   background: var(--workbench-tabbar-bg, var(--surface-muted));
-  border-bottom: 1px solid var(--divider-soft);
-  padding: 0 6px;
-  gap: 4px;
+  border-bottom: 1px solid var(--workbench-border-soft, var(--divider-soft));
+  padding: 0 10px;
+  gap: 6px;
 }
 
 .tab-list  {
@@ -394,32 +353,31 @@ function toggleRightPanel(): void {
 .tab-item  {
   display: flex;
   align-items: center;
-  gap: 8px;
-  height: 100%;
+  gap: 7px;
+  height: 28px;
+  margin-bottom: 0;
   padding: 0 10px;
   max-width: 200px;
-  min-width: 100px;
+  min-width: 88px;
   flex-shrink: 0;
   border: 0;
-  border-bottom: 0;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
   background: transparent;
-  color: var(--text-secondary);
+  color: var(--text-tertiary);
   cursor: pointer;
   white-space: nowrap;
   font-size: 12px;
   position: relative;
-  transition: background var(--transition-fast);
+  transition: background var(--transition-fast), color var(--transition-fast);
 }
 
 .tab-item:hover  {
-  background: var(--workbench-tab-hover-bg, var(--hover-overlay));
   color: var(--text-primary);
 }
 
 .tab-item.active  {
   background: var(--workbench-tab-active-bg, var(--bg));
   color: var(--text-primary);
-  box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--accent) 66%, transparent);
 }
 
 .tab-title  {

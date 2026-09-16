@@ -69,27 +69,27 @@ const { toasts, dismiss } = useToast()
 }
 
 .toast-success {
-  border-left-color: var(--success, #4caf7d);
+  border-left-color: var(--success);
 }
 
 .toast-success .toast-icon {
-  color: var(--success, #4caf7d);
+  color: var(--success);
 }
 
 .toast-error {
-  border-left-color: var(--danger, #e05555);
+  border-left-color: var(--danger);
 }
 
 .toast-error .toast-icon {
-  color: var(--danger, #e05555);
+  color: var(--danger);
 }
 
 .toast-info {
-  border-left-color: var(--accent, #4a9eff);
+  border-left-color: var(--accent);
 }
 
 .toast-info .toast-icon {
-  color: var(--accent, #4a9eff);
+  color: var(--accent);
 }
 
 /* 进出场动画 */

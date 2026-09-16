@@ -78,9 +78,9 @@ function onChatTabKeydown(event: KeyboardEvent, id: string): void {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 12px 0 16px;
+  padding: 0 12px;
   background: var(--workbench-panel-bg, var(--surface));
-  border-bottom: 1px solid var(--workbench-border, var(--divider));
+  border-bottom: 1px solid var(--workbench-border-soft, var(--divider-soft));
   flex-shrink: 0;
 }
 
@@ -89,7 +89,7 @@ function onChatTabKeydown(event: KeyboardEvent, id: string): void {
   align-items: center;
   gap: 8px;
   color: var(--text-primary);
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
   letter-spacing: 0.1px;
 }
@@ -100,18 +100,24 @@ function onChatTabKeydown(event: KeyboardEvent, id: string): void {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  height: 28px;
+  height: 26px;
   padding: 0 10px;
-  border: 1px solid var(--border-soft, var(--divider));
-  border-radius: var(--radius-control, 7px);
-  background: var(--surface-alt);
-  color: var(--text-secondary);
+  border: 0;
+  border-radius: var(--radius-sm, 6px);
+  background: transparent;
+  color: var(--text-tertiary);
   font-family: inherit;
   font-size: 12px;
   cursor: pointer;
-  transition: background .15s ease, color .15s ease, border-color .15s ease;
+  transition: background var(--transition-fast), color var(--transition-fast);
 }
 
-.assistant-new:hover { background: var(--surface-high); color: var(--text-primary); border-color: var(--accent); }
+.assistant-new:hover { background: var(--surface-alt); color: var(--text-primary); }
+
+/* 单个对话标签填满栏位，避免右侧留下突兀的空白。多标签时保持横向标签布局。 */
+.chat-tab-bar .tab-item:only-child {
+  flex: 1;
+  max-width: none;
+}
 
 </style>

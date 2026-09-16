@@ -51,7 +51,7 @@
               @click="onPick(theme.id)"
             >
               <div class="theme-preview" :style="previewStyle(theme)">
-                <div class="preview-strip">
+                <div class="preview-strip" :style="{ background: withAlpha(theme.preview.text, 0.12) }">
                   <span class="preview-dot" :style="{ background: theme.preview.accent }"></span>
                   <span class="preview-dot" :style="{ background: theme.preview.surface }"></span>
                   <span class="preview-dot" :style="{ background: theme.preview.surfaceAlt }"></span>
@@ -366,7 +366,6 @@ function withAlpha(hex: string, alpha: number): string {
   align-items: center;
   gap: 4px;
   padding: 0 8px;
-  background: rgba(0, 0, 0, 0.18);
 }
 
 .preview-dot {
@@ -439,9 +438,9 @@ function withAlpha(hex: string, alpha: number): string {
 }
 
 .theme-card-kind.kind-light {
-  color: var(--warning);
-  background: color-mix(in srgb, var(--warning) 12%, transparent);
-  border-color: color-mix(in srgb, var(--warning) 28%, transparent);
+  color: var(--text-secondary);
+  background: var(--surface-alt);
+  border-color: var(--divider);
 }
 
 .theme-card-desc {

@@ -139,10 +139,13 @@ function onReconnectTerminalTab(id: string): void {
 }
 
 .terminal-mode  {
-  border-left: 1px solid var(--divider);
-  padding-left: 14px;
-  font-size: 12px;
-  color: var(--text-tertiary);
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm, 6px);
+  background: var(--accent-muted);
+  color: var(--accent);
+  font-size: 11px;
   white-space: nowrap;
 }
 
@@ -155,13 +158,13 @@ function onReconnectTerminalTab(id: string): void {
 }
 
 .terminal-statusbar  {
-  height: 30px;
-  min-height: 30px;
+  height: 28px;
+  min-height: 28px;
   display: flex;
   align-items: center;
   gap: 14px;
-  padding: 0 16px;
-  border-top: 1px solid var(--divider-soft);
+  padding: 0 14px;
+  border-top: 1px solid var(--workbench-border-soft, var(--divider-soft));
   color: var(--text-tertiary);
   font-size: 11px;
 }

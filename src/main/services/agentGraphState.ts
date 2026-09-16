@@ -39,6 +39,12 @@ export interface ParsedModelResponse {
   done?: boolean
 }
 
+// ---- One queued command from a think turn (think 可一次出多条命令) ----
+export interface PendingCommand {
+  plan?: string
+  command: string
+}
+
 // ---- System probe info ----
 export interface SystemInfo {
   kernel: string
@@ -85,6 +91,9 @@ export const AgentStateAnnotation = Annotation.Root({
   // ---- Current step data ----
   planText: Annotation<string>(),
   pendingCommand: Annotation<string>(),
+  // think 一次规划出的命令队列；pendingCommand 是队列中正在处理的第一条。
+  // 每条命令独立走安全检查/确认/执行，消耗一个步号；拒绝或拦截时队列整体作废。
+  pendingCommands: Annotation<PendingCommand[]>(),
   commandOutput: Annotation<string>(),
   observation: Annotation<string>(),
   safetyResult: Annotation<SafetyCheck | null>(),
@@ -141,6 +150,7 @@ export function createInitialState(): AgentGraphState {
     maxSteps: 25,
     planText: '',
     pendingCommand: '',
+    pendingCommands: [],
     commandOutput: '',
     observation: '',
     safetyResult: null,

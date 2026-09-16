@@ -19,6 +19,7 @@ import {
   parseAIResponse,
   parseSystemInfo,
   shouldRequireInspection,
+  stripProtocolLines,
   TerminalContext
 } from './agentGraphPrompt'
 import { checkCommand, SafetyCheck } from './safetyGuard'
@@ -196,19 +197,10 @@ function createThinkNode(ctx: AgentGraphContext) {
 
     // Model says done
     if (parsed.done) {
-      return { currentStep: nextStep, modelResponseText: text, phase: 'planning' }
+      return { currentStep: nextStep, modelResponseText: text, phase: 'planning', pendingCommands: [] }
     }
 
-    // Emit plan if present
-    if (parsed.plan) {
-      ctx.callbacks.emitMessage({
-        type: 'plan',
-        content: parsed.plan,
-        stepNumber: nextStep
-      })
-    }
-
-    const hasCommand = !!parsed.command
+    const hasCommand = parsed.commands.length > 0
 
     if (!hasCommand) {
       // --- 聊天分支：模型选择了聊天，没出命令 ---
@@ -227,11 +219,32 @@ function createThinkNode(ctx: AgentGraphContext) {
       })
       ctx.callbacks.emitStateChange('idle')
       // 不递增 currentStep；聊天不会新增执行步骤，但会落盘为已完成 turn。
-      // 显式清空 pendingCommand，避免上一轮残留命令被 routeAfterThink 误判重执行
-      return { phase: 'idle', modelResponseText: text, pendingCommand: '' }
+      // 显式清空 pendingCommand/pendingCommands，避免上一轮残留命令被 routeAfterThink 误判重执行
+      return { phase: 'idle', modelResponseText: text, pendingCommand: '', pendingCommands: [] }
     }
 
-    // --- 执行分支：模型出了命令 ---
+    // --- 执行分支：模型出了命令（可能多条，进入队列逐条执行） ---
+    // 边聊边干：自然语言部分（剔除协议行后）先投进聊天气泡
+    const chatPart = stripProtocolLines(text)
+    if (chatPart) {
+      ctx.callbacks.emitMessage({
+        type: 'assistant_reply',
+        content: chatPart,
+        details: { withCommands: true }
+      })
+    }
+
+    // 每条命令的计划说明按未来步号（nextStep + 序号）预先展示
+    parsed.commands.forEach((c, idx) => {
+      if (c.plan) {
+        ctx.callbacks.emitMessage({
+          type: 'plan',
+          content: c.plan,
+          stepNumber: nextStep + idx
+        })
+      }
+    })
+
     // 仅在"非首次"时把当前 step 推入 onStepComplete（与旧 plan_step 行为对齐）
     if (!isFirstInteraction) {
       ctx.callbacks.onStepComplete({
@@ -242,8 +255,9 @@ function createThinkNode(ctx: AgentGraphContext) {
 
     return {
       currentStep: nextStep,
-      planText: parsed.plan || text,
-      pendingCommand: parsed.command || '',
+      planText: parsed.commands[0].plan || text,
+      pendingCommand: parsed.commands[0].command,
+      pendingCommands: parsed.commands,
       modelResponseText: text,
       confirmationApproved: null,
       needsConfirmation: false,
@@ -323,6 +337,7 @@ function createRepairActionPlanNode(ctx: AgentGraphContext) {
       currentStep: nextStep,
       planText: parsed.plan || '补一条只读观察命令以获取证据',
       pendingCommand: parsed.command || fallbackCommand,
+      pendingCommands: [{ plan: parsed.plan, command: parsed.command || fallbackCommand }],
       modelResponseText: text,
       confirmationApproved: null,
       needsConfirmation: false,
@@ -384,9 +399,11 @@ function createCheckSafetyNode(ctx: AgentGraphContext) {
         steps: [...state.steps, step],
         currentStep: state.currentStep
       })
+      // 被拦截后剩余命令队列整体作废，回 think 重新规划
       return {
         safetyResult,
         needsConfirmation: false,
+        pendingCommands: [],
         steps: [...state.steps, step]
       }
     }
@@ -466,6 +483,10 @@ function createConfirmCommandNode(ctx: AgentGraphContext) {
       return {
         confirmationApproved: false,
         needsConfirmation: false,
+        // 用户拒绝后剩余命令队列作废（回 think 重新规划）；
+        // commandOutput 一并清掉，避免下一轮 think 把更早的陈旧输出误当"上一步结果"
+        pendingCommands: [],
+        commandOutput: '',
         steps: allSteps
       }
     }
@@ -558,10 +579,30 @@ function createAnalyzeResultNode(ctx: AgentGraphContext) {
       currentStep: state.currentStep
     })
 
+    // 队列中还有 think 预排好的命令 → 弹出下一条作为新的当前步，
+    // 由 routeAfterAnalyze 直接送回 check_safety（无需再调一次 think）
+    const remaining = (state.pendingCommands ?? []).slice(1)
+    if (remaining.length > 0) {
+      return {
+        observation: observationText,
+        modelResponseText: text,
+        steps: allSteps,
+        currentStep: state.currentStep + 1,
+        pendingCommands: remaining,
+        pendingCommand: remaining[0].command,
+        planText: remaining[0].plan || state.planText,
+        commandOutput: '',
+        confirmationApproved: null,
+        needsConfirmation: false,
+        safetyResult: null
+      }
+    }
+
     return {
       observation: observationText,
       modelResponseText: text,
-      steps: allSteps
+      steps: allSteps,
+      pendingCommands: []
     }
   }
 }
@@ -760,8 +801,10 @@ function routeAfterAnalyze(state: AgentGraphState): string {
   // Check if model said done in the observation
   const parsed = parseAIResponse(state.modelResponseText)
   if (parsed.done) return 'summarize'
-  // Check step limit
+  // Check step limit（预算优先：触顶即停，即使队列里还有预排命令）
   if (state.currentStep >= state.maxSteps) return 'step_limit'
+  // 队列中还有 think 预排好的命令 → 跳过 think，直接进安全检查
+  if (state.pendingCommand && (state.pendingCommands ?? []).length > 0) return 'check_safety'
   return 'think'
 }
 
@@ -825,6 +868,7 @@ export function buildAgentGraph(ctx: AgentGraphContext, checkpointer: MemorySave
 
   builder.addConditionalEdges('analyze_result', routeAfterAnalyze, {
     think: 'think',                // 曾为 plan_step
+    check_safety: 'check_safety',  // 队列中还有预排命令时直接消费
     summarize: 'summarize',
     step_limit: 'set_round_limit',
     end: END

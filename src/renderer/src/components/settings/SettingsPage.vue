@@ -111,9 +111,9 @@ watch(() => props.initialSection, (val) => {
 .settings-heading h1 {
   margin: 0 0 5px;
   color: var(--text-primary);
-  font-size: 22px;
+  font-size: 20px;
   line-height: 1.2;
-  font-weight: 700;
+  font-weight: 600;
   letter-spacing: -.2px;
 }
 

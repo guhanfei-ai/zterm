@@ -128,15 +128,15 @@ function onClose(): void { window.electronAPI.window.close() }
 }
 
 .title-toggle-btn {
-  width: 26px;
-  height: 24px;
+  width: 28px;
+  height: 28px;
   display: flex;
   align-items: center;
   justify-content: center;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-sm, 6px);
   background: transparent;
-  color: color-mix(in srgb, var(--text-tertiary) 92%, transparent);
+  color: var(--text-tertiary);
   cursor: pointer;
   transition:
     color var(--transition-fast),
@@ -145,7 +145,7 @@ function onClose(): void { window.electronAPI.window.close() }
 }
 
 .title-toggle-btn:hover {
-  background: color-mix(in srgb, var(--workbench-tab-hover-bg, var(--divider)) 26%, transparent);
+  background: var(--workbench-tab-hover-bg, var(--hover-overlay));
   color: var(--text-secondary);
 }
 
@@ -154,8 +154,8 @@ function onClose(): void { window.electronAPI.window.close() }
 }
 
 .title-toggle-btn.is-collapsed {
-  background: color-mix(in srgb, var(--accent) 8%, transparent);
-  color: color-mix(in srgb, var(--accent) 58%, var(--text-secondary));
+  background: var(--accent-muted);
+  color: var(--accent);
 }
 
 .title-toggle-btn--win {
@@ -226,7 +226,7 @@ function onClose(): void { window.electronAPI.window.close() }
 .title-brand-mark {
   display: inline-flex;
   align-items: center;
-  color: var(--accent, #86d4bd);
+  color: var(--accent);
 }
 
 .title-bar-text {
@@ -249,8 +249,10 @@ function onClose(): void { window.electronAPI.window.close() }
   margin-left: 0;
   padding-left: 0;
   border-left: 0;
-  font-size: 11px;
-  letter-spacing: 0.4px;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.2px;
+  color: var(--text-secondary);
 }
 
 .title-bar-side--leading.mac {

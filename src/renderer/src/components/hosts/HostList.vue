@@ -10,10 +10,9 @@
       <div v-else-if="!hostsStore.hosts.length" class="list-placeholder host-empty-state">
         <div class="jumpserver-empty-icon"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 6.5h.01M7 17.5h.01"/></svg></div>
         <div class="jumpserver-empty-title">暂无主机</div>
-        <div class="jumpserver-empty-desc">添加一台主机，或从已有的 OpenSSH 配置文件导入</div>
+        <div class="jumpserver-empty-desc">添加一台主机开始使用</div>
         <div class="host-empty-actions">
           <button class="host-empty-btn primary" @click="$emit('add-host')">添加主机</button>
-          <button class="host-empty-btn" @click="$emit('import-hosts')">导入 OpenSSH 配置</button>
         </div>
       </div>
       <div
@@ -293,7 +292,6 @@ const { confirm } = useConfirm()
 // 空主机列表的行动入口：转发给 PanelLeft → App.vue 的添加 / 导入流程
 defineEmits<{
   'add-host': []
-  'import-hosts': []
 }>()
 
 // 多实例（P14）：在 HostList 内部承接「新建 / 编辑实例」入口，
@@ -559,18 +557,18 @@ function onDragEnd(): void {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 10px 8px;
+  padding: 8px;
   display: flex;
   flex-direction: column;
 }
 
-.host-search { display: flex; align-items: center; gap: 8px; flex-shrink: 0; margin: 0 2px 12px; padding: 8px 10px; min-height: 34px; border: 1px solid var(--divider); border-radius: var(--radius-control); background: var(--bg); color: var(--text-tertiary); }
-.host-search:focus-within { border-color: var(--accent); }
+.host-search { display: flex; align-items: center; gap: 8px; flex-shrink: 0; margin: 0 2px 10px; padding: 7px 10px; min-height: 34px; border: 1px solid var(--divider); border-radius: var(--radius-control); background: var(--surface, var(--bg)); color: var(--text-tertiary); }
+.host-search:focus-within { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 24%, transparent); }
 .host-search svg { flex-shrink: 0; }
-.host-search input { min-width: 0; width: 100%; font-size: 11px; line-height: 18px; color: var(--text-primary); background: transparent; border: 0; outline: 0; }
+.host-search input { min-width: 0; width: 100%; font-size: 12px; line-height: 18px; color: var(--text-primary); background: transparent; border: 0; outline: 0; }
 .host-search input::placeholder { color: var(--text-tertiary); }
 .host-count { margin-top: auto; padding: 18px 10px 4px; font-size: 11px; color: var(--text-tertiary); }
-.host-connection-dot { width: 6px; height: 6px; flex-shrink: 0; border-radius: 50%; background: var(--text-tertiary); margin-right: 10px; }
+.host-connection-dot { width: 7px; height: 7px; flex-shrink: 0; border-radius: 50%; background: var(--text-disabled); margin-right: 9px; }
 .host-connection-dot.connected { background: var(--success); }
 
 .list-placeholder {
@@ -627,23 +625,21 @@ function onDragEnd(): void {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 8px;
-  min-height: 56px;
+  padding: 8px 10px;
+  min-height: 46px;
   cursor: pointer;
-  border: 1px solid transparent;
-  border-radius: var(--radius-card);
-  transition: all var(--transition-fast);
+  border: 0;
+  border-radius: var(--radius-control);
+  transition: background-color var(--transition-fast);
   position: relative;
 }
 
 .host-item:hover {
-  background: var(--hover-overlay);
+  background: var(--surface-alt, var(--hover-overlay));
 }
 
 .host-item.active {
-  background: color-mix(in srgb, var(--accent) 8%, var(--surface-muted));
-  border-color: transparent;
-  box-shadow: 0 2px 12px color-mix(in srgb, var(--accent) 8%, transparent);
+  background: var(--accent-muted);
 }
 
 .host-item-info {
@@ -663,8 +659,8 @@ function onDragEnd(): void {
 
 .host-detail {
   font-size: 11px;
-  color: var(--text-secondary);
-  margin-top: 3px;
+  color: var(--text-tertiary);
+  margin-top: 2px;
   font-family: var(--font-mono);
   overflow: hidden;
   text-overflow: ellipsis;

@@ -507,9 +507,9 @@ onUnmounted(() => {
   padding: 4px 6px;
   background: var(--surface);
   border: 1px solid var(--border-soft);
-  border-radius: 8px;
+  border-radius: var(--radius-control);
   max-width: calc(100% - 28px);
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+  box-shadow: var(--shadow-capsule);
 }
 
 .ts-input {
@@ -518,14 +518,14 @@ onUnmounted(() => {
   padding: 3px 8px;
   font-size: 12px;
   color: var(--text-primary);
-  background: var(--bg);
-  border: 1px solid var(--divider);
-  border-radius: 4px;
+  background: var(--surface-alt);
+  border: 1px solid transparent;
+  border-radius: var(--radius-xs);
   outline: none;
 }
 
 .ts-input:focus {
-  border-color: var(--accent, #4a9eff);
+  border-color: var(--accent);
 }
 
 .ts-case-btn,
@@ -542,19 +542,19 @@ onUnmounted(() => {
   cursor: pointer;
   background: transparent;
   border: none;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
 }
 
 .ts-case-btn:hover,
 .ts-nav-btn:hover,
 .ts-close-btn:hover {
   color: var(--text-primary);
-  background: var(--bg-hover, rgba(128, 128, 128, 0.15));
+  background: var(--hover-overlay);
 }
 
 .ts-case-btn.active {
-  color: var(--accent, #4a9eff);
-  background: rgba(74, 158, 255, 0.15);
+  color: var(--accent);
+  background: var(--accent-muted);
 }
 
 .terminal-overlay {
@@ -591,8 +591,8 @@ onUnmounted(() => {
 }
 
 .overlay-title {
-  font-size: 19px;
-  font-weight: 500;
+  font-size: 15px;
+  font-weight: 600;
   color: var(--text-secondary);
 }
 
@@ -613,7 +613,7 @@ onUnmounted(() => {
   margin-top: 6px;
   padding: 4px 10px;
   background: var(--danger-muted);
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   max-width: 280px;
 }
 </style>

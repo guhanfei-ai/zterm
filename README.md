@@ -8,7 +8,7 @@ zTerm is an open-source Electron terminal with optional AI assistance and SSH/Ju
 
 - Local PTY, direct SSH (host fingerprint confirmation, in-place tab reconnect), and Jumpserver assets
 - Terminal search (`Cmd/Ctrl+F`) and terminal output export
-- Host list import/export as OpenSSH config (never includes passwords or key material)
+- Host list export as OpenSSH config (never includes passwords or key material)
 - Persistent workspace and AI chat history, restorable after restart
 - Chat / Agent AI modes with terminal context, command safety checks, and confirmations
 

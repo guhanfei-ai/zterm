@@ -305,7 +305,8 @@ export class AgentController extends EventEmitter {
           const turn: ContextChatTurn = {
             role: 'assistant',
             content: msg.content,
-            isFromExecution: false,
+            // 边聊边干场景：自然语言部分伴随命令一起输出，标记为执行相关回复
+            isFromExecution: msg.details?.withCommands === true,
             createdAt: new Date().toISOString()
           }
           appendChatTurn(self.chatTabId, turn)
@@ -454,6 +455,18 @@ export class AgentController extends EventEmitter {
     const taskDescription = keepTask ? persisted!.taskDescription : description
     this.task = { id: taskId, description: taskDescription, createdAt: taskCreatedAt }
     this.maxSteps = keepTask ? Math.max(persisted!.maxSteps, maxSteps) : maxSteps
+    // P1 修复：上一轮已触顶（currentStep >= maxSteps）时，普通追问不应"只跑 1 步就再次触顶"，
+    // 自动追加一轮预算。重启场景下 controller 内存中的 currentStep 尚未恢复，以持久化值为准。
+    const effectiveStep = keepTask ? Math.max(persisted!.currentStep ?? 0, this.currentStep) : this.currentStep
+    if (keepTask && effectiveStep >= this.maxSteps) {
+      this.maxSteps = effectiveStep + maxSteps
+      this.emit('message', {
+        id: `${Date.now()}`,
+        type: 'status',
+        content: `检测到已达步数上限，已自动追加 ${maxSteps} 步预算（当前上限 ${this.maxSteps} 步）`,
+        createdAt: new Date().toISOString()
+      })
+    }
 
     if (isNewTask) {
       saveContext({
@@ -483,7 +496,7 @@ export class AgentController extends EventEmitter {
         taskDescription,
         createdAt: this.task.createdAt,
         updatedAt: this.task.createdAt,
-        currentStep: this.currentStep,
+        currentStep: effectiveStep,
         maxSteps: this.maxSteps,
         stopReason: null,
         steps: persisted?.steps ?? [],
@@ -529,7 +542,7 @@ export class AgentController extends EventEmitter {
     const restoredState = isNewTask
       ? undefined
       : {
-          currentStep: this.currentStep,
+          currentStep: effectiveStep,
           steps: persisted?.steps ?? [],
           systemDetected: !!persistedSystemInfo,
           systemInfo: persistedSystemInfo,

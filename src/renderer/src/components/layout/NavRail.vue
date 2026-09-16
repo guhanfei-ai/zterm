@@ -87,7 +87,7 @@ const themeToggleTitle = computed(() => {
   width: var(--nav-rail-width);
   background: var(--chrome-rail-bg, var(--surface-muted));
   border-right: 1px solid var(--chrome-rail-border, var(--divider));
-  padding: 6px 4px;
+  padding: 10px 0;
 }
 
 .nav-rail-top,
@@ -95,7 +95,7 @@ const themeToggleTitle = computed(() => {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   padding: 0;
 }
 
@@ -109,24 +109,27 @@ const themeToggleTitle = computed(() => {
   border: 0;
   background: transparent;
   cursor: pointer;
-  width: 34px;
-  height: 34px;
+  width: 44px;
+  height: 36px;
   padding: 0;
   border-radius: var(--radius-control, 9px);
   color: var(--text-tertiary);
-  transition: color var(--transition-fast), background-color var(--transition-fast), box-shadow var(--transition-fast);
+  transition: color var(--transition-fast), background-color var(--transition-fast);
 }
 
 .nav-rail-btn:hover {
   color: var(--text-primary);
-  background: var(--hover-overlay);
+  background: var(--workbench-rail-hover-bg, var(--hover-overlay));
+}
+
+.nav-rail-btn:active {
+  background: var(--surface-alt);
 }
 
 .nav-rail-btn.active {
-  color: var(--accent, #86d4bd);
-  background: color-mix(in srgb, var(--accent, #86d4bd) 12%, transparent);
-  box-shadow: 0 2px 10px color-mix(in srgb, var(--accent, #86d4bd) 10%, transparent);
+  color: var(--accent);
+  background: var(--workbench-rail-active-bg, var(--accent-muted));
 }
 
-.nav-rail-btn svg { flex: 0 0 auto; width: 18px; height: 18px; }
+.nav-rail-btn svg { flex: 0 0 auto; width: 17px; height: 17px; }
 </style>

@@ -2,7 +2,7 @@
  * Prompt builders for Agent graph nodes.
  * Extracted from the old AgentController to keep graph nodes clean.
  */
-import { AgentGraphState, SystemInfo } from './agentGraphState'
+import { AgentGraphState, PendingCommand, SystemInfo } from './agentGraphState'
 
 /** Terminal context passed from the bridge at invocation time */
 export interface TerminalContext {
@@ -195,14 +195,31 @@ export function shouldRequireInspection(taskDescription: string, _terminalCtx: T
   return false
 }
 
-/** Parse AI model response into structured result */
+/**
+ * Parse AI model response into structured result.
+ *
+ * 协议契约（think 节点输出）：
+ *   - 自由自然语言（聊天 / 解释），可与命令混排
+ *   - 一个或多个 PLAN + COMMAND 对；COMMAND 块可跨行，到下一个协议行或文末结束
+ *   - DONE: 结论（出现即视为收尾，与命令互斥，短路返回）
+ *
+ * `commands` 始终是数组（可能为空）；`plan`/`command` 保留为第一条命令的别名，
+ * 兼容只看单命令的旧调用方。
+ */
 export function parseAIResponse(text: string): {
   plan?: string
   command?: string
   observation?: string
   done?: boolean
+  commands: PendingCommand[]
 } {
-  const result: { plan?: string; command?: string; observation?: string; done?: boolean } = {}
+  const result: {
+    plan?: string
+    command?: string
+    observation?: string
+    done?: boolean
+    commands: PendingCommand[]
+  } = { commands: [] }
 
   const doneMatch = text.match(/^DONE:\s*(.+)/im)
   if (doneMatch) {
@@ -210,26 +227,64 @@ export function parseAIResponse(text: string): {
     return result
   }
 
-  const planMatch = text.match(/^PLAN:\s*(.+)/im)
-  if (planMatch) result.plan = planMatch[1].trim()
+  // 逐行扫描：PLAN 记为"最近计划"，COMMAND 块与之配对；
+  // 命令体持续到下一个协议行（PLAN/COMMAND/OBSERVATION/DONE）或文末
+  const lines = text.split('\n')
+  let currentPlan: string | undefined
+  let i = 0
+  while (i < lines.length) {
+    const planMatch = lines[i].match(/^PLAN:\s*(.*)$/i)
+    if (planMatch) {
+      currentPlan = planMatch[1].trim() || undefined
+      i++
+      continue
+    }
+    const cmdMatch = lines[i].match(/^COMMAND:\s*(.*)$/i)
+    if (cmdMatch) {
+      const buf: string[] = []
+      if (cmdMatch[1].trim()) buf.push(cmdMatch[1])
+      i++
+      while (i < lines.length && !/^(?:PLAN|COMMAND|OBSERVATION|DONE):/i.test(lines[i])) {
+        buf.push(lines[i])
+        i++
+      }
+      const cmd = buf.join('\n').trim()
+      if (cmd && cmd !== '(无命令)' && cmd !== '(无)') {
+        result.commands.push({ plan: currentPlan, command: cmd })
+      }
+      continue
+    }
+    i++
+  }
 
-  const cmdMatch = text.match(/^COMMAND:\s*([\s\S]+)/im)
-  if (cmdMatch) {
-    let cmd = cmdMatch[1]
-    const nextSection = cmd.match(/\n(?:PLAN|COMMAND|OBSERVATION|DONE):/i)
-    if (nextSection && nextSection.index !== undefined) {
-      cmd = cmd.slice(0, nextSection.index)
-    }
-    cmd = cmd.trim()
-    if (cmd && cmd !== '(无命令)' && cmd !== '(无)') {
-      result.command = cmd
-    }
+  if (result.commands.length > 0) {
+    result.plan = result.commands[0].plan
+    result.command = result.commands[0].command
   }
 
   const obsMatch = text.match(/^OBSERVATION:\s*(.+)/im)
   if (obsMatch) result.observation = obsMatch[1].trim()
 
   return result
+}
+
+/**
+ * 剔除 PLAN/COMMAND/OBSERVATION/DONE 协议块，返回纯自然语言部分。
+ * 用于"边聊边干"场景：think 输出中的解释文字投进聊天气泡，协议行不外显。
+ */
+export function stripProtocolLines(text: string): string {
+  const kept: string[] = []
+  // COMMAND/DONE 块可跨行，直到下一个协议行；PLAN/OBSERVATION 只有单行
+  let skippingBlock = false
+  for (const line of text.split('\n')) {
+    if (/^(?:PLAN|COMMAND|OBSERVATION|DONE):/i.test(line)) {
+      skippingBlock = /^(?:COMMAND|DONE):/i.test(line)
+      continue
+    }
+    if (skippingBlock) continue
+    kept.push(line)
+  }
+  return kept.join('\n').trim()
 }
 
 /**
@@ -240,7 +295,7 @@ export function buildThinkSystemPrompt(allowWrite: boolean): string {
   const writeMode = allowWrite ? '允许' : '禁止'
   return `你是一个运行在 Linux 终端旁的智能助手。
 
-你有两种工作方式，由你自己判断哪种更合适：
+你有两种工作方式，由你自己判断哪种更合适，也可以在一条回复里结合使用：
 
 **方式一：直接回答（聊天）**
 当用户的输入是提问、追问、闲聊、或要求解释时，直接用自然语言回答。
@@ -248,17 +303,21 @@ export function buildThinkSystemPrompt(allowWrite: boolean): string {
 如果用户说"继续"、"然后呢"、"详细说说"、"为什么会这样"，你应该回顾上下文并给分析建议。
 
 **方式二：执行操作**
-当用户请求需要实际操作（排查、部署、配置、监控等），使用以下格式：
+当用户请求需要实际操作（排查、部署、配置、监控等），可以"边说边做"：
+- 先用自然语言简要说明你的判断和打算（这部分会作为聊天回复展示给用户）
+- 然后给出一个或多个 PLAN + COMMAND 对，多条命令会按顺序逐条执行：
   PLAN: 当前步骤的计划说明（单行）
   COMMAND: 单行 shell 命令
-  DONE: 最终结论（任务完成时使用）
+  （需要多条命令时，重复上面的 PLAN/COMMAND 对；每条命令都会独立做安全检查）
+- 任务全部完成时单独输出：
+  DONE: 最终结论
 
 重要规则：
 - 当前模式${writeMode}写操作。${allowWrite ? '写操作需要谨慎规划。' : '只能使用读操作命令（如 ls, cat, grep, find, df, free, top, ps, systemctl status, journalctl 等）。'}
 - 不要执行可能造成数据丢失的命令
 - 只有当你判断"确实需要执行操作"时才出 PLAN/COMMAND
 - 如果用户的话不需要操作，自然回复就好
-- 如果你已经完成任务或无需进一步操作，输出 DONE: 结论
+- DONE 与 COMMAND 互斥：给出 DONE 表示整个任务收尾，不要再附带命令
 
 强制约束（关键）：
 - 当用户请求是"检查 / 观察 / 排查 / 状态 / 资源 / 服务 / 进程 / 端口 / 日志"类问题时，
@@ -361,11 +420,11 @@ export function buildThinkUserPrompt(
 
   if (!isFirstInteraction) {
     parts.push(`\n你刚执行完步骤 ${state.currentStep}，请判断：`)
-    parts.push('1. 是否需要继续执行下一步？如果需要，出 PLAN + COMMAND')
+    parts.push('1. 是否需要继续执行下一步？如果需要，给出 PLAN + COMMAND（可以一次给多条，也可以先用自然语言解释再出命令）')
     parts.push('2. 是否任务已完成？如果完成，出 DONE: 结论')
     parts.push('3. 是否需要跟用户沟通（比如解释结果、询问方向）？如果是，直接聊天回复')
   } else {
-    parts.push('\n请判断用户意图：如果只是聊天/提问，直接回复；如果需要执行操作，出 PLAN + COMMAND')
+    parts.push('\n请判断用户意图：如果只是聊天/提问，直接回复；如果需要执行操作，可以先说明再出 PLAN + COMMAND（可多条）')
   }
 
   return parts.join('\n')

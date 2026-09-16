@@ -239,7 +239,7 @@ const currentPlaceholder = computed(() => {
     return chatStore.isStreaming ? '等待回复...' : '输入问题... (Shift+Enter 换行)'
   }
   if (chatStore.pendingContext && !chatStore.contextResolved) {
-    return '检测到上次未完成的任务，请先选择「继续当前任务」或「开启新任务」'
+    return '上次任务未完成，直接输入将基于历史继续，也可在上方选择「开启新任务」'
   }
   switch (chatStore.agentState) {
     case 'idle': return '输入任务，按 Enter 启动...'
@@ -256,8 +256,8 @@ function isAgentBusy(state: string): boolean { return !AGENT_IDLE_STATES.has(sta
 
 const currentDisabled = computed(() => {
   if (chatStore.mode === 'chat') return chatStore.isStreaming
-  // 存在未完成上下文但主人还没做选择：禁用输入，避免误发新指令导致串话
-  if (chatStore.pendingContext && !chatStore.contextResolved) return true
+  // 存在未完成上下文时不锁输入：直接输入 = follow-up（带新指示接续旧任务），
+  // 后端 startTask(isNewTask=false) 原生支持；「开启新任务」按钮仍负责显式清上下文
   return isAgentBusy(chatStore.agentState)
 })
 
@@ -310,7 +310,7 @@ async function onModelChange(e: Event): Promise<void> {
 }
 
 async function loadAvailableModels(): Promise<void> {
-  const builtin = ['deepseek-v4-pro', 'deepseek-v4-flash']
+  const builtin = ['deepseek-v4-pro', 'deepseek-v4-flash', 'deepseek-flash']
   availableModels.value = builtin
   try {
     const config = await window.electronAPI.ai.getProviderConfig()
@@ -320,11 +320,11 @@ async function loadAvailableModels(): Promise<void> {
         availableModels.value = [...builtin, config.model]
       }
     } else {
-      // 首次安装无已保存配置时，默认选中 deepseek-v4-pro
-      selectedModel.value = 'deepseek-v4-pro'
+      // 首次安装无已保存配置时，默认选中 deepseek-flash
+      selectedModel.value = 'deepseek-flash'
     }
   } catch {
-    selectedModel.value = 'deepseek-v4-pro'
+    selectedModel.value = 'deepseek-flash'
   }
 }
 
@@ -575,11 +575,9 @@ async function onStartAgent(): Promise<void> {
     return
   }
 
-  // 存在悬空上下文但主人还没确认：拒绝直接启动
-  if (chatStore.pendingContext && !chatStore.contextResolved) {
-    chatStore.setError('请先选择「继续当前任务」或「开启新任务」')
-    return
-  }
+  // 有悬空上下文时允许直接启动：走 follow-up（isNewTask=false），
+  // 输入会作为 user_turn 接进旧任务历史，等价于"带着新指示继续上次任务"；
+  // 「开启新任务」按钮仍负责显式丢弃上下文的路径
 
   agentStarting = true
   try {
@@ -601,9 +599,11 @@ async function onStartAgent(): Promise<void> {
   agentInput.value = ''
   chatStore.setError(null)
   chatStore.setAgentTask(text)
-  // 显式开启新任务时把 pending context 标为已解决（即便此前有悬空上下文，也已被显式覆盖）
-  chatStore.setContextResolved(true)
-  chatStore.clearPendingContext()
+  // 启动即视为已对悬空上下文做出选择（无论 follow-up 还是新任务）：
+  // 清决策条并解锁后续输入。定向到发起的 tab，防 IPC 期间切标签清理错位。
+  // follow-up 由 takeAgentMode() 的默认值保证（未被显式置为 'new' 时 isNewTask=false）
+  chatStore.setPendingContextByTabId(chatTabId, null)
+  chatStore.setContextResolvedByTabId(chatTabId, true)
   resetInputHeight()
   // 新任务启动：重置滚动状态，强制贴底
   agentScrollState.set(chatStore.activeTabId, false)
@@ -1137,7 +1137,7 @@ watch(() => chatStore.tabs.map(t => t.id), (newIds, oldIds) => {
 .btn-confirm-no:hover { background: var(--surface-high); }
 
 .input-container {
-  padding: 10px 12px 14px;
+  padding: 8px 12px 12px;
   flex-shrink: 0;
 }
 
@@ -1155,22 +1155,18 @@ watch(() => chatStore.tabs.map(t => t.id), (newIds, oldIds) => {
   display: flex;
   flex-direction: column;
   border: 1px solid var(--input-shell-border);
-  border-radius: 18px;
+  border-radius: var(--radius-input-capsule);
   background: var(--input-shell-bg);
   overflow: hidden;
   transition: border-color 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
   min-height: 108px;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.045),
-    0 1px 3px rgba(0, 0, 0, 0.18);
+  box-shadow: var(--shadow-subtle);
 }
 
 .input-box:focus-within {
   border-color: var(--input-shell-focus-border);
   background: var(--input-shell-hover-bg);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.05),
-    0 1px 4px rgba(0, 0, 0, 0.22);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent), var(--shadow-capsule);
 }
 
 .input-textarea {
@@ -1300,7 +1296,7 @@ watch(() => chatStore.tabs.map(t => t.id), (newIds, oldIds) => {
   cursor: pointer;
   transition: all 0.2s ease;
   flex-shrink: 0;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+  box-shadow: var(--shadow-subtle);
 }
 
 .btn-send:disabled {
@@ -1314,7 +1310,7 @@ watch(() => chatStore.tabs.map(t => t.id), (newIds, oldIds) => {
 .btn-send:not(:disabled):hover {
   background: var(--input-send-hover-bg);
   color: var(--accent-contrast, var(--text-primary));
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  box-shadow: var(--shadow-card);
 }
 
 .btn-send:not(:disabled):active {

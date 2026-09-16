@@ -58,21 +58,6 @@ const api = {
     delete: (id: string): Promise<boolean> => ipcRenderer.invoke('hosts:delete', id),
     pickPrivateKeyFile: (): Promise<{ canceled: boolean; filePath?: string; fileName?: string; error?: string }> =>
       ipcRenderer.invoke('hosts:pickPrivateKeyFile'),
-    importSshConfig: (): Promise<
-      | { canceled: true }
-      | { canceled: false; error?: string }
-      | {
-          canceled: false
-          hosts: import('../main/services/sshConfigFile').ParsedSshConfigHost[]
-          duplicates: boolean[]
-          skippedBlocks: number
-          totalBlocks: number
-        }
-    > => ipcRenderer.invoke('hosts:importSshConfig'),
-    confirmImportSshConfig: (
-      hosts: import('../main/services/sshConfigFile').ParsedSshConfigHost[]
-    ): Promise<{ success: boolean; created?: number; error?: string }> =>
-      ipcRenderer.invoke('hosts:confirmImportSshConfig', hosts),
     exportSshConfig: (): Promise<{ success: boolean; filePath?: string; canceled?: boolean; error?: string }> =>
       ipcRenderer.invoke('hosts:exportSshConfig')
   },

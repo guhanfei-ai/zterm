@@ -59,7 +59,7 @@
         <input
           v-model="form.model"
           class="field-input"
-          placeholder="deepseek-v4-pro"
+          placeholder="deepseek-flash"
         />
       </div>
 
@@ -133,7 +133,7 @@ const form = reactive({
   label: 'DeepSeek',
   baseUrl: 'https://api.deepseek.com/v1',
   apiKey: '',
-  model: 'deepseek-v4-pro',
+  model: 'deepseek-flash',
   enableStreaming: true
 })
 
