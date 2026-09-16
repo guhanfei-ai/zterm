@@ -487,11 +487,13 @@ onUnmounted(() => {
 .xterm-wrapper {
   width: 100%;
   height: 100%;
-  padding: 16px 12px 8px 18px;
 }
 
+/* padding 必须放在 .xterm 元素（terminal.element）上而不是 wrapper：
+   FitAddon 计算行列数时只扣除 terminal.element 自身的 padding，
+   放在父级 wrapper 上会按偏高约 24px 的高度布行，导致最后一行被裁掉 */
 .xterm-wrapper :deep(.xterm) {
-  padding: 0;
+  padding: 16px 12px 8px 18px;
   height: 100%;
 }
 

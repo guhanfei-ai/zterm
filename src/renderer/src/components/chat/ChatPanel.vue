@@ -402,6 +402,22 @@ watch(
   }
 )
 
+// 输入框自动回焦：textarea 在忙碌期间（Agent 执行 / Chat 流式输出）被 disabled 而丢失焦点，
+// 重新启用时浏览器不会恢复焦点，导致每次 AI 回答结束后都要手动点击输入框。
+// 仅当焦点仍停留在对话面板内（或落在 body 上，即用户没在别处输入）时才回焦，
+// 避免打断正在终端里打字的用户。
+watch(currentDisabled, (disabled, prevDisabled) => {
+  if (!prevDisabled || disabled) return
+  nextTick(() => {
+    const el = inputRef.value
+    if (!el) return
+    const active = document.activeElement
+    const panel = el.closest('.chat-panel')
+    if (active && active !== document.body && !(panel && panel.contains(active))) return
+    el.focus()
+  })
+})
+
 // 当 agent 进入终态时重新拉取持久化上下文，用于在用户切换标签后展示"继续/新任务"提示
 watch(
   () => chatStore.agentState,

@@ -40,7 +40,7 @@ const hostsStore = useHostsStore()
 </script>
 
 <style scoped>
-/* 侧栏标题与工作区对齐，第二行操作与标签栏等高。 */
+/* 侧栏标题行与中/右栏标签栏等高（--tabbar-height），顶行底边对齐。 */
 .panel-left.panel-left {
   display: flex;
   flex-direction: column;
@@ -63,7 +63,7 @@ const hostsStore = useHostsStore()
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  min-height: var(--panel-header-height);
+  min-height: var(--tabbar-height);
   padding: 0 12px;
 }
 
