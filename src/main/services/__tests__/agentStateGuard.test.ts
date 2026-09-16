@@ -149,13 +149,11 @@ describe('buildThinkUserPrompt', () => {
 /** 记录 callback 调用顺序的 mock。判别联合让 TS 从 kind 自动收窄 payload 类型。 */
 type EmitMessagePayload = Parameters<AgentGraphCallbacks['emitMessage']>[0]
 type EmitStateChangePayload = Parameters<AgentGraphCallbacks['emitStateChange']>[0]
-type EmitConfirmRequestPayload = Parameters<AgentGraphCallbacks['emitConfirmRequest']>[0]
 type OnStepCompletePayload = Parameters<AgentGraphCallbacks['onStepComplete']>[0]
 
 type RecordedCall =
   | { kind: 'emitMessage'; payload: EmitMessagePayload }
   | { kind: 'emitStateChange'; payload: EmitStateChangePayload }
-  | { kind: 'emitConfirmRequest'; payload: EmitConfirmRequestPayload }
   | { kind: 'onStepComplete'; payload: OnStepCompletePayload }
 
 function buildMockContext(
@@ -173,9 +171,6 @@ function buildMockContext(
     },
     emitStateChange(phase) {
       calls.push({ kind: 'emitStateChange', payload: phase })
-    },
-    emitConfirmRequest(data) {
-      calls.push({ kind: 'emitConfirmRequest', payload: data })
     },
     getTerminalContext() {
       return null

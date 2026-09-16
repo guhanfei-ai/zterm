@@ -45,10 +45,6 @@ export function registerAgentIpc(): void {
     agentApplication.stop(data?.chatTabId)
   )
 
-  ipcMain.handle('agent:confirmCommand', (_event, approved: boolean, data?: { chatTabId?: string }) =>
-    agentApplication.confirmCommand(approved, data?.chatTabId)
-  )
-
   ipcMain.handle('agent:getStatus', (_event, data?: { chatTabId?: string }) =>
     agentApplication.getStatus(data?.chatTabId)
   )
@@ -63,10 +59,6 @@ export function registerAgentIpc(): void {
 
   ipcMain.handle('agent:destroy', (_event, data?: { chatTabId?: string }) =>
     agentApplication.destroy(data?.chatTabId)
-  )
-
-  ipcMain.handle('agent:setAutoExecute', (_event, enabled: boolean, data?: { chatTabId?: string }) =>
-    agentApplication.setAutoExecute(enabled, data?.chatTabId)
   )
 
   ipcMain.handle('agent:setAllowWrite', (_event, enabled: boolean, data?: { chatTabId?: string }) =>

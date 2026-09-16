@@ -4,10 +4,8 @@
       <h2 id="workspace-restore-title">{{ title }}</h2>
       <p>{{ message }}</p>
       <div class="workspace-restore-actions">
-        <button v-if="mode === 'restore'" class="btn btn-primary" @click="emit('restore')">恢复上次工作区</button>
-        <button class="btn" @click="emit('discard')">
-          {{ mode === 'restore' ? '新建空白工作区并清除保存内容' : '丢弃保存内容' }}
-        </button>
+        <button v-if="mode === 'restore'" class="btn btn-primary" @click="emit('restore')">恢复上次会话</button>
+        <button class="btn" @click="emit('discard')">直接进入</button>
       </div>
     </section>
   </div>
@@ -26,10 +24,10 @@ const emit = defineEmits<{
   discard: []
 }>()
 
-const title = computed(() => props.mode === 'restore' ? '恢复上次工作区？' : '无法恢复已保存工作区')
+const title = computed(() => props.mode === 'restore' ? '恢复上次会话？' : '无法恢复上次会话')
 const message = computed(() => props.mode === 'restore'
-  ? '终端将保持断开状态，不会自动连接或恢复终端输出、聊天消息。'
-  : props.reason || '已保存内容无法验证，必须由你明确丢弃。'
+  ? '恢复上次的标签布局与聊天记录，终端保持断开、不会自动连接。直接进入则从空白开始，仅清空标签与聊天记录；主机、凭据与密钥不受影响。'
+  : `${props.reason || '已保存的会话无法读取'}。直接进入仅清空标签与聊天记录，主机、凭据与密钥不受影响。`
 )
 </script>
 

@@ -62,7 +62,6 @@ export interface AgentContextSnapshot {
   lastConclusion?: string
   // 当前配置快照（用于续接时保持环境一致）
   allowWrite: boolean
-  autoExecute: boolean
   boundHost?: string
   // 自然对话历史（轻量持久化），让"重启后继续追问"能找回上文
   conversationHistory?: ContextChatTurn[]
@@ -326,7 +325,6 @@ export function updateContext(chatTabId: string, patch: Partial<AgentContextSnap
       systemSummary: patch.systemSummary,
       lastConclusion: patch.lastConclusion,
       allowWrite: patch.allowWrite ?? false,
-      autoExecute: patch.autoExecute ?? false,
       boundHost: patch.boundHost,
       conversationHistory: clampChatHistory(patch.conversationHistory)
     }

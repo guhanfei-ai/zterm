@@ -31,7 +31,6 @@ export interface SetAllowWriteResult {
   success: boolean
   error?: string
   allowWrite?: boolean
-  autoExecute?: boolean
 }
 
 export type AgentState =
@@ -87,7 +86,6 @@ export interface AgentStatus {
   currentStep?: number
   maxSteps: number
   elapsedSteps: number
-  autoExecute: boolean
   allowWrite: boolean
   boundHost?: string
   boundTerminalTabId?: string | null
@@ -102,7 +100,6 @@ function phaseToAgentState(phase: GraphPhase): AgentState {
     case 'probing': return 'executing'
     case 'planning': return 'planning'
     case 'safety_check': return 'planning'
-    case 'awaiting_confirmation': return 'executing'
     case 'executing': return 'executing'
     case 'observing': return 'observing'
     case 'summarizing': return 'summarizing'
@@ -177,17 +174,12 @@ export class AgentController extends EventEmitter {
   private steps: AgentStep[] = []
   private maxSteps = 25
   private currentStep = 0
-  private autoExecute = false
   private allowWrite = false
   private boundHost: string | undefined = undefined
   private boundTerminalTabId: string | null = null
 
   private chatTabId: string | null = null
   private stopReason: StopReason = null
-
-  // Pending confirmation tracking
-  private pendingCommand: string | null = null
-  private confirmResolver: ((approved: boolean) => void) | null = null
 
   init(aiClient: AiClient, bridge: TerminalBridge, config: ProviderConfig): void {
     // 显式释放旧 bridge（若有），避免反复 init 后旧引用长期存活
@@ -240,57 +232,10 @@ export class AgentController extends EventEmitter {
       currentStep: this.currentStep,
       maxSteps: this.maxSteps,
       elapsedSteps: this.steps.length,
-      autoExecute: this.autoExecute,
       allowWrite: this.allowWrite,
       boundHost: this.boundHost,
       boundTerminalTabId: this.boundTerminalTabId,
       steps: [...this.steps]
-    }
-  }
-
-  approveCommand(approved: boolean): void {
-    if (this.confirmResolver) {
-      this.confirmResolver(approved)
-      this.confirmResolver = null
-      this.pendingCommand = null
-    }
-    // 门禁：只有存在挂起的确认请求才允许 resume。
-    // 否则任务已停止/完成后残留的确认框点击会无条件 resume，
-    // 复活已中止的图并继续执行（可能包含写命令）。
-    if (this.pendingCommand == null) {
-      return
-    }
-    // Resume the graph with the user's decision
-    if (this.chatTabId && this.runtime) {
-      // Check if runtime tab exists (may be lost after restart)
-      if (!this.runtime.hasTab(this.chatTabId)) {
-        // Runtime was lost (app restarted) — cannot resume from interrupt
-        this.pendingCommand = null
-        this.emit('message', {
-          id: `${Date.now()}`,
-          type: 'status' as const,
-          content: '应用已重启，上次的确认状态已丢失。请基于历史步骤重新规划或开启新任务。',
-          createdAt: new Date().toISOString()
-        })
-        return
-      }
-      this.runtime.resume(this.chatTabId, approved).then(() => {
-        // 确认已被消费：清空挂起标记，后续再收到 approveCommand 不再重复 resume
-        this.pendingCommand = null
-      }).catch((err: Error) => {
-        this.emit('message', {
-          id: `${Date.now()}`,
-          type: 'error' as const,
-          content: `确认恢复失败：${err.message}`,
-          createdAt: new Date().toISOString()
-        })
-        // 切回 idle，避免 UI 一直挂着确认弹窗 / 卡在 planning
-        this.state = 'idle'
-        this.emit('state-change', 'idle')
-        this.confirmResolver = null
-        this.pendingCommand = null
-        console.error('[agentController] resume failed:', err)
-      })
     }
   }
 
@@ -328,10 +273,6 @@ export class AgentController extends EventEmitter {
         if (!shouldEmitStateChange(self.state, agentState)) return
         self.state = agentState
         self.emit('state-change', agentState)
-      },
-      emitConfirmRequest(data) {
-        self.pendingCommand = data.pendingCommand
-        self.emit('confirm-request', data)
       },
       getTerminalContext(lines = 200) {
         if (!self.bridge || !self.bridge.isConnected()) return null
@@ -421,7 +362,7 @@ export class AgentController extends EventEmitter {
 
     // 第二轮补丁：区分"开启新任务"与"普通 follow-up turn"
     // - isNewTask=true：主人明确要重开，stale steps/conclusion/systemSummary 全部清空
-    // - isNewTask=false（默认）：保留执行上下文，只清掉上一轮 confirm 残留
+    // - isNewTask=false（默认）：保留执行上下文，只清掉 stopReason
     // 这样"执行后继续聊"不会因为 turn 重置而失忆。
     const isNewTask = options?.isNewTask === true
 
@@ -430,19 +371,9 @@ export class AgentController extends EventEmitter {
       this.steps = []
       this.currentStep = 0
       this.stopReason = null
-      this.pendingCommand = null
-      if (this.confirmResolver) {
-        this.confirmResolver(false)
-        this.confirmResolver = null
-      }
     } else {
-      // 轻量重置：只清理 confirm 残留与 stopReason，保留 steps/currentStep 等执行上下文
+      // 轻量重置：只清理 stopReason，保留 steps/currentStep 等执行上下文
       this.stopReason = null
-      this.pendingCommand = null
-      if (this.confirmResolver) {
-        this.confirmResolver(false)
-        this.confirmResolver = null
-      }
     }
     // 普通追问属于同一 task；只有显式新任务才创建新的 taskId、目标和预算。
     // 第一轮收口：保留持久化但不再把 description 作为 UI 上的"任务目标"卡片发射。
@@ -483,7 +414,6 @@ export class AgentController extends EventEmitter {
         systemSummary: undefined,
         lastConclusion: undefined,
         allowWrite: this.allowWrite,
-        autoExecute: this.autoExecute,
         boundHost: this.boundHost,
         conversationHistory: existingHistory
       })
@@ -506,7 +436,6 @@ export class AgentController extends EventEmitter {
         systemSummary: persisted?.systemSummary,
         lastConclusion: persisted?.lastConclusion,
         allowWrite: this.allowWrite,
-        autoExecute: this.autoExecute,
         boundHost: this.boundHost,
         conversationHistory: existingHistory
       })
@@ -558,7 +487,6 @@ export class AgentController extends EventEmitter {
       this.createCallbacks(),
       {
         allowWrite: this.allowWrite,
-        autoExecute: this.autoExecute,
         boundHost: this.boundHost,
         conversationHistory: historyForGraph,
         userMessage: description,
@@ -592,21 +520,9 @@ export class AgentController extends EventEmitter {
     this.state = 'stopped'
     this.emit('state-change', 'stopped')
 
-    // 修正：先杀信号，再解 confirm。
-    // 原顺序会让 interrupt 返回 false 后图进入 think 节点才被 abort，多跑一轮。
-    // 先 abort：之后解 confirm 时，下一节点入口的 signal-abort 检查会立即 return。
     if (this.chatTabId && this.runtime) {
       this.runtime.stop(this.chatTabId)
     }
-
-    // Resolve any pending confirmation
-    if (this.confirmResolver) {
-      this.confirmResolver(false)
-      this.confirmResolver = null
-    }
-    // 停止时必须同时清空挂起确认标记：
-    // 否则残留的确认框点击会通过 approveCommand 的门禁，尝试复活已停止的任务
-    this.pendingCommand = null
   }
 
   reset(): void {
@@ -615,11 +531,6 @@ export class AgentController extends EventEmitter {
     }
     this.steps = []
     this.currentStep = 0
-    this.pendingCommand = null
-    if (this.confirmResolver) {
-      this.confirmResolver(false)
-      this.confirmResolver = null
-    }
     this.boundHost = undefined
     this.boundTerminalTabId = null
     this.stopReason = null
@@ -631,7 +542,6 @@ export class AgentController extends EventEmitter {
 
   fullReset(): void {
     this.reset()
-    this.autoExecute = false
     this.allowWrite = false
   }
 
@@ -644,8 +554,6 @@ export class AgentController extends EventEmitter {
     this.config = null
     this.runtime = null
     this.task = null
-    this.confirmResolver = null
-    this.pendingCommand = null
     this.removeAllListeners()
   }
 
@@ -735,7 +643,6 @@ export class AgentController extends EventEmitter {
     this.currentStep = ctx.currentStep
     this.maxSteps = newMaxSteps
     this.allowWrite = ctx.allowWrite
-    this.autoExecute = ctx.autoExecute
     this.boundHost = ctx.boundHost
     this.stopReason = null
     this.state = 'planning'
@@ -775,7 +682,6 @@ export class AgentController extends EventEmitter {
       callbacks,
       {
         allowWrite: ctx.allowWrite,
-        autoExecute: ctx.autoExecute,
         boundHost: ctx.boundHost,
         taskId: ctx.taskId || undefined,
         userMessage: '',
@@ -820,20 +726,11 @@ export class AgentController extends EventEmitter {
     })
   }
 
-  setAutoExecute(v: boolean): void {
-    this.autoExecute = v
-  }
-
   setAllowWrite(v: boolean): SetAllowWriteResult {
-    if (v) {
-      // 开启读写模式时，强制关闭自动执行（两者互斥）
-      this.autoExecute = false
-    }
     this.allowWrite = v
     return {
       success: true,
-      allowWrite: this.allowWrite,
-      autoExecute: this.autoExecute
+      allowWrite: this.allowWrite
     }
   }
 

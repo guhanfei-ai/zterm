@@ -60,7 +60,6 @@ export type GraphPhase =
   | 'probing'
   | 'planning'
   | 'safety_check'
-  | 'awaiting_confirmation'
   | 'executing'
   | 'observing'
   | 'summarizing'
@@ -92,13 +91,11 @@ export const AgentStateAnnotation = Annotation.Root({
   planText: Annotation<string>(),
   pendingCommand: Annotation<string>(),
   // think 一次规划出的命令队列；pendingCommand 是队列中正在处理的第一条。
-  // 每条命令独立走安全检查/确认/执行，消耗一个步号；拒绝或拦截时队列整体作废。
+  // 每条命令独立走安全检查/执行，消耗一个步号；拦截时队列整体作废。
   pendingCommands: Annotation<PendingCommand[]>(),
   commandOutput: Annotation<string>(),
   observation: Annotation<string>(),
   safetyResult: Annotation<SafetyCheck | null>(),
-  needsConfirmation: Annotation<boolean>(),
-  confirmationApproved: Annotation<boolean | null>(),
 
   // ---- System info ----
   systemDetected: Annotation<boolean>(),
@@ -120,7 +117,6 @@ export const AgentStateAnnotation = Annotation.Root({
 
   // ---- Configuration ----
   allowWrite: Annotation<boolean>(),
-  autoExecute: Annotation<boolean>(),
   boundHost: Annotation<string>(),
 
   // ---- Conclusion ----
@@ -154,8 +150,6 @@ export function createInitialState(): AgentGraphState {
     commandOutput: '',
     observation: '',
     safetyResult: null,
-    needsConfirmation: false,
-    confirmationApproved: null,
     systemDetected: false,
     systemInfo: { kernel: '', distroName: '', distroVersion: '', packageManager: '', rawOutput: '' },
     steps: [],
@@ -165,7 +159,6 @@ export function createInitialState(): AgentGraphState {
     phase: 'idle',
     stopReason: null,
     allowWrite: false,
-    autoExecute: false,
     boundHost: '',
     conclusion: '',
     modelResponseText: '',

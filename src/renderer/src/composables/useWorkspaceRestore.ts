@@ -166,9 +166,14 @@ export function useWorkspaceRestore() {
     { deep: true }
   )
 
-  // 聊天消息单独去抖保存：流式输出期间消息体高频变化，用更长间隔合并写入
+  // 聊天消息单独去抖保存：watch 只监听轻量信号（消息数 / 流式标志 / 末条状态），
+  // 序列化推迟到去抖回调内执行。原实现把 serializeChatHistory() 放进 getter，
+  // 流式输出时每个 token 都会触发一次全量 tabs×messages 深拷贝（savedAt 还保证
+  // 结果永不相等），长会话下是稳定的 GC 抖动源。
   watch(
-    () => chatStore.serializeChatHistory(),
+    () => chatStore.tabs
+      .map(t => `${t.id}:${t.messages.length}:${t.isStreaming ? 1 : 0}:${t.messages[t.messages.length - 1]?.status ?? ''}`)
+      .join('|'),
     scheduleChatSave
   )
 

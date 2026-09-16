@@ -1013,14 +1013,19 @@ export const useJumpserverStore = defineStore('jumpserver', () => {
     return jumpserverFavorites.value.some((item) => item.assetId === assetId)
   }
 
+  /** 账号列表请求代际：快速连点多个资产时丢弃迟到的旧响应，避免列表与所选资产串台 */
+  let jumpserverAccountsRequestId = 0
+
   /** 拉取指定 JumpServer 资产的授权账号 */
   async function fetchJumpserverAccounts(assetId: string): Promise<void> {
+    const requestId = ++jumpserverAccountsRequestId
     jumpserverSelectedAssetId.value = assetId
     jumpserverAccountsLoading.value = true
     jumpserverAccountsError.value = null
     jumpserverAccounts.value = []
     try {
       const result = await window.electronAPI.jumpserver.listAccounts(assetId)
+      if (requestId !== jumpserverAccountsRequestId) return
       if (result.success) {
         jumpserverAccounts.value = result.accounts
         const connectable = result.accounts.some((account) => account.canConnect)
@@ -1036,9 +1041,12 @@ export const useJumpserverStore = defineStore('jumpserver', () => {
         jumpserverAccountsError.value = result.error || '拉取账号列表失败'
       }
     } catch (err: unknown) {
+      if (requestId !== jumpserverAccountsRequestId) return
       jumpserverAccountsError.value = err instanceof Error ? err.message : '拉取账号列表失败'
     } finally {
-      jumpserverAccountsLoading.value = false
+      if (requestId === jumpserverAccountsRequestId) {
+        jumpserverAccountsLoading.value = false
+      }
     }
   }
 

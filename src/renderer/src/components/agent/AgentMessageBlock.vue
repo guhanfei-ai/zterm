@@ -47,20 +47,12 @@
         <div class="block-header">
           <svg class="block-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
           {{ msg.stepNumber ? `第 ${msg.stepNumber} 步 · 执行` : '执行' }}
-          <span v-if="msg.details?.awaitingApproval" class="pending-tag">
-            <svg class="tag-icon" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-            等待确认
-          </span>
-          <span v-else-if="msg.details?.running" class="running-tag">
+          <span v-if="msg.details?.running" class="running-tag">
             <svg class="tag-icon" width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
             执行中
           </span>
         </div>
         <div class="block-content cmd-content"><code>{{ msg.text }}</code></div>
-        <div v-if="msg.details?.reason && !msg.details?.awaitingApproval" class="block-meta">
-          <svg class="meta-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-          {{ msg.details.reason }}（{{ msg.details.category }}）
-        </div>
       </div>
 
       <!-- Observation -->
@@ -344,7 +336,6 @@ function truncateOutput(text: string): string {
 
 .block-icon { flex-shrink: 0; }
 .tag-icon { flex-shrink: 0; vertical-align: middle; }
-.meta-icon { flex-shrink: 0; vertical-align: middle; }
 
 .block-content {
   font-size: 12px;
@@ -370,7 +361,6 @@ function truncateOutput(text: string): string {
 .block-status { border: none; padding: 4px 12px; }
 .status-text { font-size: 11px; color: var(--text-disabled); font-style: italic; text-align: center; }
 
-.pending-tag { font-size: 10px; color: var(--warning); }
 .running-tag { font-size: 10px; color: var(--accent); animation: pulse 1s infinite; }
 .duration-tag { font-size: 10px; color: var(--text-tertiary); }
 
@@ -441,12 +431,6 @@ function truncateOutput(text: string): string {
 .expand-btn:hover {
   background: var(--surface-alt);
   border-color: var(--accent);
-}
-
-.block-meta {
-  font-size: 10px;
-  color: var(--warning);
-  margin-top: 4px;
 }
 
 .block-content :deep(.code-block) {

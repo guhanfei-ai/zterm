@@ -1,19 +1,5 @@
 <template>
   <section class="panel panel-center" aria-label="终端工作区">
-    <div class="panel-heading terminal-heading">
-      <div class="terminal-heading-title"><h2>终端</h2><span class="terminal-mode">{{ modeLabel }}</span></div>
-      <div class="tab-bar-actions">
-        <button class="btn-icon" title="搜索终端 (Cmd/Ctrl+F)" :disabled="!activeTerminalTabId" @click="onSearchActive">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="10.5" cy="10.5" r="7"/><path d="m16 16 4 4"/></svg>
-        </button>
-        <button class="btn-icon" title="导出终端记录" :disabled="!activeTerminalTabId" @click="onExportActive">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 15v5h16v-5M12 3v12m-4-4 4 4 4-4"/></svg>
-        </button>
-        <button v-if="activeTerminalStatus === 'connected'" class="btn-icon btn-danger" title="断开连接" @click="handleDisconnect">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4H4v16h5m5-13 5 5-5 5M8 12h11"/></svg>
-        </button>
-      </div>
-    </div>
     <div class="tab-bar terminal-tab-bar">
       <div class="tab-list" role="tablist" aria-label="终端标签">
         <div v-for="tab in terminalTabs" :key="tab.id" class="tab-item"
@@ -33,6 +19,17 @@
       <button v-if="activeMode === 'local'" class="tab-add" title="新建本地终端" @click="onAddTab">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
       </button>
+      <div class="tab-bar-actions">
+        <button class="btn-icon" title="搜索终端 (Cmd/Ctrl+F)" :disabled="!activeTerminalTabId" @click="onSearchActive">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="10.5" cy="10.5" r="7"/><path d="m16 16 4 4"/></svg>
+        </button>
+        <button class="btn-icon" title="导出终端记录" :disabled="!activeTerminalTabId" @click="onExportActive">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 15v5h16v-5M12 3v12m-4-4 4 4 4-4"/></svg>
+        </button>
+        <button v-if="activeTerminalStatus === 'connected'" class="btn-icon btn-danger" title="断开连接" @click="handleDisconnect">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M9 4H4v16h5m5-13 5 5-5 5M8 12h11"/></svg>
+        </button>
+      </div>
     </div>
     <div class="terminal-container">
       <div v-if="terminalTabs.length === 0" class="empty-state terminal-empty-state">
@@ -42,8 +39,8 @@
         <button v-if="activeMode === 'local'" class="btn btn-primary terminal-empty-btn" @click="onAddLocalTab">打开命令行</button>
         <button v-else class="btn btn-secondary terminal-empty-btn" @click="emit('show-hosts')">{{ activeMode === 'direct' ? '浏览主机' : '浏览资产' }}</button>
       </div>
-      <XtermPane v-for="tab in terminalTabs" :key="tab.id" :ref="(el) => setPaneRef(tab.id, el)"
-        :tab-id="tab.id" v-show="tab.id === activeTerminalTabId" @reconnect="onReconnectTerminalTab" />
+      <XtermPane v-for="tab in allTerminalTabs" :key="tab.id" :ref="(el) => setPaneRef(tab.id, el)"
+        :tab-id="tab.id" v-show="tab.mode === activeMode && tab.id === activeTerminalTabId" @reconnect="onReconnectTerminalTab" />
     </div>
     <footer class="terminal-statusbar">
       <div class="terminal-status" :class="activeTerminalStatus"><span class="tab-status-dot" :class="activeTerminalStatus" />{{ statusLabel }}</div>
@@ -76,6 +73,9 @@ const terminalStore = useTerminalStore()
 const activeTerminal = computed(() => terminalStore.getActiveTabByMode(props.activeMode))
 const modeLabel = computed(() => ({ local: '本地 PTY', direct: 'SSH 直连', jumpserver: 'Jumpserver' })[props.activeMode])
 const terminalTabs = computed(() => terminalStore.getTabsByMode(props.activeMode))
+// 终端容器渲染全部 mode 的标签（v-show 控制可见性）：切换 mode 不卸载组件，
+// 避免销毁窗口期内远端输出丢失、切回后画面空白。tab 栏仍只展示当前 mode。
+const allTerminalTabs = computed(() => terminalStore.tabs)
 const activeTerminalTabId = computed(() => terminalStore.getActiveTabIdByMode(props.activeMode))
 const activeTerminalStatus = computed(() => terminalStore.getActiveTabByMode(props.activeMode)?.status || 'disconnected')
 
@@ -131,30 +131,22 @@ function onReconnectTerminalTab(id: string): void {
 </script>
 
 <style scoped>
-.terminal-heading-title  {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  min-width: 0;
-}
-
-.terminal-mode  {
-  display: inline-flex;
-  align-items: center;
-  padding: 2px 8px;
-  border-radius: var(--radius-sm, 6px);
-  background: var(--accent-muted);
-  color: var(--accent);
-  font-size: 11px;
-  white-space: nowrap;
-}
-
 .terminal-no-tabs  {
   display: flex;
   align-items: center;
   padding: 0 10px;
   font-size: 12px;
   color: var(--text-tertiary);
+}
+
+/* 标题栏已并入标签栏：操作按钮与 tab-add(28px) 对齐，视觉高度一致 */
+.terminal-tab-bar .btn-icon  {
+  width: 28px;
+  height: 28px;
+}
+
+.terminal-tab-bar .tab-bar-actions  {
+  align-self: flex-end;
 }
 
 .terminal-statusbar  {
@@ -193,11 +185,5 @@ function onReconnectTerminalTab(id: string): void {
 .terminal-status-mode  {
   margin-left: auto;
   white-space: nowrap;
-}
-
-@media (max-width: 1100px)  {
-  .terminal-mode  {
-    display: none;
-  }
 }
 </style>

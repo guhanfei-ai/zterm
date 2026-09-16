@@ -85,7 +85,6 @@ export function projectGraphResumeContext(state: AgentGraphState): string | null
     systemInfo: state.systemInfo,
     lastConclusion: state.conclusion || undefined,
     allowWrite: state.allowWrite,
-    autoExecute: state.autoExecute,
     boundHost: state.boundHost,
     conversationHistory: state.conversationHistory
   })

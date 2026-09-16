@@ -54,10 +54,10 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
-import { Terminal } from 'xterm'
-import { FitAddon } from 'xterm-addon-fit'
-import { SearchAddon } from 'xterm-addon-search'
-import 'xterm/css/xterm.css'
+import { Terminal } from '@xterm/xterm'
+import { FitAddon } from '@xterm/addon-fit'
+import { SearchAddon } from '@xterm/addon-search'
+import '@xterm/xterm/css/xterm.css'
 import { useTerminalStore } from '@/stores/terminal'
 import { useTerminalPrefsStore } from '@/stores/terminalPrefs'
 import { useThemeStore } from '@/stores/theme'
@@ -338,6 +338,19 @@ onMounted(() => {
       term.write(payload.data)
     }
   })
+
+  // ---- 重挂载回放 ----
+  // 切换 mode 等场景导致组件销毁重建时，主进程会话可能仍在运行并已累积输出
+  // （本组件卸载期间 onData 无人接收）。store 状态为 connected 时回放最近输出
+  // 恢复画面；新建标签（尚未连接/连接中）不会命中此路径，首连数据仍由
+  // onData 实时流入，不会重复。
+  if (tabData.value.status === 'connected') {
+    void window.electronAPI.terminal.getRecentOutput(props.tabId, 500).then((recent) => {
+      if (recent && term) {
+        term.write(recent)
+      }
+    })
+  }
 
   // Watch terminal preferences — 即时应用字体 / 字号 / 回溯 / 光标设置
   const stopPrefsWatch = watch(

@@ -13,7 +13,7 @@ import {
 } from '../../services/agentContextStore'
 
 export interface AgentEventSink {
-  send(channel: 'agent:message' | 'agent:stateChange' | 'agent:confirmRequest' | 'agent:bindingCleared', payload: unknown): void
+  send(channel: 'agent:message' | 'agent:stateChange' | 'agent:bindingCleared', payload: unknown): void
 }
 
 interface AgentTabState {
@@ -60,10 +60,9 @@ export class AgentApplication {
         this.cleanupTerminalListeners(tab)
         tab.controller.removeAllListeners('message')
         tab.controller.removeAllListeners('state-change')
-        tab.controller.removeAllListeners('confirm-request')
         tab.controller.dispose()
         tab.sink = null
-      } catch {
+        } catch {
         // 退出清理不阻塞应用关闭。
       }
     }
@@ -159,12 +158,7 @@ export class AgentApplication {
     return { success: true }
   }
 
-  confirmCommand(approved: boolean, chatTabId?: string): { success: true } {
-    if (chatTabId) this.tabs.get(chatTabId)?.controller.approveCommand(approved)
-    return { success: true }
-  }
-
-  getStatus(chatTabId?: string): AgentStatus | { state: 'idle'; maxSteps: number; elapsedSteps: number; autoExecute: boolean; allowWrite: boolean; steps: []; error: string } {
+  getStatus(chatTabId?: string): AgentStatus | { state: 'idle'; maxSteps: number; elapsedSteps: number; allowWrite: boolean; steps: []; error: string } {
     if (!chatTabId) return this.emptyStatus('未指定对话标签')
     return this.tabs.get(chatTabId)?.controller.getStatus() ?? this.emptyStatus('未找到 Agent 会话')
   }
@@ -201,14 +195,8 @@ export class AgentApplication {
     tab.controller.getRuntime()?.removeTab(chatTabId)
     tab.controller.removeAllListeners('message')
     tab.controller.removeAllListeners('state-change')
-    tab.controller.removeAllListeners('confirm-request')
     tab.controller.dispose()
     this.tabs.delete(chatTabId)
-    return { success: true }
-  }
-
-  setAutoExecute(enabled: boolean, chatTabId?: string): { success: true } {
-    if (chatTabId) this.tabs.get(chatTabId)?.controller.setAutoExecute(enabled)
     return { success: true }
   }
 
@@ -328,15 +316,11 @@ export class AgentApplication {
   private bindControllerEvents(tab: AgentTabState): void {
     tab.controller.removeAllListeners('message')
     tab.controller.removeAllListeners('state-change')
-    tab.controller.removeAllListeners('confirm-request')
     tab.controller.on('message', (message: AgentMessage) => {
       this.send(tab, 'agent:message', { ...message, chatTabId: tab.chatTabId })
     })
     tab.controller.on('state-change', (state: string) => {
       this.send(tab, 'agent:stateChange', { state, chatTabId: tab.chatTabId })
-    })
-    tab.controller.on('confirm-request', (data: { message: string }) => {
-      this.send(tab, 'agent:confirmRequest', { ...data, chatTabId: tab.chatTabId })
     })
   }
 
@@ -406,6 +390,6 @@ export class AgentApplication {
   }
 
   private emptyStatus(error: string) {
-    return { state: 'idle' as const, maxSteps: 25, elapsedSteps: 0, autoExecute: false, allowWrite: false, steps: [], error }
+    return { state: 'idle' as const, maxSteps: 25, elapsedSteps: 0, allowWrite: false, steps: [], error }
   }
 }

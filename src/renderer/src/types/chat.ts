@@ -30,7 +30,7 @@ export interface ChatMessage {
   agentCardType?: 'plan' | 'execution' | 'observation' | 'thinking' | 'error' | 'status'
   // 卡片可选：stepNumber / details / thinkingId / streaming
   stepNumber?: number
-  // 卡片可选：details（reasoning/awaitingApproval/running/duration 等）
+  // 卡片可选：details（reasoning/running/duration 等）
   details?: Record<string, unknown>
   // 思考块流式状态
   streaming?: boolean

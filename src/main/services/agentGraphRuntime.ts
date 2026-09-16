@@ -4,7 +4,7 @@
  * This is the bridge between the old IPC layer and the new LangGraph execution engine.
  * Each chatTabId gets its own:
  *   - Compiled graph instance
- *   - MemorySaver checkpointer (for interrupt/resume and step continuation)
+ *   - MemorySaver checkpointer (for step continuation)
  *   - AbortController (for stop)
  *   - Callbacks (for emitting messages back to frontend)
  */
@@ -136,7 +136,6 @@ export class AgentGraphRuntime {
     callbacks: AgentGraphCallbacks,
     options?: {
       allowWrite?: boolean
-      autoExecute?: boolean
       boundHost?: string
       // 历史对话（包含 user 与 assistant 发言），startTask 时灌入 graph state，
       // 让 think 节点能看到"上一轮助手说了什么"，实现自然追问
@@ -169,7 +168,6 @@ export class AgentGraphRuntime {
     initialState.chatTabId = chatTabId
     initialState.maxSteps = maxSteps
     initialState.allowWrite = options?.allowWrite ?? false
-    initialState.autoExecute = options?.autoExecute ?? false
     initialState.boundHost = options?.boundHost ?? ''
     if (options?.conversationHistory) {
       initialState.conversationHistory = [...options.conversationHistory]
@@ -208,64 +206,6 @@ export class AgentGraphRuntime {
       const msg = err instanceof Error ? err.message : String(err)
       callbacks.emitMessage({ type: 'error', content: `执行失败：${msg}` })
       callbacks.emitStateChange('failed')
-    } finally {
-      tab.running = false
-    }
-  }
-
-  /**
-   * Resume a graph that was paused by interrupt (confirmation) or step limit.
-   * For confirmation: pass Command({ resume: approved })
-   * For step continuation: pass null to resume from last checkpoint
-   */
-  async resume(
-    chatTabId: string,
-    resumeValue?: unknown
-  ): Promise<void> {
-    const tab = this.tabs.get(chatTabId)
-    if (!tab) throw new Error('未找到 Agent 会话')
-    // 已被用户 stop 的图禁止"复活"：新 AbortController 会清掉 stop 设置的 abort，
-    // 已停止的任务会借 interrupt 恢复继续执行（含写命令）
-    if (tab.stopped) {
-      throw new Error('任务已停止，无法恢复执行；请重新发起任务或续接上下文')
-    }
-    if (tab.running) {
-      throw new Error('任务正在执行中，无法恢复')
-    }
-
-    tab.running = true
-    try {
-      // Reset abort controller for resumed execution
-      tab.graphCtx.abortController = new AbortController()
-      tab.abortController = tab.graphCtx.abortController
-
-      const config = {
-        configurable: {
-          thread_id: chatTabId
-        }
-      }
-
-      // 取当前任务的 maxSteps，与 startTask/continueTask 使用同一公式计算递归上限
-      const snapshot = await tab.compiledGraph.getState(config)
-      const maxSteps = (snapshot?.values as AgentGraphState | undefined)?.maxSteps ?? 25
-
-      const resumeConfig = {
-        ...config,
-        recursionLimit: Math.max(maxSteps * 6 + 30, 200),
-        signal: tab.abortController.signal
-      }
-
-      try {
-        const input = resumeValue !== undefined
-          ? new Command({ resume: resumeValue })
-          : null
-        await tab.compiledGraph.invoke(input as any, resumeConfig)
-      } catch (err) {
-        if (tab.abortController.signal.aborted) return
-        const msg = err instanceof Error ? err.message : String(err)
-        tab.graphCtx.callbacks.emitMessage({ type: 'error', content: `续跑执行失败：${msg}` })
-        tab.graphCtx.callbacks.emitStateChange('failed')
-      }
     } finally {
       tab.running = false
     }

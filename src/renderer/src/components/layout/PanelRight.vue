@@ -1,20 +1,5 @@
 <template>
   <div class="panel panel-right" :style="{ width: width + 'px' }">
-    <div class="assistant-header">
-      <div class="assistant-title">
-        <span class="assistant-mark" aria-hidden="true">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <path d="m12 3 1.6 5.4L19 10l-5.4 1.6L12 17l-1.6-5.4L5 10l5.4-1.6L12 3Z"/>
-            <path d="m19 16 .7 2.3L22 19l-2.3.7L19 22l-.7-2.3L16 19l2.3-.7L19 16Z"/>
-          </svg>
-        </span>
-        <span>AI 助手</span>
-      </div>
-      <button class="assistant-new" type="button" title="新建对话" @click="chatStore.addTab()">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-        <span>新建</span>
-      </button>
-    </div>
     <!-- Chat Tab Bar -->
     <div class="tab-bar chat-tab-bar" role="tablist" aria-label="对话标签">
       <div class="tab-list">
@@ -41,6 +26,9 @@
           </button>
         </div>
       </div>
+      <button class="tab-add" type="button" title="新建对话" aria-label="新建对话" @click="chatStore.addTab()">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      </button>
     </div>
     <ChatPanel />
   </div>
@@ -73,51 +61,21 @@ function onChatTabKeydown(event: KeyboardEvent, id: string): void {
 </script>
 
 <style scoped>
-.assistant-header {
-  height: var(--panel-header-height);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 12px;
-  background: var(--workbench-panel-bg, var(--surface));
-  border-bottom: 1px solid var(--workbench-border-soft, var(--divider-soft));
-  flex-shrink: 0;
+/* 聊天标签：单个时不再拉满整行（回归 88–200px 页签宽度，修复"标签过大"）；
+   active 时与下方内容区同色相连，并用 ::after 盖住 tab 栏底边线，
+   让标签"坐"在内容区上而不是悬浮（内容区地面色 = --workbench-panel-bg） */
+.chat-tab-bar .tab-item.active {
+  background: var(--workbench-panel-bg, var(--surface-muted));
 }
 
-.assistant-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--text-primary);
-  font-size: 13px;
-  font-weight: 600;
-  letter-spacing: 0.1px;
-}
-
-.assistant-mark { color: var(--accent); display: flex; }
-
-.assistant-new {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 26px;
-  padding: 0 10px;
-  border: 0;
-  border-radius: var(--radius-sm, 6px);
-  background: transparent;
-  color: var(--text-tertiary);
-  font-family: inherit;
-  font-size: 12px;
-  cursor: pointer;
-  transition: background var(--transition-fast), color var(--transition-fast);
-}
-
-.assistant-new:hover { background: var(--surface-alt); color: var(--text-primary); }
-
-/* 单个对话标签填满栏位，避免右侧留下突兀的空白。多标签时保持横向标签布局。 */
-.chat-tab-bar .tab-item:only-child {
-  flex: 1;
-  max-width: none;
+.chat-tab-bar .tab-item.active::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 1px;
+  background: var(--workbench-panel-bg, var(--surface-muted));
 }
 
 </style>

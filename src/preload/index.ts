@@ -116,14 +116,10 @@ const api = {
       ipcRenderer.invoke('agent:startTask', data),
     stop: (data?: { chatTabId?: string }): Promise<{ success: boolean }> =>
       ipcRenderer.invoke('agent:stop', data),
-    confirmCommand: (approved: boolean, data?: { chatTabId?: string }): Promise<{ success: boolean }> =>
-      ipcRenderer.invoke('agent:confirmCommand', approved, data),
     getStatus: (data?: { chatTabId?: string }): Promise<AgentStatus> => ipcRenderer.invoke('agent:getStatus', data),
     reset: (data?: { chatTabId?: string }): Promise<{ success: boolean }> => ipcRenderer.invoke('agent:reset', data),
     fullReset: (data?: { chatTabId?: string }): Promise<{ success: boolean }> => ipcRenderer.invoke('agent:fullReset', data),
     destroy: (data?: { chatTabId?: string }): Promise<{ success: boolean }> => ipcRenderer.invoke('agent:destroy', data),
-    setAutoExecute: (enabled: boolean, data?: { chatTabId?: string }): Promise<{ success: boolean }> =>
-      ipcRenderer.invoke('agent:setAutoExecute', enabled, data),
     setAllowWrite: (enabled: boolean, data?: { chatTabId?: string }): Promise<SetAllowWriteResult> =>
       ipcRenderer.invoke('agent:setAllowWrite', enabled, data),
     continueTask: (additionalSteps?: number, data?: { chatTabId?: string }): Promise<{ success: boolean; error?: string }> =>
@@ -144,13 +140,6 @@ const api = {
       ipcRenderer.on('agent:stateChange', handler)
       return () => {
         ipcRenderer.removeListener('agent:stateChange', handler)
-      }
-    },
-    onConfirmRequest: (callback: (data: { message: string; chatTabId?: string }) => void): (() => void) => {
-      const handler = (_event: Electron.IpcRendererEvent, data: { message: string; chatTabId?: string }): void => callback(data)
-      ipcRenderer.on('agent:confirmRequest', handler)
-      return () => {
-        ipcRenderer.removeListener('agent:confirmRequest', handler)
       }
     },
     onBindingCleared: (callback: (data: { chatTabId?: string }) => void): (() => void) => {

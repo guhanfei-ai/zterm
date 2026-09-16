@@ -67,13 +67,11 @@
           :bound-host="boundHostDisplay"
           :elapsed-steps="elapsedSteps"
           :max-steps="maxSteps"
-          :auto-execute="chatStore.autoExecute"
           :allow-write="chatStore.allowWrite"
           @bind="onAgentBind"
           @stop="onAgentStop"
           @reset="onAgentReset"
           @continue="onAgentContinue"
-          @toggle-auto="onToggleAuto"
           @toggle-write="onToggleWrite"
         />
       </div>
@@ -97,14 +95,6 @@
           @copy-conclusion="copyConclusionAsMarkdown"
           @save-conclusion="saveConclusionAsMarkdown"
         />
-      </div>
-      <!-- Agent Confirm Dialog -->
-      <div v-if="chatStore.confirmRequest" class="agent-confirm-bar">
-        <div class="confirm-text">{{ chatStore.confirmRequest.message }}</div>
-        <div class="confirm-actions">
-          <button class="btn-confirm btn-confirm-no" @click="onConfirmCommand(false)">拒绝</button>
-          <button class="btn-confirm btn-confirm-yes" @click="onConfirmCommand(true)">确认执行</button>
-        </div>
       </div>
     </template>
 
@@ -337,8 +327,8 @@ function onModeChange(e: Event): void {
   }
   if (mode === 'chat') cleanupAgentListeners(chatStore.activeTabId)
   chatStore.setMode(mode)
-  if (mode === 'chat') chatInput.value = ''
-  else agentInput.value = ''
+  // 保留两侧输入草稿：chatInput / agentInput 各自独立，
+  // 切换模式不应静默丢弃用户未发送的内容
   chatStore.setError(null)
   resetInputHeight()
 }
@@ -380,8 +370,6 @@ function cleanupAgentListeners(chatTabId: string): void {
     }
     agentListenerMap.delete(chatTabId)
   }
-  // 兜底：清理该 tab 残留的 confirm 弹窗与错误标记，避免任务结束后 UI 仍卡在确认态
-  try { chatStore.setConfirmRequestByTabId(chatTabId, null) } catch { /* ignore */ }
 }
 
 // 由 chatStore.agentStatus 派生（全局 onStateChange → refreshAgentStatusByTabId 会持续刷新）。
@@ -461,15 +449,6 @@ watch(
     }
   }
 )
-
-function switchMode(mode: PanelMode): void {
-  if (chatStore.isStreaming || chatStore.agentState === 'executing') return
-  if (mode === 'chat') cleanupAgentListeners(chatStore.activeTabId)
-  chatStore.setMode(mode)
-  if (mode === 'chat') chatInput.value = ''
-  else agentInput.value = ''
-  chatStore.setError(null)
-}
 
 // ---- Chat Mode ----
 async function onSendChat(): Promise<void> {
@@ -650,7 +629,6 @@ async function refreshAgentStatusByTabId(tabId: string): Promise<void> {
     const status = await window.electronAPI.agent.getStatus({ chatTabId: tabId })
     // 非状态字段（status / 步数 / 读写模式 / 绑定信息）可按最新请求正常刷新
     chatStore.setAgentStatusByTabId(tabId, status)
-    chatStore.setAutoExecuteByTabId(tabId, status.autoExecute)
     chatStore.setAllowWriteByTabId(tabId, status.allowWrite)
     // state 字段受 guard 保护：只有当本次响应仍是该标签最新刷新请求，
     // 且请求期间未收到新的 stateChange 时，才允许写回；否则丢弃，避免旧快照回滚终态
@@ -665,7 +643,6 @@ async function onAgentStop(): Promise<void> {
   const chatTabId = chatStore.activeTabId
   chatStore.finalizeThinkingOnStopByTabId(chatTabId)
   chatStore.finalizeExecutionMessagesByTabId(chatTabId)
-  chatStore.setConfirmRequestByTabId(chatTabId, null)
   await window.electronAPI.agent.stop({ chatTabId })
   await refreshAgentStatusByTabId(chatTabId)
 }
@@ -674,12 +651,14 @@ async function onAgentReset(): Promise<void> {
   const chatTabId = chatStore.activeTabId
   cleanupAgentListeners(chatTabId)
   await window.electronAPI.agent.fullReset({ chatTabId })
-  chatStore.fullResetAgent()
-  chatStore.clearPendingContext()
-  chatStore.setContextResolved(true)
+  // IPC 往返期间可能已切换标签：所有写入定向到发起请求的 chatTabId，
+  // 否则 fullReset 会清掉另一个标签的 Agent 时间线（不可逆）
+  chatStore.fullResetAgentByTabId(chatTabId)
+  chatStore.setPendingContextByTabId(chatTabId, null)
+  chatStore.setContextResolvedByTabId(chatTabId, true)
   // 第三轮补丁：明确标记下一次 Agent 提交为"开启新任务"。
   // 配合 onStartAgent 里的 takeAgentMode 一次性消费，主人重置后下一句就真正走新任务路径。
-  chatStore.setAgentMode('new')
+  chatStore.setAgentModeByTabId(chatTabId, 'new')
   agentInput.value = ''
   await refreshAgentStatus()
   await refreshPendingContext()
@@ -774,11 +753,12 @@ async function onDiscardPendingContext(): Promise<void> {
   } catch {
     /* ignore */
   }
-  chatStore.clearPendingContext()
-  chatStore.setContextResolved(true)
+  // IPC 往返期间可能已切换标签：写入定向到发起请求的 chatTabId
+  chatStore.setPendingContextByTabId(chatTabId, null)
+  chatStore.setContextResolvedByTabId(chatTabId, true)
   chatStore.setError(null)
   // 第三轮补丁：决策按钮也是"开启新任务"语义，标记下一次提交走 isNewTask=true
-  chatStore.setAgentMode('new')
+  chatStore.setAgentModeByTabId(chatTabId, 'new')
 }
 
 function stopReasonLabel(reason: string | null | undefined): string {
@@ -795,18 +775,6 @@ function doneStepCount(ctx: { steps: Array<{ status: string }> }): number {
   return ctx.steps.filter((s) => s.status === 'done').length
 }
 
-async function onToggleAuto(enabled: boolean): Promise<void> {
-  const chatTabId = chatStore.activeTabId
-  const result = await window.electronAPI.agent.setAutoExecute(enabled, { chatTabId })
-  if (result.success) {
-    // 定向写回发起的 tab，防 IPC 期间切标签把开关写到别的 tab
-    chatStore.setAutoExecuteByTabId(chatTabId, enabled)
-  } else {
-    // 失败时不更新本地状态，从主进程拉回真实状态
-    await refreshAgentStatus()
-  }
-}
-
 async function onToggleWrite(enabled: boolean): Promise<void> {
   chatStore.setError(null)
   const chatTabId = chatStore.activeTabId
@@ -815,19 +783,11 @@ async function onToggleWrite(enabled: boolean): Promise<void> {
     // 同步主进程返回的真实状态，而不是乐观写入用户意图
     // （定向写回发起的 tab，防 IPC 期间切标签串错位）
     chatStore.setAllowWriteByTabId(chatTabId, result.allowWrite ?? enabled)
-    if (result.autoExecute !== undefined) {
-      chatStore.setAutoExecuteByTabId(chatTabId, result.autoExecute)
-    }
   } else {
     // 失败时显示明确错误反馈，并从主进程拉回真实状态
     chatStore.setError(result.error || '读写模式切换失败')
     await refreshAgentStatus()
   }
-}
-
-async function onConfirmCommand(approved: boolean): Promise<void> {
-  chatStore.setConfirmRequest(null)
-  await window.electronAPI.agent.confirmCommand(approved, { chatTabId: chatStore.activeTabId })
 }
 
 // ---- Agent Conclusion Helpers ----
@@ -1101,40 +1061,6 @@ watch(() => chatStore.tabs.map(t => t.id), (newIds, oldIds) => {
 .empty-title { font-size: 14px; font-weight: 600; color: var(--text-primary); margin-bottom: 6px; }
 .empty-desc { font-size: 12px; color: var(--text-secondary); margin-bottom: 8px; line-height: 1.5; }
 .empty-hint { font-size: 11px; color: var(--text-tertiary); }
-
-.agent-confirm-bar {
-  padding: 10px 12px;
-  border: 1px solid var(--divider);
-  border-top: 1px solid var(--divider);
-  background: var(--warning-muted);
-  flex-shrink: 0;
-  margin: 0 10px;
-  border-radius: var(--radius-control);
-  box-shadow: var(--shadow-subtle);
-}
-.confirm-text {
-  font-size: 12px;
-  color: var(--warning);
-  margin-bottom: 8px;
-  white-space: pre-line;
-  word-break: break-word;
-}
-.confirm-actions {
-  display: flex;
-  gap: 8px;
-}
-.btn-confirm {
-  flex: 1;
-  padding: 6px 12px;
-  border-radius: 4px;
-  border: none;
-  font-size: 12px;
-  cursor: pointer;
-}
-.btn-confirm-yes { background: var(--accent); color: var(--accent-contrast, #fff); }
-.btn-confirm-no { background: var(--surface-alt); color: var(--text-secondary); }
-.btn-confirm-yes:hover { background: var(--accent-hover); }
-.btn-confirm-no:hover { background: var(--surface-high); }
 
 .input-container {
   padding: 8px 12px 12px;

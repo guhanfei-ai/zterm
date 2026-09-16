@@ -3,9 +3,12 @@
  *
  * Replaces the old AgentController.runLoop() with a standard graph orchestration:
  *   START → probe_system → plan_step → (route) → check_safety → (route) →
- *   [confirm_command | execute_command] → analyze_result → (route) → plan_step | summarize → END
+ *   execute_command → analyze_result → (route) → plan_step | summarize → END
+ *
+ * MVP 简化（作者决策）：已移除 confirm_command 人工确认节点 ——
+ * 安全检查放行的命令直接执行（读写分级见 safetyGuard.checkCommand）。
  */
-import { StateGraph, START, END, interrupt, MemorySaver } from '@langchain/langgraph'
+import { StateGraph, START, END, MemorySaver } from '@langchain/langgraph'
 import {
   AgentStateAnnotation,
   AgentGraphState,
@@ -22,7 +25,7 @@ import {
   stripProtocolLines,
   TerminalContext
 } from './agentGraphPrompt'
-import { checkCommand, SafetyCheck } from './safetyGuard'
+import { checkCommand } from './safetyGuard'
 import { TerminalBridge, CommandResult } from './terminalBridge'
 import { AiClient } from './aiClient'
 import { ModelStreamSession } from '../harness/modelStreamSession'
@@ -51,7 +54,6 @@ export interface AgentGraphCallbacks {
     details?: Record<string, unknown>
   }) => void
   emitStateChange: (phase: GraphPhase) => void
-  emitConfirmRequest: (data: { message: string; pendingCommand: string }) => void
   getTerminalContext: (lines?: number) => TerminalContext | null
   onStepComplete: (data: {
     steps: StepRecord[]
@@ -259,8 +261,6 @@ function createThinkNode(ctx: AgentGraphContext) {
       pendingCommand: parsed.commands[0].command,
       pendingCommands: parsed.commands,
       modelResponseText: text,
-      confirmationApproved: null,
-      needsConfirmation: false,
       safetyResult: null
     }
   }
@@ -339,8 +339,6 @@ function createRepairActionPlanNode(ctx: AgentGraphContext) {
       pendingCommand: parsed.command || fallbackCommand,
       pendingCommands: [{ plan: parsed.plan, command: parsed.command || fallbackCommand }],
       modelResponseText: text,
-      confirmationApproved: null,
-      needsConfirmation: false,
       safetyResult: null
     }
   }
@@ -402,98 +400,14 @@ function createCheckSafetyNode(ctx: AgentGraphContext) {
       // 被拦截后剩余命令队列整体作废，回 think 重新规划
       return {
         safetyResult,
-        needsConfirmation: false,
         pendingCommands: [],
         steps: [...state.steps, step]
       }
     }
 
-    // Determine if confirmation is needed
-    const alwaysConfirm = safetyResult.isWrite || safetyResult.isUnknown
-    const needsConf = safetyResult.requiresConfirmation && (alwaysConfirm || !state.autoExecute)
-
+    // MVP：安全检查放行的命令直接执行，不再人工确认
     return {
-      safetyResult,
-      needsConfirmation: needsConf
-    }
-  }
-}
-
-function createConfirmCommandNode(ctx: AgentGraphContext) {
-  // 幂等守卫：LangGraph 的 interrupt 语义是 resume 时整个节点函数从头重跑，
-  // 导致排在 interrupt() 之前的 emitStateChange / emitMessage(awaitingApproval) /
-  // emitConfirmRequest 被二次发射，确认框重弹、执行卡片重复。
-  // pendingConfirmSteps 记录“已发起确认副作用且尚未被 resume 消费”的步次：
-  //   - 首次进入：发射副作用并记入集合，随后 interrupt() 暂停
-  //   - resume 重跑：跳过副作用，interrupt() 直接返回 resume 值，随后清除该步
-  //   - 拒绝后重新规划再次进入同一步：集合已清除，可正常重新发起确认
-  const pendingConfirmSteps = new Set<number>()
-
-  return async (state: AgentGraphState): Promise<AgentGraphUpdate> => {
-    if (state.aborted || ctx.abortController.signal.aborted) return { aborted: true, phase: 'stopped' }
-    const { callbacks } = ctx
-
-    const confirmMessage = `确认执行以下命令？\n> ${state.pendingCommand}\n\n⚠ ${state.safetyResult?.reason}\n分类：${state.safetyResult?.category}`
-
-    if (!pendingConfirmSteps.has(state.currentStep)) {
-      // 首次进入：发起“待确认”展示。resume 重跑时跳过，避免确认框重弹与执行卡片重复
-      callbacks.emitStateChange('awaiting_confirmation')
-      callbacks.emitMessage({
-        type: 'execution',
-        content: state.pendingCommand,
-        stepNumber: state.currentStep,
-        details: {
-          awaitingApproval: true,
-          reason: state.safetyResult?.reason,
-          category: state.safetyResult?.category
-        }
-      })
-      callbacks.emitConfirmRequest({
-        message: confirmMessage,
-        pendingCommand: state.pendingCommand
-      })
-      pendingConfirmSteps.add(state.currentStep)
-    }
-
-    // This pauses the graph. On resume, returns the user's decision (boolean).
-    const approved = interrupt<string, boolean>(confirmMessage)
-
-    // interrupt() 返回意味着 resume 已发生，本次确认周期结束，清除守卫以允许该步未来重新确认
-    pendingConfirmSteps.delete(state.currentStep)
-
-    if (!approved) {
-      // User rejected — record a skipped step so the model sees the rejection history
-      const skippedStep: StepRecord = {
-        stepNumber: state.currentStep,
-        plan: state.planText,
-        command: state.pendingCommand,
-        observation: '用户拒绝执行该命令',
-        status: 'skipped'
-      }
-      const allSteps = [...state.steps, skippedStep]
-      callbacks.emitMessage({
-        type: 'observation',
-        content: '用户拒绝执行该命令，将规划下一步',
-        stepNumber: state.currentStep
-      })
-      callbacks.onStepComplete({
-        steps: allSteps,
-        currentStep: state.currentStep
-      })
-      return {
-        confirmationApproved: false,
-        needsConfirmation: false,
-        // 用户拒绝后剩余命令队列作废（回 think 重新规划）；
-        // commandOutput 一并清掉，避免下一轮 think 把更早的陈旧输出误当"上一步结果"
-        pendingCommands: [],
-        commandOutput: '',
-        steps: allSteps
-      }
-    }
-
-    return {
-      confirmationApproved: true,
-      needsConfirmation: false
+      safetyResult
     }
   }
 }
@@ -592,8 +506,6 @@ function createAnalyzeResultNode(ctx: AgentGraphContext) {
         pendingCommand: remaining[0].command,
         planText: remaining[0].plan || state.planText,
         commandOutput: '',
-        confirmationApproved: null,
-        needsConfirmation: false,
         safetyResult: null
       }
     }
@@ -782,18 +694,8 @@ function routeAfterSafety(state: AgentGraphState): string {
     if (state.currentStep >= state.maxSteps) return 'step_limit'
     return 'think'
   }
-  // Needs confirmation → interrupt
-  if (state.needsConfirmation) return 'confirm_command'
   // Safe to execute
   return 'execute_command'
-}
-
-function routeAfterConfirm(state: AgentGraphState): string {
-  if (state.aborted) return 'end'
-  if (state.confirmationApproved) return 'execute_command'
-  // User rejected — check step limit before looping back to think
-  if (state.currentStep >= state.maxSteps) return 'step_limit'
-  return 'think'
 }
 
 function routeAfterAnalyze(state: AgentGraphState): string {
@@ -818,7 +720,6 @@ export function buildAgentGraph(ctx: AgentGraphContext, checkpointer: MemorySave
     .addNode('think', createThinkNode(ctx))
     .addNode('repair_action_plan', createRepairActionPlanNode(ctx))
     .addNode('check_safety', createCheckSafetyNode(ctx))
-    .addNode('confirm_command', createConfirmCommandNode(ctx))
     .addNode('execute_command', createExecuteCommandNode(ctx))
     .addNode('analyze_result', createAnalyzeResultNode(ctx))
     .addNode('summarize', createSummarizeNode(ctx))
@@ -850,14 +751,6 @@ export function buildAgentGraph(ctx: AgentGraphContext, checkpointer: MemorySave
   })
 
   builder.addConditionalEdges('check_safety', routeAfterSafety, {
-    confirm_command: 'confirm_command',
-    execute_command: 'execute_command',
-    think: 'think',                // 曾为 plan_step
-    step_limit: 'set_round_limit',
-    end: END
-  })
-
-  builder.addConditionalEdges('confirm_command', routeAfterConfirm, {
     execute_command: 'execute_command',
     think: 'think',                // 曾为 plan_step
     step_limit: 'set_round_limit',

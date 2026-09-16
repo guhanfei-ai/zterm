@@ -3,7 +3,7 @@
     <!-- 行1 (主操作行)：状态信息 + 核心操作按钮，高优先级，允许窄宽度换行 -->
     <div class="toolbar-actions">
       <span class="toolbar-info">
-        <span class="info-bracket" :class="agentState">（{{ bracketLabel }}）</span>
+        <span class="info-bracket" :class="agentState">{{ bracketLabel }}</span>
         <span v-if="boundHost" class="info-dot info-dot--bound">已绑定</span>
         <span v-else class="info-dot info-dot--unbound">未绑定</span>
       </span>
@@ -61,27 +61,8 @@
       </span>
       <span v-else class="toolbar-hint">
         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
-        自动执行已关闭 · 每条写命令需人工确认
+        允许执行写操作，命令将自动执行（高危命令仍被拦截）
       </span>
-    </div>
-
-    <!-- 行3：自动执行，单独放到下一行，避免和模式开关挤在一起 -->
-    <div v-if="!allowWrite" class="toolbar-tertiary">
-      <button
-        type="button"
-        class="mode-switch auto-execute-switch"
-        :class="{ 'mode-switch--on': autoExecute }"
-        role="switch"
-        :aria-checked="autoExecute"
-        :aria-label="autoExecute ? '当前为自动执行，点击切换为手动确认' : '当前为手动确认，点击切换为自动执行'"
-        @click="$emit('toggle-auto', !autoExecute)"
-      >
-        <span class="mode-switch-label" :class="{ 'is-active': !autoExecute }">手动确认</span>
-        <span class="mode-switch-track">
-          <span class="mode-switch-thumb"></span>
-        </span>
-        <span class="mode-switch-label" :class="{ 'is-active': autoExecute }">自动执行</span>
-      </button>
     </div>
   </div>
 </template>
@@ -94,7 +75,6 @@ const props = defineProps<{
   boundHost?: string
   elapsedSteps?: number
   maxSteps?: number
-  autoExecute?: boolean
   allowWrite?: boolean
 }>()
 
@@ -103,7 +83,6 @@ defineEmits<{
   stop: []
   reset: []
   continue: []
-  'toggle-auto': [enabled: boolean]
   'toggle-write': [enabled: boolean]
 }>()
 
@@ -134,7 +113,9 @@ const bracketLabel = computed(() => {
 <style scoped>
 /* ---- 工具条容器：透明、无阴影，视作头部的从属区域 ---- */
 .agent-status-bar {
-  padding: 4px 0 2px;
+  /* 左内边距 20px = 上方标题行图标(14px) + 间距(6px)，
+     使状态行/模式行文字与标题文字落在同一竖直轴线上 */
+  padding: 4px 0 2px 20px;
   background: transparent;
   flex-shrink: 0;
   border: none;
@@ -264,19 +245,14 @@ const bracketLabel = computed(() => {
   margin-top: 4px;
 }
 
-/* ---- 行3：自动执行开关，单独一行更清爽 ---- */
-.toolbar-tertiary {
-  display: flex;
-  align-items: center;
-  margin-top: 6px;
-}
-
 /* ---- 模式开关（只读/读写切换）---- */
 .mode-switch {
   display: inline-flex;
   align-items: center;
   gap: 4px;
   padding: 4px 2px;
+  /* 抵消自身左侧 2px 内边距，使「只读模式」文字与其他行文字左缘对齐 */
+  margin-left: -2px;
   border: none;
   background: transparent;
   cursor: pointer;
@@ -340,16 +316,6 @@ const bracketLabel = computed(() => {
 .mode-switch--on .mode-switch-thumb {
   transform: translateY(-50%) translateX(11px);
   background: var(--warning);
-}
-
-/* 自动执行沿用同款开关，但用更中性的高亮色 */
-.auto-execute-switch.mode-switch--on .mode-switch-track {
-  background: var(--success-muted);
-  border-color: var(--success);
-}
-
-.auto-execute-switch.mode-switch--on .mode-switch-thumb {
-  background: var(--success);
 }
 
 /* ---- 弱提示文字：行内附属，低对比度 ---- */

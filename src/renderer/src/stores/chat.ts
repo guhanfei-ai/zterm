@@ -27,11 +27,6 @@ export interface AgentDisplayMessage {
   collapsed?: boolean
 }
 
-export interface AgentConfirmRequest {
-  message: string
-  pendingCommand: string
-}
-
 export interface ChatTab {
   id: string
   title: string
@@ -47,8 +42,6 @@ export interface ChatTab {
   // 注意：tab.messages 才是 Agent 时间线的唯一 source of truth。
   // 之前分散在 tab.agentMessages / tab.messages / agentConclusionMessages 的多数组结构已废弃。
   agentTask: string
-  confirmRequest: AgentConfirmRequest | null
-  autoExecute: boolean
   allowWrite: boolean
   // Binding info per tab
   boundHost: string
@@ -74,8 +67,6 @@ function createChatTab(override?: Partial<ChatTab>): ChatTab {
     agentStatus: null,
     agentState: 'idle',
     agentTask: '',
-    confirmRequest: null,
-    autoExecute: false,
     allowWrite: false,
     boundHost: '',
     pendingContext: null,
@@ -118,8 +109,6 @@ export const useChatStore = defineStore('chat', () => {
   const agentStatus = computed(() => activeTab.value.agentStatus)
   const agentState = computed(() => activeTab.value.agentState)
   const agentTask = computed(() => activeTab.value.agentTask)
-  const confirmRequest = computed(() => activeTab.value.confirmRequest)
-  const autoExecute = computed(() => activeTab.value.autoExecute)
   const allowWrite = computed(() => activeTab.value.allowWrite)
   const boundHost = computed(() => activeTab.value.boundHost)
   const pendingContext = computed(() => activeTab.value.pendingContext)
@@ -146,6 +135,10 @@ export const useChatStore = defineStore('chat', () => {
 
     // 清理后端持有的 agentTabState 以防止内存泄露
     void window.electronAPI.agent.destroy({ chatTabId: id })
+
+    // 若该标签正在流式输出（chat 模式），同时中止后端生成：
+    // 否则模型会在渲染层已无监听者的情况下继续生成完整回复，浪费 token
+    void window.electronAPI.ai.abort({ chatTabId: id })
 
     const fn = cleanupFns.get(id)
     if (fn) { fn(); cleanupFns.delete(id) }
@@ -224,14 +217,6 @@ export const useChatStore = defineStore('chat', () => {
     setAgentStateByTabId(activeTab.value.id, state)
   }
 
-  function setConfirmRequest(req: AgentConfirmRequest | null): void {
-    setConfirmRequestByTabId(activeTab.value.id, req)
-  }
-
-  function setAutoExecute(v: boolean): void {
-    setAutoExecuteByTabId(activeTab.value.id, v)
-  }
-
   function setAllowWrite(v: boolean): void {
     setAllowWriteByTabId(activeTab.value.id, v)
   }
@@ -248,7 +233,6 @@ export const useChatStore = defineStore('chat', () => {
     const tab = activeTab.value
     tab.agentState = 'idle'
     tab.agentTask = ''
-    tab.confirmRequest = null
     tab.agentStatus = null
     // 清空 Agent 时间线：执行结论 + 自然聊天助手侧 + 自然聊天用户侧 + 全部执行卡片
     tab.messages = tab.messages.filter(
@@ -259,7 +243,6 @@ export const useChatStore = defineStore('chat', () => {
 
   function fullResetAgent(): void {
     resetAgent()
-    activeTab.value.autoExecute = false
     activeTab.value.allowWrite = false
     activeTab.value.boundHost = ''
   }
@@ -565,8 +548,7 @@ export const useChatStore = defineStore('chat', () => {
       if (stepNumber !== undefined && msg.stepNumber !== stepNumber) continue
       msg.details = {
         ...(msg.details && typeof msg.details === 'object' ? msg.details : {}),
-        running: false,
-        awaitingApproval: false
+        running: false
       }
     }
   }
@@ -583,12 +565,6 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  /** Set confirm request in a specific tab */
-  function setConfirmRequestByTabId(tabId: string, req: AgentConfirmRequest | null): void {
-    const tab = getTab(tabId)
-    if (tab) tab.confirmRequest = req
-  }
-
   /** Clear binding in a specific tab */
   function clearBindingByTabId(tabId: string): void {
     const tab = getTab(tabId)
@@ -603,12 +579,6 @@ export const useChatStore = defineStore('chat', () => {
   function setAgentStatusByTabId(tabId: string, status: AgentStatus | null): void {
     const tab = getTab(tabId)
     if (tab) tab.agentStatus = status
-  }
-
-  /** Set autoExecute in a specific tab */
-  function setAutoExecuteByTabId(tabId: string, v: boolean): void {
-    const tab = getTab(tabId)
-    if (tab) tab.autoExecute = v
   }
 
   /** Set allowWrite in a specific tab */
@@ -638,6 +608,27 @@ export const useChatStore = defineStore('chat', () => {
     if (tab) tab.contextResolved = v
   }
 
+  /** fullResetAgent 的定向版本：IPC 往返期间可能已切换标签，写入必须落到发起的 tab */
+  function fullResetAgentByTabId(tabId: string): void {
+    const tab = getTab(tabId)
+    if (!tab) return
+    tab.agentState = 'idle'
+    tab.agentTask = ''
+    tab.agentStatus = null
+    // 清空 Agent 时间线：执行结论 + 自然聊天助手侧 + 自然聊天用户侧 + 全部执行卡片
+    tab.messages = tab.messages.filter(
+      (m) => !m.isAgentConclusion && !m.isAgentNaturalReply && !m.isAgentUserTurn && !m.isAgentCard
+    )
+    tab.allowWrite = false
+    tab.boundHost = ''
+  }
+
+  /** setAgentMode 的定向版本 */
+  function setAgentModeByTabId(tabId: string, mode: 'followup' | 'new'): void {
+    const tab = getTab(tabId)
+    if (tab) tab.agentMode = mode
+  }
+
   return {
     tabs,
     activeTabId,
@@ -651,8 +642,6 @@ export const useChatStore = defineStore('chat', () => {
     agentStatus,
     agentState,
     agentTask,
-    confirmRequest,
-    autoExecute,
     allowWrite,
     boundHost,
     pendingContext,
@@ -672,8 +661,6 @@ export const useChatStore = defineStore('chat', () => {
     setAgentTask,
     addAgentMessage,
     setAgentState,
-    setConfirmRequest,
-    setAutoExecute,
     setAllowWrite,
     finalizeExecutionMessages,
     finalizeThinkingOnStop,
@@ -702,12 +689,12 @@ export const useChatStore = defineStore('chat', () => {
     setAgentStateByTabId,
     finalizeExecutionMessagesByTabId,
     finalizeThinkingOnStopByTabId,
-    setConfirmRequestByTabId,
     clearBindingByTabId,
     setAgentStatusByTabId,
-    setAutoExecuteByTabId,
     setAllowWriteByTabId,
     setPendingContextByTabId,
-    setContextResolvedByTabId
+    setContextResolvedByTabId,
+    fullResetAgentByTabId,
+    setAgentModeByTabId
   }
 })

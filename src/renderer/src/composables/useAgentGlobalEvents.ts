@@ -5,7 +5,7 @@ import { AgentStatusGuard } from '@/utils/agentStatusGuard'
  * 应用级 Agent 全局事件监听。
  *
  * 修复说明（此前的问题）：
- * 全局 Agent 监听器（onMessage / onStateChange / onConfirmRequest / onBindingCleared）
+ * 全局 Agent 监听器（onMessage / onStateChange / onBindingCleared）
  * 原先注册在 ChatPanel 组件内，随右侧面板 v-if 卸载而注销，且重新显示时不会重建。
  * 任务在后台执行期间隐藏面板会导致消息与状态事件永久丢失且无重放机制。
  * 现改为在 App.vue 挂载一次、应用存活期内常驻，事件按 chatTabId 路由写入 store，
@@ -33,7 +33,6 @@ export async function refreshAgentStatusByTabId(tabId: string): Promise<void> {
     const status = await window.electronAPI.agent.getStatus({ chatTabId: tabId })
     // 非状态字段（status / 步数 / 读写模式 / 绑定信息）可按最新请求正常刷新
     chatStore.setAgentStatusByTabId(tabId, status)
-    chatStore.setAutoExecuteByTabId(tabId, status.autoExecute)
     chatStore.setAllowWriteByTabId(tabId, status.allowWrite)
     // state 字段受 guard 保护：只有当本次响应仍是该标签最新刷新请求，
     // 且请求期间未收到新的 stateChange 时，才允许写回；否则丢弃，避免旧快照回滚终态
@@ -95,19 +94,7 @@ export function setupAgentGlobalEvents(): void {
       if (state === 'completed' || state === 'failed' || state === 'stopped') {
         chatStore.finalizeExecutionMessagesByTabId(chatTabId)
         chatStore.finalizeThinkingOnStopByTabId(chatTabId)
-        chatStore.setConfirmRequestByTabId(chatTabId, null)
       }
-    })
-  )
-
-  globalUnsubs.push(
-    window.electronAPI.agent.onConfirmRequest((data) => {
-      const chatTabId = data.chatTabId
-      if (!chatTabId) return
-      chatStore.setConfirmRequestByTabId(chatTabId, {
-        message: data.message,
-        pendingCommand: ''
-      })
     })
   )
 
