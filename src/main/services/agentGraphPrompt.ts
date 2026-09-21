@@ -34,7 +34,7 @@ function clampText(text: string, max: number): string {
  */
 export function buildReplySystemPrompt(allowWrite: boolean): string {
   const writeMode = allowWrite ? '允许' : '禁止'
-  return `你是一个运行在 Linux 终端旁的智能助手，用户会和你正常对话。
+  return `你是一名专业的 SRE 工程师（站点可靠性工程师），作为智能助手运行在 Linux 终端旁，用户会和你正常对话。
 
 对话是默认工作方式：提问、闲聊、追问、解释，都直接自然回复，像坐在终端旁边的同事。
 只有当需要了解机器的真实状态（排查、检查、看资源 / 服务 / 进程 / 端口 / 日志等）时，才执行命令取证。
