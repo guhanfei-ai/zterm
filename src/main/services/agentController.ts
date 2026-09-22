@@ -578,21 +578,20 @@ export class AgentController extends EventEmitter {
     this.removeAllListeners()
   }
 
-  async continueTask(additionalSteps = 25): Promise<void> {
+  /**
+   * 续跑入口（同步点火契约，2026-09-21）：
+   * 校验与状态落位同步完成，发起级错误同步 throw 供 IPC 层返回渲染进程；
+   * 图执行后台点火，执行期错误收敛为 failed 终态并走事件流（state-change / message）。
+   * 与 startTask 的"点火即返回"对齐，避免 await 本调用的 UI 动作（如清决策条）被挂到任务终态。
+   */
+  continueTask(additionalSteps = 25): void {
     // After restart, state is 'idle' but contextStore may have recoverable context
     if (this.state === 'idle' && this.chatTabId) {
       const resumeType = getResumeType(this.chatTabId)
-      if (resumeType === 'continue') {
+      if (resumeType === 'continue' || resumeType === 'replan') {
         const ctx = loadContext(this.chatTabId)
         if (ctx) {
-          await this.resumeFromContext(ctx, additionalSteps)
-          return
-        }
-      }
-      if (resumeType === 'replan') {
-        const ctx = loadContext(this.chatTabId)
-        if (ctx) {
-          await this.resumeFromContext(ctx, additionalSteps)
+          this.resumeFromContext(ctx, additionalSteps)
           return
         }
       }
@@ -613,7 +612,13 @@ export class AgentController extends EventEmitter {
     this.state = 'planning'
     this.emit('state-change', 'planning')
 
-    // Resume graph with additional steps
+    // 后台点火续跑图：不 await，执行期错误由 runGraphContinue 收敛并走事件流
+    void this.runGraphContinue(additionalSteps)
+  }
+
+  /** 续跑（stepLimitReached 路径）的后台执行体：执行期失败收敛为 failed 终态并走事件流 */
+  private async runGraphContinue(additionalSteps: number): Promise<void> {
+    if (!this.chatTabId || !this.runtime) return
     try {
       await this.runtime.continueTask(this.chatTabId, additionalSteps)
     } catch (err) {
@@ -636,10 +641,10 @@ export class AgentController extends EventEmitter {
    * - ROUND_LIMIT: 追加步数继续执行
    * - USER_INTERRUPT / ERROR / null: 基于历史步骤重新规划
    */
-  private async resumeFromContext(
+  private resumeFromContext(
     ctx: AgentContextSnapshot,
     additionalSteps: number
-  ): Promise<void> {
+  ): void {
     if (!this.config) throw new Error('模型未配置')
     if (!this.bridge || !this.bridge.isConnected()) throw new Error('终端未连接')
     if (!this.chatTabId || !this.runtime) throw new Error('Agent 服务未初始化')
@@ -702,7 +707,8 @@ export class AgentController extends EventEmitter {
         : undefined
 
     const callbacks = this.createCallbacks()
-    await this.runtime.startTask(
+    // 后台点火：不 await，完成收尾与失败收敛已由下方 .then/.catch 承接；本方法点火后同步返回
+    this.runtime.startTask(
       this.chatTabId,
       ctx.taskDescription,
       newMaxSteps,

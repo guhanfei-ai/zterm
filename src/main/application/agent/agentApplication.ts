@@ -211,11 +211,13 @@ export class AgentApplication {
     return tab.controller.setAllowWrite(true)
   }
 
-  async continueTask(additionalSteps?: number, chatTabId?: string): Promise<{ success: boolean; error?: string }> {
+  continueTask(additionalSteps?: number, chatTabId?: string): { success: boolean; error?: string } {
     const tab = chatTabId ? this.tabs.get(chatTabId) : undefined
     if (!tab) return { success: false, error: '未找到 Agent 会话' }
     try {
-      await tab.controller.continueTask(additionalSteps)
+      // 同步点火契约（与 startTask 对齐）：controller 同步完成校验与后台点火，
+      // 发起级错误在此捕获返回渲染进程；执行期错误走事件流，不再占用本返回
+      tab.controller.continueTask(additionalSteps)
       return { success: true }
     } catch (err: unknown) {
       return { success: false, error: err instanceof Error ? err.message : '续跑失败' }
