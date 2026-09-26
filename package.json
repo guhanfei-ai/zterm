@@ -119,6 +119,12 @@
     "ssh2@1.17.0": true,
     "electron@44.4.5": true,
     "vue-demi@0.14.10": true,
-    "cpu-features@0.0.10": true
+    "cpu-features@0.0.10": true,
+    "esbuild@0.28.2": true,
+    "esbuild@0.25.12": true,
+    "@google/genai@2.21.0": true,
+    "electron-winstaller@5.4.0": true,
+    "fsevents@2.3.3": true,
+    "protobufjs@7.6.6": true
   }
 }
