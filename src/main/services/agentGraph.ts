@@ -55,6 +55,7 @@ import {
   projectRepairPlanModelRequest
 } from '../projection/agent/agentModelProjection'
 import { STEP_TIMEOUT_MS, FALLBACK_COMMAND } from './agentGraphConfig'
+import { isMissingOptionalProbe } from './agentCompletionPolicy'
 
 // ---- Callbacks for side-effect emission (bridge to old IPC events) ----
 export interface AgentGraphCallbacks {
@@ -257,11 +258,13 @@ export function createReplyNode(ctx: AgentGraphContext) {
         createdAt: nowIso()
       })
 
-      // 本轮执行过命令且最后退出码为 0 → 完成；非零退出不得被自然语言伪装成成功。
+      // 非零退出默认失败；只读盘点已有成功取证、最后仅缺失可选工具时带警告完成。
       // 纯聊天仍落 COMPLETED 快照并显示 idle，避免被误判为崩溃残留。
       const turnStart = state.turnStartStepCount ?? 0
-      const doneThisTurn = state.steps.filter(s => s.stepNumber > turnStart && s.status === 'done').length
-      const nonzeroExit = doneThisTurn > 0 && typeof state.lastCommandExitCode === 'number' && state.lastCommandExitCode !== 0
+      const turnSteps = state.steps.filter(s => s.stepNumber > turnStart)
+      const doneThisTurn = turnSteps.filter(s => s.status === 'done').length
+      const missingProbe = isMissingOptionalProbe(turnSteps, state.lastCommandExitCode, state.allowWrite)
+      const nonzeroExit = doneThisTurn > 0 && typeof state.lastCommandExitCode === 'number' && state.lastCommandExitCode !== 0 && !missingProbe
       const completed = doneThisTurn > 0 && !nonzeroExit
       const finalStopReason: StopReason = nonzeroExit ? 'ERROR' : 'COMPLETED'
 
@@ -286,7 +289,9 @@ export function createReplyNode(ctx: AgentGraphContext) {
       if (nonzeroExit) {
         ctx.callbacks.emitMessage({ type: 'error', content: `最后一条终端命令退出码为 ${state.lastCommandExitCode}，未将任务标记为完成` })
       } else if (completed) {
-        ctx.callbacks.emitMessage({ type: 'status', content: `本轮完成，共执行 ${doneThisTurn} 条命令` })
+        ctx.callbacks.emitMessage({ type: 'status', content: missingProbe
+          ? `本轮完成（有警告）：最后一条探测命令退出码为 127，目标工具在当前环境不可用；其余 ${doneThisTurn - 1} 条命令已完成`
+          : `本轮完成，共执行 ${doneThisTurn} 条命令` })
       }
       return {
         phase: finalPhase,
@@ -611,6 +616,7 @@ function createExecuteCommandNode(ctx: AgentGraphContext) {
       plan: state.planText,
       command: cmd,
       commandOutput: result.output,
+      exitCode: verified ? result.exitCode : undefined,
       observation: clampStepObservation(observation),
       status: verified ? 'done' : result.commandSent ? 'executing' : 'skipped',
       duration: result.duration,

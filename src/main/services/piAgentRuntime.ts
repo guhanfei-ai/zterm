@@ -36,6 +36,7 @@ import type { ChatTurn, StepRecord, StopReason } from './agentGraphState'
 import type { AgentRuntime, AgentRuntimeStartOptions } from './agentRuntime'
 import { buildPiModelSetup, PI_SANDBOX_DIR, ensurePiSandboxEnv } from './piModelAdapter'
 import { createBoundTerminalTools, type PiToolTurnState } from './piAgentTools'
+import { isMissingOptionalProbe } from './agentCompletionPolicy'
 
 // ---- 每轮唯一可变状态(R01) ----
 
@@ -850,7 +851,9 @@ export class PiAgentRuntime implements AgentRuntime {
       return
     }
 
-    if (turn.lastCommandExitCode !== undefined && turn.lastCommandExitCode !== 0) {
+    const turnSteps = turn.steps.slice(turn.initialStepCount)
+    const missingProbe = isMissingOptionalProbe(turnSteps, turn.lastCommandExitCode, turn.allowWrite)
+    if (turn.lastCommandExitCode !== undefined && turn.lastCommandExitCode !== 0 && !missingProbe) {
       callbacks.emitMessage({ type: 'error', content: `最后一条终端命令退出码为 ${turn.lastCommandExitCode}，未将任务标记为完成` })
       callbacks.onStepComplete({ steps: [...turn.steps], currentStep: turn.steps.length, stopReason: 'ERROR' })
       callbacks.emitStateChange('failed')
@@ -876,8 +879,7 @@ export class PiAgentRuntime implements AgentRuntime {
 
     // 只看本轮真正完成的业务命令；历史步骤或全被拦截的调用
     // 不能让纯聊天/失败命令误记为 COMPLETED。
-    const hadVerifiedCommand = turn.steps.slice(turn.initialStepCount)
-      .some((step) => step.status === 'done' && !!step.command)
+    const hadVerifiedCommand = turnSteps.some((step) => step.status === 'done' && !!step.command)
     callbacks.onStepComplete({
       steps: [...turn.steps],
       currentStep: turn.steps.length,
@@ -885,6 +887,10 @@ export class PiAgentRuntime implements AgentRuntime {
       stopReason: hadVerifiedCommand ? 'COMPLETED' : undefined,
     })
     callbacks.emitStateChange(hadVerifiedCommand ? 'completed' : 'idle')
+    if (missingProbe) callbacks.emitMessage({
+      type: 'status',
+      content: '本轮完成（有警告）：最后一条探测命令退出码为 127，目标工具在当前环境不可用；此前已取得有效探查结果',
+    })
   }
 
   /**

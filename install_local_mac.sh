@@ -111,8 +111,17 @@ do_build() {
   banner '构建安装包'
   cd "$ROOT_DIR"
 
-  info '安装依赖……'
-  npm ci
+  # 智能跳过：如果 node_modules 存在且 package-lock.json 未变化，跳过 npm ci
+  local lock_hash_file="${ROOT_DIR}/node_modules/.package-lock-hash"
+  local current_hash
+  current_hash="$(shasum -a 256 package-lock.json | cut -d' ' -f1)"
+  if [[ -d node_modules && -f "$lock_hash_file" ]] && [[ "$(cat "$lock_hash_file")" == "$current_hash" ]]; then
+    info '依赖未变化，跳过 npm ci（如需强制重装请删除 node_modules）'
+  else
+    info '安装依赖……'
+    npm ci
+    printf '%s' "$current_hash" > "$lock_hash_file"
+  fi
 
   info '清理旧构建产物……'
   rm -rf builds

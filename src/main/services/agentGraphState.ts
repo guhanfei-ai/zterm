@@ -7,6 +7,8 @@ export interface StepRecord {
   plan: string
   command?: string
   commandOutput?: string
+  /** 经终端协议验证的真实退出码；缺失表示未验证或旧历史步骤。 */
+  exitCode?: number
   observation: string
   safetyCheck?: SafetyCheck
   status: 'pending' | 'executing' | 'done' | 'blocked' | 'skipped'

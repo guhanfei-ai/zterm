@@ -107,9 +107,10 @@ export function useWorkspaceRestore() {
     const result = await window.electronAPI.workspace.clear()
     if (!result.success) {
       dialogReason.value = result.error || '无法丢弃已保存内容'
+      console.error('[workspace] 清空已保存工作区失败:', dialogReason.value)
       return
     }
-    // 聊天历史与工作区同生共死：用户明确丢弃时一并清除
+    // 聊天历史与工作区同生共死：直接进入时一并清除
     await window.electronAPI.chatHistory.clear()
     // Agent context 独立于工作区文件，需要显式清理，否则重启后会被孤儿认领逻辑复活。
     const contextTabIds = new Set([
@@ -136,22 +137,24 @@ export function useWorkspaceRestore() {
       }
     })
 
-    void window.electronAPI.workspace.load().then((result) => {
-      if ('found' in result) {
-        decisionMade = true
-        return
+    void (async () => {
+      try {
+        const result = await window.electronAPI.workspace.load()
+        if ('found' in result) {
+          decisionMade = true
+          return
+        }
+        pendingSnapshot = result.recoverable ? result.snapshot : null
+      } catch {
+        console.error('[workspace] 读取已保存工作区失败')
       }
-      if (result.recoverable) {
-        pendingSnapshot = result.snapshot
-        dialogState.value = 'restore'
-        return
+      // 暂不询问是否恢复：沿用「直接进入」的清理流程，从空白工作区启动。
+      try {
+        await discardSavedWorkspace()
+      } catch {
+        console.error('[workspace] 清空已保存工作区失败')
       }
-      dialogReason.value = result.reason
-      dialogState.value = 'invalid'
-    }).catch(() => {
-      dialogReason.value = '读取已保存工作区失败'
-      dialogState.value = 'invalid'
-    })
+    })()
   })
 
   watch(

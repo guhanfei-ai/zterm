@@ -109,6 +109,7 @@ describe('agent graph reply loop (chat-first)', () => {
         exitCode?: number
       }
       persistExecutingError?: boolean
+      commandResults?: Record<string, { output: string; exitCode: number }>
     }
   ): {
     graph: ReturnType<typeof buildAgentGraph>
@@ -154,11 +155,11 @@ describe('agent graph reply loop (chat-first)', () => {
         written.push(cmd)
         return {
           command: cmd,
-          output: 'mock output',
+          output: options?.commandResults?.[cmd]?.output ?? 'mock output',
           duration: 1,
           completion: options?.commandResult?.completion ?? 'verified',
           commandSent: options?.commandResult?.commandSent ?? true,
-          exitCode: options?.commandResult?.exitCode ?? (options?.commandResult ? undefined : 0),
+          exitCode: options?.commandResults?.[cmd]?.exitCode ?? options?.commandResult?.exitCode ?? (options?.commandResult ? undefined : 0),
         }
       }
     } as unknown as TerminalBridge
@@ -313,6 +314,26 @@ describe('agent graph reply loop (chat-first)', () => {
     expect(h.stateChanges[h.stateChanges.length - 1]).toBe('failed')
     expect(h.messages.some((message) => message.type === 'error' && message.content.includes('退出码为 1'))).toBe(true)
     expect(h.onStepCompleteCalls.some((call) => call.stopReason === 'COMPLETED')).toBe(false)
+  })
+
+  it('Graph 只读盘点缺失可选探测工具时带警告完成', async () => {
+    const h = buildScriptedGraph(
+      ['PLAN: 看内核\nCOMMAND: uname -a\nPLAN: 看容器\nCOMMAND: docker ps -a', '没有安装 Docker；内核信息已读取。'],
+      { commandResults: {
+        'uname -a': { output: 'Linux', exitCode: 0 },
+        'docker ps -a': { output: 'sh: docker: command not found', exitCode: 127 },
+      } }
+    )
+    const initialState = createInitialState()
+    initialState.taskDescription = '看看这台服务器上有啥'
+    initialState.userMessage = initialState.taskDescription
+    initialState.chatTabId = 't-graph-optional-probe'
+    const finalState = await h.graph.invoke(initialState, {
+      configurable: { thread_id: 't-graph-optional-probe' }, recursionLimit: 100
+    })
+    expect(finalState.phase).toBe('completed')
+    expect(finalState.stopReason).toBe('COMPLETED')
+    expect(h.messages.some((message) => message.type === 'status' && message.content.includes('有警告'))).toBe(true)
   })
 
   it('queue budget: second queued command hits the step limit', async () => {

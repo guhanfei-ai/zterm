@@ -563,6 +563,38 @@ describe('恢复与改绑安全边界', () => {
     }
   })
 
+  it('只读盘点已有成功取证、最后探测工具缺失时带警告完成', async () => {
+    providerConfigStore = makeProviderConfig()
+    const fake = makeFakeSession()
+    const { TerminalBridge } = await import('../terminalBridge')
+    const commandResult = vi.spyOn(TerminalBridge.prototype, 'executeAgentCommand')
+      .mockResolvedValueOnce({
+        command: 'uname -a', output: 'Linux', duration: 12,
+        completion: 'verified', commandSent: true, exitCode: 0,
+      })
+      .mockResolvedValueOnce({
+        command: 'docker ps -a', output: 'sh: docker: command not found', duration: 12,
+        completion: 'verified', commandSent: true, exitCode: 127,
+      })
+    const app = new AgentApplication()
+    app.setAiClient({} as never)
+    const { sink, log } = makeSink()
+    try {
+      expect(app.bind({ chatTabId: 'tab-optional-probe', terminalTabId: fake.session.tabId }, sink).success).toBe(true)
+      promptScripts.push(async (tools) => {
+        await execTool(tools, 'success', { command: 'uname -a' })
+        await execTool(tools, 'missing', { command: 'docker ps -a' })
+        createdSessions[createdSessions.length - 1].emit(assistantMessageEnd('Docker 未安装，系统为 Linux'))
+      })
+      expect((await app.startTask({ chatTabId: 'tab-optional-probe', description: '看看这台服务器上有啥', isNewTask: true }, sink)).success).toBe(true)
+      await waitForSettled(log)
+      expect(log.states.at(-1)).toBe('completed')
+      expect(log.messages.some((message) => message.type === 'status' && message.content.includes('有警告'))).toBe(true)
+    } finally {
+      commandResult.mockRestore()
+    }
+  })
+
   it('协议未证实结束时不能报 COMPLETED:标记 ERROR 并隔离终端', async () => {
     providerConfigStore = makeProviderConfig()
     const fake = makeFakeSession()

@@ -487,6 +487,7 @@ export function createBoundTerminalTools(
           plan: plan || '',
           command,
           commandOutput: output,
+          exitCode: fidelity === 'verified' ? result.exitCode : undefined,
           observation:
             observationText.length <= 400 ? observationText : observationText.slice(0, 400) + '…[已截断]',
           safetyCheck,
