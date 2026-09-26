@@ -2,6 +2,11 @@ import { describe, it, expect } from 'vitest'
 import { checkCommand } from '../safetyGuard'
 
 describe('safetyGuard P0 永久阻断', () => {
+  it('blocks carriage-return and terminal control-byte command injection', () => {
+    const result = checkCommand("echo ok\rawk 'BEGIN{print 1 > \"/tmp/should-not-run\"}'", true)
+    expect(result).toMatchObject({ blocked: true, category: '终端协议', isUnknown: true })
+  })
+
   it('blocks overwrite redirect to /etc/', () => {
     const result = checkCommand('echo x > /etc/sysctl.conf')
     expect(result.blocked).toBe(true)

@@ -10,6 +10,8 @@
       <div class="action-group">
         <button
           class="btn-action"
+          :disabled="!canBind"
+          :title="canBind ? '' : '请先停止当前 Agent 任务再重新绑定终端'"
           @click="$emit('bind')"
         >
           {{ boundHost ? '重新绑定' : '绑定终端' }}
@@ -85,6 +87,10 @@ defineEmits<{
   continue: []
   'toggle-write': [enabled: boolean]
 }>()
+
+const canBind = computed(() =>
+  ['idle', 'completed', 'failed', 'stopped', 'stepLimitReached'].includes(props.agentState)
+)
 
 const isTerminal = computed(() =>
   props.agentState === 'completed' ||

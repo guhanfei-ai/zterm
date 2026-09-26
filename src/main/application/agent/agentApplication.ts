@@ -9,7 +9,8 @@ import {
   loadContext,
   getResumeType,
   adoptOrphanedContext,
-  saveLastActiveChatTabId
+  saveLastActiveChatTabId,
+  updateContext
 } from '../../services/agentContextStore'
 
 export interface AgentEventSink {
@@ -20,6 +21,8 @@ interface AgentTabState {
   controller: AgentController
   chatTabId: string
   terminalTabId: string | null
+  /** 精确到连接实例；同 tabId 重连也不能继承原授权。 */
+  boundSession: AnyTerminalSession | null
   boundHost: string
   sink: AgentEventSink | null
   registeredTerminalEventKeys: Set<string>
@@ -62,7 +65,7 @@ export class AgentApplication {
         tab.controller.removeAllListeners('state-change')
         tab.controller.dispose()
         tab.sink = null
-        } catch {
+      } catch {
         // 退出清理不阻塞应用关闭。
       }
     }
@@ -87,34 +90,16 @@ export class AgentApplication {
       tab.controller.setChatTabId(command.chatTabId)
       const releaseLock = (): void => { tab.startTaskLock = false }
 
-      if (!tab.terminalTabId) {
-        const status = tab.controller.getStatus()
-        if (status.boundTerminalTabId) {
-          const recovered = this.resolveAnySession(status.boundTerminalTabId)
-          if (recovered?.connected) tab.terminalTabId = status.boundTerminalTabId
-        }
-        if (!tab.terminalTabId && status.boundHost) {
-          for (const session of terminalSessionManager.getAllSessions()) {
-            if (!session.connected || !session.currentHost) continue
-            const host = `${session.currentHost.username}@${session.currentHost.host}`
-            if (host === status.boundHost) {
-              tab.terminalTabId = session.tabId
-              break
-            }
-          }
-        }
-        if (!tab.terminalTabId) {
-          releaseLock()
-          return { success: false, error: '请先绑定终端：点击“绑定当前终端”按钮，将 Agent 关联到一台已连接的主机' }
-        }
-      }
-
-      const session = this.resolveAnySession(tab.terminalTabId)
-      if (!session?.connected) {
-        tab.terminalTabId = null
-        tab.boundHost = ''
+      // 不凭 tabId 或展示名自动认领新连接：同一标签重连也须重新绑定。
+      if (!tab.terminalTabId || !tab.boundSession) {
         releaseLock()
-        return { success: false, error: '绑定的终端已断开，请重新绑定终端' }
+        return { success: false, error: '请先绑定终端：点击“绑定当前终端”按钮，确认当前连接' }
+      }
+      const session = this.resolveAnySession(tab.terminalTabId)
+      if (!session?.connected || session !== tab.boundSession) {
+        this.handleTerminalUnavailable(command.chatTabId, '终端会话已更换或断开')
+        releaseLock()
+        return { success: false, error: '绑定的终端连接已更换，请重新绑定终端并确认权限' }
       }
 
       const terminalStates = ['idle', 'completed', 'failed', 'stopped', 'stepLimitReached']
@@ -124,6 +109,13 @@ export class AgentApplication {
       }
 
       const bridge = new TerminalBridge(session)
+      const persisted = loadContext(command.chatTabId)
+      if (!command.isNewTask && persisted?.taskDescription && persisted.boundTargetId !== bridge.getBoundTargetId()) {
+        releaseLock()
+        return { success: false, error: persisted.boundTargetId
+          ? '当前终端与历史任务的目标不一致，请重新绑定原终端或开启新任务'
+          : '旧历史缺少可验证的终端身份，不能自动续跑；请开启新任务，历史记录仍可查看' }
+      }
       this.bindControllerEvents(tab)
       this.registerTerminalEventListeners(tab, session)
       tab.controller.init(this.aiClient, bridge, config)
@@ -133,22 +125,19 @@ export class AgentApplication {
       // 仍是上一个终态，用户重复提交会绕过前端防重直接打进主进程
       this.send(tab, 'agent:stateChange', { state: 'starting', chatTabId: tab.chatTabId })
 
-      void tab.controller.startTask(command.description, command.maxSteps || 25, { isNewTask: command.isNewTask === true })
-        .catch((err: Error) => {
-          tab.controller.state = 'failed'
-          this.send(tab, 'agent:stateChange', { state: 'failed', chatTabId: tab.chatTabId })
-          this.send(tab, 'agent:message', {
-            id: `${Date.now()}`,
-            type: 'error',
-            content: `Agent 执行异常：${err.message}`,
-            createdAt: new Date().toISOString(),
-            chatTabId: tab.chatTabId
-          })
-        })
-        .finally(releaseLock)
-
+      // Controller 的发起级校验现在同步 throw；执行期错误仍由回调上报。
+      tab.controller.startTask(command.description, command.maxSteps || 25, { isNewTask: command.isNewTask === true })
+      releaseLock()
       return { success: true }
     } catch (err: unknown) {
+      const tab = command?.chatTabId ? this.tabs.get(command.chatTabId) : undefined
+      if (tab) {
+        tab.startTaskLock = false
+        if (tab.controller.state === 'starting') {
+          tab.controller.state = 'failed'
+          this.send(tab, 'agent:stateChange', { state: 'failed', chatTabId: tab.chatTabId })
+        }
+      }
       return { success: false, error: err instanceof Error ? err.message : '启动 Agent 失败' }
     }
   }
@@ -171,6 +160,7 @@ export class AgentApplication {
     tab.controller.reset()
     tab.boundHost = ''
     tab.terminalTabId = null
+    tab.boundSession = null
     return { success: true }
   }
 
@@ -182,6 +172,7 @@ export class AgentApplication {
     tab.controller.fullReset()
     tab.boundHost = ''
     tab.terminalTabId = null
+    tab.boundSession = null
     clearContext(chatTabId)
     return { success: true }
   }
@@ -205,9 +196,12 @@ export class AgentApplication {
     const tab = this.tabs.get(chatTabId)
     if (!tab) return { success: false, error: 'Agent 会话不存在' }
     if (!enabled) return tab.controller.setAllowWrite(false)
-    if (!tab.terminalTabId) return { success: false, error: '未绑定终端，请先绑定一台已连接的主机' }
+    if (!tab.terminalTabId || !tab.boundSession) return { success: false, error: '未绑定终端，请先绑定一台已连接的主机' }
     const session = this.resolveAnySession(tab.terminalTabId)
-    if (!session?.connected) return { success: false, error: '绑定的终端已断开，请重新绑定终端' }
+    if (!session?.connected || session !== tab.boundSession) {
+      this.handleTerminalUnavailable(chatTabId, '终端会话已更换或断开')
+      return { success: false, error: '绑定的终端连接已更换，请重新绑定后再授权写入' }
+    }
     return tab.controller.setAllowWrite(true)
   }
 
@@ -215,6 +209,31 @@ export class AgentApplication {
     const tab = chatTabId ? this.tabs.get(chatTabId) : undefined
     if (!tab) return { success: false, error: '未找到 Agent 会话' }
     try {
+      if (!tab.terminalTabId || !tab.boundSession) {
+        return { success: false, error: '终端未绑定，请先确认当前终端连接' }
+      }
+      const session = this.resolveAnySession(tab.terminalTabId)
+      if (!session?.connected || session !== tab.boundSession) {
+        this.handleTerminalUnavailable(tab.chatTabId, '终端会话已更换或断开')
+        return { success: false, error: '绑定的终端连接已更换，请重新绑定后继续' }
+      }
+      // I04:与 startTask 同一标准 —— 模型配置被清空/禁用时拒绝继续,
+      // 不静默沿用旧密钥/旧模型续跑。
+      const config = this.getProviderConfig()
+      if (!config) return { success: false, error: '模型未配置' }
+      // G02:点"继续"同样是人类介入开启下一轮 —— 重读当前设置,
+      // 经 controller.init 同步给 runtime(updateConfig),Runtime 按配置
+      // 指纹决定沿用会话或重建,下一请求用当前配置。
+      // H02:配置刷新与终端重绑定职责分离 —— 继续只同步配置,**不换 bridge**:
+      // 传 controller 当前持有的同一 bridge(init 只在 bridge 变化时 dispose),
+      // Runtime 侧的绑定保持有效;终端真正重绑(用户重新 bind)才换 bridge,
+      // 且那时 startTask 会把新绑定写入 runtime 的 tab.bridge。
+      if (this.aiClient) {
+        const currentBridge = tab.controller.getBridge()
+        if (currentBridge) {
+          tab.controller.init(this.aiClient, currentBridge, config)
+        }
+      }
       // 同步点火契约（与 startTask 对齐）：controller 同步完成校验与后台点火，
       // 发起级错误在此捕获返回渲染进程；执行期错误走事件流，不再占用本返回
       tab.controller.continueTask(additionalSteps)
@@ -227,6 +246,13 @@ export class AgentApplication {
   bind(command: BindAgentCommand, sink: AgentEventSink): { success: boolean; boundHost?: string; error?: string } {
     if (!command?.chatTabId || !command.terminalTabId) return { success: false, error: '缺少对话标签或终端标签' }
     const tab = this.getOrCreateTab(command.chatTabId)
+    // 运行中不能只替换 Controller 的 bridge：旧 Pi 轮次仍可能继续输出，
+    // 导致界面显示新主机却呈现旧主机的回复。要求先明确停止旧轮。
+    if (tab.startTaskLock ||
+        !['idle', 'completed', 'failed', 'stopped', 'stepLimitReached'].includes(tab.controller.state) ||
+        tab.controller.getRuntime()?.isRunning(command.chatTabId)) {
+      return { success: false, error: 'Agent 正在运行，请先停止任务再重新绑定终端' }
+    }
     tab.sink = sink
     tab.controller.setChatTabId(command.chatTabId)
     const session = this.resolveAnySession(command.terminalTabId)
@@ -235,26 +261,23 @@ export class AgentApplication {
     if (!this.aiClient || !config) return { success: false, error: 'Agent 服务未初始化或模型未配置' }
 
     const bridge = new TerminalBridge(session)
-    tab.controller.init(this.aiClient, bridge, config)
-    const boundHost = tab.controller.bind()
-    if (boundHost) {
-      tab.boundHost = boundHost
-      tab.terminalTabId = command.terminalTabId
-      tab.controller.setBoundTerminalTabId(command.terminalTabId)
-      this.registerTerminalEventListeners(tab, session)
-      tab.controller.setAllowWrite(false)
-      return { success: true, boundHost }
-    }
-
     const identity = bridge.getDisplayIdentity()
-    if (!identity) return { success: false, error: '终端未连接，无法绑定' }
-    const host = identity.displayDetail
+    if (!bridge.getBoundTargetId() || !identity) {
+      return { success: false, error: '无法验证终端目标身份或 Shell 尚未就绪，请检查连接后重新绑定' }
+    }
+    tab.controller.init(this.aiClient, bridge, config)
+    // 重启后的恢复从 bind → continueTask 发起，不经过 startTask。
+    this.bindControllerEvents(tab)
+    const host = tab.controller.bind() ?? identity.displayDetail
     tab.controller.setBoundHost(host)
     tab.controller.setBoundTerminalTabId(command.terminalTabId)
     tab.boundHost = host
     tab.terminalTabId = command.terminalTabId
+    this.cleanupTerminalListeners(tab)
+    tab.boundSession = session
     this.registerTerminalEventListeners(tab, session)
     tab.controller.setAllowWrite(false)
+    updateContext(command.chatTabId, { allowWrite: false })
     return { success: true, boundHost: host }
   }
 
@@ -291,6 +314,7 @@ export class AgentApplication {
         controller: new AgentController(),
         chatTabId,
         terminalTabId: null,
+        boundSession: null,
         boundHost: '',
         sink: null,
         registeredTerminalEventKeys: new Set(),
@@ -331,15 +355,13 @@ export class AgentApplication {
     if (tab.registeredTerminalEventKeys.has(key)) return
     tab.registeredTerminalEventKeys.add(key)
 
-    const unavailable = (reason: string): void => this.handleTerminalUnavailable(tab.chatTabId, reason)
+    const unavailable = (reason: string): void => {
+      if (tab.boundSession === session) this.handleTerminalUnavailable(tab.chatTabId, reason)
+    }
     const onClosed = (info?: { reason?: string }): void => {
-      if (info?.reason === 'user-disconnect') {
-        // 用户主动断开不告警，但需清除注册标记，否则重连后新 session 不会再注册监听
-        tab.registeredTerminalEventKeys.delete(key)
-        return
-      }
       tab.registeredTerminalEventKeys.delete(key)
-      unavailable('终端已断开')
+      // 主动断开也必须撤销绑定与写权限，否则同 tabId 重连继承旧授权。
+      unavailable(info?.reason === 'user-disconnect' ? '终端已主动断开' : '终端已断开')
     }
     const onError = (): void => unavailable('终端发生错误')
     const onShellClosed = (): void => unavailable('终端 Shell 已关闭')
@@ -362,6 +384,8 @@ export class AgentApplication {
     this.cleanupTerminalListeners(tab)
     tab.boundHost = ''
     tab.terminalTabId = null
+    tab.boundSession = null
+    updateContext(chatTabId, { allowWrite: false })
 
     const status = tab.controller.getStatus()
     if (!['idle', 'completed', 'failed', 'stopped'].includes(status.state)) {

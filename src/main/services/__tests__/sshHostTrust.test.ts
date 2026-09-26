@@ -154,9 +154,10 @@ describe('SSH 主机密钥握手', () => {
     client.emit('ready')
     expect(session.connected).toBe(false)
 
-    const event = events[0] as { requestId: string }
+    const event = events[0] as { requestId: string; fingerprint: string; algorithm: string }
     expect(session.respondHostTrust({ tabId: 'tab-1', generation: 1, requestId: event.requestId, decision: 'trust-once' })).toEqual({ success: true })
     expect(verified).toBe(true)
+    expect(session.verifiedHostKey).toEqual({ algorithm: event.algorithm, fingerprint: event.fingerprint })
     client.emit('ready')
     await expect(connecting).resolves.toBeUndefined()
     expect(storeData.get(SSH_HOST_TRUST_STORE_KEY)).toBeUndefined()

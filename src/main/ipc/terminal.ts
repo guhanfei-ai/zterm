@@ -323,7 +323,9 @@ async function connectJumpserverTerminal(data: {
       session.sessionMeta = {
         source: 'jumpserver',
         displayName: data.assetName,
-        displaySecondary: data.accountName
+        displaySecondary: data.accountName,
+        // 恢复时验证真实资产/账号，而非可能重名的展示名或临时 koko 地址。
+        targetId: JSON.stringify([data.configId, data.assetId, data.accountId])
       }
 
       try {

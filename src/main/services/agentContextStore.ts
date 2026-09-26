@@ -43,6 +43,10 @@ export interface ContextSystemInfo {
 
 // 持久化的 Agent 任务上下文 — 按 chatTabId 维度隔离（不跨对话框共享）
 export interface AgentContextSnapshot {
+  // schemaVersion: 快照结构版本。旧文件无此字段时按 1 处理(向后兼容)。
+  // engine: 生成此快照的引擎('pi' | 'graph')。恢复时用于提示"基于历史重新规划"。
+  schemaVersion?: number
+  engine?: 'pi' | 'graph'
   chatTabId: string
   taskId: string | null
   taskDescription: string
@@ -67,6 +71,8 @@ export interface AgentContextSnapshot {
   // 当前配置快照（用于续接时保持环境一致）
   allowWrite: boolean
   boundHost?: string
+  /** 可核对的真实终端目标（含标签、直连地址或 JMS 资产/账号 ID）；旧快照缺省。 */
+  boundTargetId?: string
   // 自然对话历史（轻量持久化），让"重启后继续追问"能找回上文
   conversationHistory?: ContextChatTurn[]
 }
@@ -207,7 +213,10 @@ function safeReadAll(): Record<string, AgentContextSnapshot> {
   }
 }
 
-function safeWriteAll(map: Record<string, AgentContextSnapshot>): void {
+function safeWriteAll(
+  map: Record<string, AgentContextSnapshot>,
+  options?: { throwOnFailure?: boolean }
+): void {
   const p = getContextFilePath()
   const tmp = `${p}.tmp`
   const serialized = JSON.stringify(map, null, 2)
@@ -217,10 +226,13 @@ function safeWriteAll(map: Record<string, AgentContextSnapshot>): void {
     // 2. 原子 rename 替换主文件（POSIX 语义：崩溃时只可能看到旧文件或新文件，不会有半截文件）
     renameSync(tmp, p)
   } catch (err) {
-    // 持久化失败不应该让 Agent 崩溃；只把错误冒到 console
     console.error('[agentContextStore] persist failed:', err)
     // 清理可能残留的 tmp，避免下次启动误读
     try { if (existsSync(tmp)) unlinkSync(tmp) } catch { /* ignore */ }
+    // 普通 UI 元数据仍可降级；命令下发前的审计证据必须 fail-closed。
+    if (options?.throwOnFailure) {
+      throw err instanceof Error ? err : new Error(String(err))
+    }
   }
 }
 
@@ -294,27 +306,40 @@ export function hasPendingContext(chatTabId: string): boolean {
 }
 
 /** 写入（或覆盖）某个 chatTabId 的上下文 */
-export function saveContext(snapshot: AgentContextSnapshot): void {
+export function saveContext(
+  snapshot: AgentContextSnapshot,
+  options?: { throwOnFailure?: boolean }
+): void {
   if (!snapshot.chatTabId) return
   const all = safeReadAll()
   all[snapshot.chatTabId] = {
     ...snapshot,
+    // 总纲 7.4:新快照增加显式 schemaVersion/engine 标识,旧快照可读取
+    schemaVersion: snapshot.schemaVersion ?? 3,
+    engine: snapshot.engine ?? 'graph',
     steps: clampSteps(snapshot.steps || []),
     recentKeyOutputs: clampOutputs(snapshot.recentKeyOutputs || []),
     conversationHistory: clampChatHistory(snapshot.conversationHistory),
     updatedAt: nowIso()
   }
-  safeWriteAll(all)
+  safeWriteAll(all, options)
 }
 
 /** 部分更新：合并新字段到现有上下文 */
-export function updateContext(chatTabId: string, patch: Partial<AgentContextSnapshot>): AgentContextSnapshot | null {
+export function updateContext(
+  chatTabId: string,
+  patch: Partial<AgentContextSnapshot>,
+  options?: { throwOnFailure?: boolean }
+): AgentContextSnapshot | null {
   if (!chatTabId) return null
   const all = safeReadAll()
   const existing = all[chatTabId]
   if (!existing) {
-    // 没有现成上下文时，必须有最小必填字段
-    if (!patch.chatTabId || !patch.taskDescription) return null
+    // 没有现成上下文时，必须有最小必填字段。严格执行证据更新不能静默降级。
+    if (!patch.chatTabId || !patch.taskDescription) {
+      if (options?.throwOnFailure) throw new Error('执行证据持久化失败：任务上下文不存在')
+      return null
+    }
     const created: AgentContextSnapshot = {
       chatTabId,
       taskId: patch.taskId || null,
@@ -335,7 +360,7 @@ export function updateContext(chatTabId: string, patch: Partial<AgentContextSnap
       conversationHistory: clampChatHistory(patch.conversationHistory)
     }
     all[chatTabId] = created
-    safeWriteAll(all)
+    safeWriteAll(all, options)
     return created
   }
   // patch 中显式 undefined 的键不参与合并，避免覆盖已持久化值（如非 summarize 节点的 lastConclusion）
@@ -352,7 +377,7 @@ export function updateContext(chatTabId: string, patch: Partial<AgentContextSnap
     updatedAt: nowIso()
   }
   all[chatTabId] = merged
-  safeWriteAll(all)
+  safeWriteAll(all, options)
   return merged
 }
 

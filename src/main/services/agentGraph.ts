@@ -40,7 +40,13 @@ import {
   TerminalContext
 } from './agentGraphPrompt'
 import { checkCommand } from './safetyGuard'
-import { TerminalBridge, CommandResult } from './terminalBridge'
+import { TerminalBridge, type AgentCommandResult } from './terminalBridge'
+import {
+  getAgentTerminalKey,
+  isAgentTerminalUncertain,
+  markAgentTerminalUncertain,
+  withAgentTerminalLock,
+} from './agentTerminalCoordinator'
 import { AiClient } from './aiClient'
 import { ModelStreamSession } from '../harness/modelStreamSession'
 import type { ModelRequest } from '../model/contracts'
@@ -76,6 +82,8 @@ export interface AgentGraphContext {
   aiClient: AiClient
   callbacks: AgentGraphCallbacks
   abortController: AbortController
+  /** 实时写权限：降权后不能继续使用本轮 graph checkpoint 的旧 allowWrite。 */
+  allowWrite?: boolean
 }
 
 // ================================================================
@@ -249,35 +257,40 @@ export function createReplyNode(ctx: AgentGraphContext) {
         createdAt: nowIso()
       })
 
-      // 本轮执行过命令 → 任务完成态；纯聊天 → idle。
-      // 两种都持久化 COMPLETED，避免空闲监测把已收尾的 turn 误判成崩溃残留。
+      // 本轮执行过命令且最后退出码为 0 → 完成；非零退出不得被自然语言伪装成成功。
+      // 纯聊天仍落 COMPLETED 快照并显示 idle，避免被误判为崩溃残留。
       const turnStart = state.turnStartStepCount ?? 0
       const doneThisTurn = state.steps.filter(s => s.stepNumber > turnStart && s.status === 'done').length
-      const completed = doneThisTurn > 0
+      const nonzeroExit = doneThisTurn > 0 && typeof state.lastCommandExitCode === 'number' && state.lastCommandExitCode !== 0
+      const completed = doneThisTurn > 0 && !nonzeroExit
+      const finalStopReason: StopReason = nonzeroExit ? 'ERROR' : 'COMPLETED'
 
       try {
         ctx.callbacks.onStepComplete({
           steps: state.steps,
           currentStep: state.currentStep,
           conclusion: completed ? finalText : undefined,
-          stopReason: 'COMPLETED'
+          stopReason: finalStopReason
         })
       } catch (persistErr) {
         // 若抛错，不得继续宣告"本轮完成"，转 failed（与旧 summarize 同款纪律）
         const reason = persistErr instanceof Error ? persistErr.message : String(persistErr)
-        console.error('[agentGraph] 持久化 COMPLETED 失败，转 failed：', reason, persistErr)
+        console.error('[agentGraph] 持久化终态失败，转 failed：', reason, persistErr)
         ctx.callbacks.emitStateChange('failed')
         return { phase: 'failed', stopReason: 'ERROR', conversationHistory: nextHistory, modelResponseText: text }
       }
 
       // 时序纪律（与旧 summarize 一致）：持久化 → 完成状态 → 完成文案
-      ctx.callbacks.emitStateChange(completed ? 'completed' : 'idle')
-      if (completed) {
+      const finalPhase: GraphPhase = nonzeroExit ? 'failed' : completed ? 'completed' : 'idle'
+      ctx.callbacks.emitStateChange(finalPhase)
+      if (nonzeroExit) {
+        ctx.callbacks.emitMessage({ type: 'error', content: `最后一条终端命令退出码为 ${state.lastCommandExitCode}，未将任务标记为完成` })
+      } else if (completed) {
         ctx.callbacks.emitMessage({ type: 'status', content: `本轮完成，共执行 ${doneThisTurn} 条命令` })
       }
       return {
-        phase: completed ? 'completed' : 'idle',
-        stopReason: 'COMPLETED',
+        phase: finalPhase,
+        stopReason: finalStopReason,
         conclusion: completed ? finalText : state.conclusion,
         pendingCommand: '',
         pendingCommands: [],
@@ -419,7 +432,7 @@ function createCheckSafetyNode(ctx: AgentGraphContext) {
       return { pendingCommands: [] }
     }
 
-    const safetyResult = checkCommand(cmd, state.allowWrite)
+    const safetyResult = checkCommand(cmd, ctx.allowWrite ?? state.allowWrite)
 
     if (safetyResult.blocked) {
       const blockReason = safetyResult.isUnknown
@@ -480,12 +493,10 @@ function createExecuteCommandNode(ctx: AgentGraphContext) {
     if (state.aborted || ctx.abortController.signal.aborted) return { aborted: true, phase: 'stopped' }
     const { bridge, callbacks, abortController } = ctx
     const signal = abortController.signal
-
-    callbacks.emitStateChange('executing')
-
     const cmd = state.pendingCommand
     if (!cmd) return {}
 
+    callbacks.emitStateChange('executing')
     callbacks.emitMessage({
       type: 'execution',
       content: cmd,
@@ -493,55 +504,155 @@ function createExecuteCommandNode(ctx: AgentGraphContext) {
       details: { running: true }
     })
 
-    const snapshot = bridge.getPreCommandSnapshot()
-    bridge.writeCommand(cmd)
+    type ExecuteOutcome =
+      | { kind: 'skip'; reason: string }
+      | { kind: 'uncertain' }
+      | { kind: 'blocked'; reason: string }
+      | { kind: 'exec'; result: AgentCommandResult }
 
-    let result: CommandResult
+    const startedAt = new Date().toISOString()
+    let attempted = false
+    let key: object | null = null
+    let outcome: ExecuteOutcome
     try {
-      result = await bridge.waitForResult(snapshot, STEP_TIMEOUT_MS, signal)
-    } catch {
-      result = { command: cmd, output: '(执行中断或超时)', duration: 0 }
+      key = getAgentTerminalKey(bridge)
+      outcome = await withAgentTerminalLock(key, signal, async (): Promise<ExecuteOutcome> => {
+        if (signal.aborted || !bridge.isConnected() || bridge.isDisposed()) {
+          return { kind: 'skip', reason: '终端已断开或任务已停止' }
+        }
+        if (isAgentTerminalUncertain(key as object)) return { kind: 'uncertain' }
+        if (/[\x00-\x1f\x7f]/.test(cmd)) {
+          return { kind: 'blocked', reason: 'Agent 命令不能包含换行、回车或其他终端控制字符' }
+        }
+
+        // safety 节点与真实下发之间可能降权；锁内、发送边界再次完整重判。
+        const liveSafety = checkCommand(cmd, ctx.allowWrite ?? state.allowWrite)
+        if (liveSafety.blocked) return { kind: 'blocked', reason: liveSafety.reason || '安全策略拦截' }
+
+        // 下发前先保留“可能已执行”证据。若 stop 令迟到结果被丢弃，恢复仍会
+        // 看见 executing 并拒绝自动续跑，而不会把该命令当作从未发送。
+        const executingStep: StepRecord = {
+          stepNumber: state.currentStep,
+          plan: state.planText,
+          command: cmd,
+          observation: '命令进入下发边界，完成待验证',
+          safetyCheck: liveSafety,
+          status: 'executing',
+          startedAt,
+        }
+        callbacks.onStepComplete({
+          steps: [...state.steps, executingStep],
+          currentStep: state.currentStep
+        })
+
+        attempted = true
+        try {
+          const result = await bridge.executeAgentCommand(cmd, STEP_TIMEOUT_MS, signal)
+          if (result.completion !== 'verified') markAgentTerminalUncertain(key as object)
+          return { kind: 'exec', result }
+        } catch (err) {
+          markAgentTerminalUncertain(key as object)
+          throw err
+        }
+      })
+    } catch (err) {
+      if (attempted && key) markAgentTerminalUncertain(key)
+      if (signal.aborted) return { aborted: true, phase: 'stopped', stopReason: 'USER_INTERRUPT' }
+      const message = err instanceof Error ? err.message : String(err)
+      const failedStep: StepRecord = {
+        stepNumber: state.currentStep,
+        plan: state.planText,
+        command: cmd,
+        observation: attempted ? `执行异常且远端结果未验证: ${message}` : `执行前异常: ${message}`,
+        status: attempted ? 'executing' : 'skipped',
+        startedAt,
+      }
+      const failedSteps = [...state.steps, failedStep]
+      callbacks.emitMessage({ type: 'error', content: failedStep.observation, stepNumber: state.currentStep, details: { command: cmd } })
+      callbacks.onStepComplete({ steps: failedSteps, currentStep: state.currentStep, stopReason: 'ERROR' })
+      callbacks.emitStateChange('failed')
+      return { steps: failedSteps, aborted: true, phase: 'failed', stopReason: 'ERROR' }
     }
 
-    if (signal.aborted) return { aborted: true, phase: 'stopped' }
+    // stop 后旧 graph 的迟到结果不得覆盖 stopped；下发前的 executing 已持久化。
+    if (signal.aborted) return { aborted: true, phase: 'stopped', stopReason: 'USER_INTERRUPT' }
 
-    // 观察卡片（原始输出）—— 前端用它终结 execution 卡片的 running 态
-    callbacks.emitMessage({
-      type: 'observation',
-      content: result.output,
-      stepNumber: state.currentStep,
-      details: { duration: result.duration, command: cmd }
-    })
+    if (outcome.kind !== 'exec') {
+      const observation = outcome.kind === 'uncertain'
+        ? '当前终端上一条 Agent 命令结果未验证，后续自动命令已隔离'
+        : outcome.kind === 'blocked'
+          ? `发送边界安全检查拦截: ${outcome.reason}`
+          : `${outcome.reason}，命令未执行`
+      const status: StepRecord['status'] = outcome.kind === 'blocked' ? 'blocked' : 'skipped'
+      const step: StepRecord = {
+        stepNumber: state.currentStep,
+        plan: state.planText,
+        command: cmd,
+        observation,
+        status,
+        startedAt,
+      }
+      const steps = [...state.steps, step]
+      callbacks.emitMessage({ type: 'error', content: observation, stepNumber: state.currentStep, details: { command: cmd } })
+      callbacks.onStepComplete({ steps, currentStep: state.currentStep, stopReason: 'ERROR' })
+      callbacks.emitStateChange('failed')
+      return { steps, aborted: true, phase: 'failed', stopReason: 'ERROR' }
+    }
 
-    // 工具回合进对话（对话优先：观察由 reply 主循环消化，不再单独调模型解释）
-    const historyWithTool = appendTurn(state.conversationHistory, {
-      role: 'tool',
-      content: result.output,
-      command: cmd,
-      createdAt: nowIso()
-    })
-
-    // 记录执行步骤（持久化审计 / 恢复用；reply prompt 不再依赖 steps）
+    const { result } = outcome
+    const verified = result.completion === 'verified' && result.exitCode !== undefined
+    const observation = verified
+      ? result.output || '(无输出)'
+      : result.commandSent
+        ? `${result.output || '(无输出)'}\n[命令完成未获验证，当前终端已隔离]`
+        : `${result.output || '(无输出)'}\n[业务命令未下发]`
     const step: StepRecord = {
       stepNumber: state.currentStep,
       plan: state.planText,
       command: cmd,
       commandOutput: result.output,
-      observation: clampStepObservation(result.output),
-      status: 'done',
-      duration: result.duration
+      observation: clampStepObservation(observation),
+      status: verified ? 'done' : result.commandSent ? 'executing' : 'skipped',
+      duration: result.duration,
+      startedAt,
     }
     const allSteps = [...state.steps, step]
+
+    callbacks.emitMessage({
+      type: verified ? 'observation' : 'error',
+      content: observation,
+      stepNumber: state.currentStep,
+      details: {
+        duration: result.duration,
+        command: cmd,
+        completion: result.completion,
+        exitCode: result.exitCode,
+      }
+    })
     callbacks.onStepComplete({
       steps: allSteps,
-      currentStep: state.currentStep
+      currentStep: state.currentStep,
+      ...(!verified ? { stopReason: 'ERROR' as const } : {})
     })
 
-    // 队列消费：还有预排命令 → 步号 +1 直接连下一条的安全检查（无需再调 reply）；
-    // 队列空 → 回 reply 主循环（基于全部工具结果决定继续还是收尾）
+    if (!verified) {
+      callbacks.emitStateChange('failed')
+      return { steps: allSteps, aborted: true, phase: 'failed', stopReason: 'ERROR' }
+    }
+
+    // 工具回合进对话；退出码也是模型判断下一步所需的可信证据。
+    const historyWithTool = appendTurn(state.conversationHistory, {
+      role: 'tool',
+      content: `${result.output || '(无输出)'}\n[退出码: ${result.exitCode}]`,
+      command: cmd,
+      createdAt: nowIso()
+    })
+
+    // 队列消费：还有预排命令 → 步号 +1 直接连下一条安全检查；否则回 reply。
     const remaining = (state.pendingCommands ?? []).slice(1)
     return {
       commandOutput: result.output,
+      lastCommandExitCode: result.exitCode ?? null,
       steps: allSteps,
       currentStep: remaining.length > 0 ? state.currentStep + 1 : state.currentStep,
       pendingCommands: remaining,

@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto'
 import { TerminalSession } from './terminalSessionManager'
 import { LocalPtySession } from './localPtySession'
 
@@ -19,6 +20,37 @@ export interface CommandResult {
   duration: number
 }
 
+export interface AgentCommandResult extends CommandResult {
+  completion: 'verified' | 'timedOut' | 'aborted' | 'disconnected' | 'unsupported'
+  /** 是否尝试将用户命令送入终端（探测失败时为 false）。 */
+  commandSent: boolean
+}
+
+const CAPTURE_LIMIT = 64_000
+const PROBE_TIMEOUT_MS = 3_000
+
+type BoundTerminalTarget =
+  | { source: 'jumpserver'; tabId: string; targetId: string }
+  | { source: 'local'; tabId: string }
+  | {
+      source: 'direct'
+      tabId: string
+      host: string
+      port: number
+      username: string
+      hostKeyAlgorithm: string
+      hostKeyFingerprint: string
+    }
+
+function serializeBoundTerminalTarget(target: BoundTerminalTarget): string {
+  return JSON.stringify(target)
+}
+
+/** POSIX 单引号转义：用户命令始终是 sh -c 的一个参数，不参与外层协议解析。 */
+function quoteForSh(text: string): string {
+  return `'${text.replace(/'/g, `'\\''`)}'`
+}
+
 export class TerminalBridge {
   private session: AnyTerminalSession
   private disposed = false
@@ -38,6 +70,54 @@ export class TerminalBridge {
 
   isDisposed(): boolean {
     return this.disposed
+  }
+
+  /**
+   * 终端互斥锁的 key:底层真实 session 实例。
+   * 两个聊天标签可对同一 session 创建不同 TerminalBridge 包装,
+   * 命令串行必须按真实终端身份加锁,不能按 bridge 包装对象
+   * (验收退回 F02)。模型侧不可指定该值。
+   */
+  getTerminalLockKey(): unknown {
+    return this.session
+  }
+
+  /** SSH 的 connected 先于 shell channel 就绪；Agent 必须等到可写的 Shell。 */
+  private isAgentReady(): boolean {
+    if (!this.isConnected()) return false
+    const ready = (this.session as { isShellReady?: () => boolean }).isShellReady
+    return typeof ready !== 'function' || ready.call(this.session)
+  }
+
+  /**
+   * 可跨应用重启核对的目标身份。不能用 displayName/displayDetail：
+   * 同名资产、不同账号或同标签重连到另一主机都不能继承旧任务。
+   * 旧快照未保存此身份时恢复须拒绝，而不是凭展示名猜测。
+   */
+  getBoundTargetId(): string | null {
+    if (!this.isAgentReady()) return null
+    const meta = this.session.sessionMeta
+    if (meta?.source === 'jumpserver') {
+      return meta.targetId
+        ? serializeBoundTerminalTarget({ source: 'jumpserver', tabId: this.session.tabId, targetId: meta.targetId })
+        : null
+    }
+    if (meta?.source === 'local') {
+      return serializeBoundTerminalTarget({ source: 'local', tabId: this.session.tabId })
+    }
+    const host = this.getCurrentHost()
+    const hostKey = (this.session as TerminalSession).verifiedHostKey
+    return host && hostKey
+      ? serializeBoundTerminalTarget({
+          source: 'direct',
+          tabId: this.session.tabId,
+          host: host.host,
+          port: host.port,
+          username: host.username,
+          hostKeyAlgorithm: hostKey.algorithm,
+          hostKeyFingerprint: hostKey.fingerprint,
+        })
+      : null
   }
 
   isConnected(): boolean {
@@ -109,6 +189,124 @@ export class TerminalBridge {
     }
   }
 
+  /**
+   * Pi 专用命令协议：先验证交互 shell 能运行子 sh 并读取退出码，再由一个独立
+   * sh -c 子进程执行用户命令；只有子进程退出且收到随机标记/退出码才算完成。
+   * 子进程内 wait 等待其普通后台任务。cd/export 等不会改变交互 shell 状态。
+   * Windows 或非 POSIX 终端在探测失败时不会收到用户命令。
+   * 上层必须持有真实 session 锁，并在未验证结束时隔离整个 session。
+   */
+  async executeAgentCommand(command: string, timeout = 30_000, signal?: AbortSignal): Promise<AgentCommandResult> {
+    const startedAt = Date.now()
+    const result = (completion: AgentCommandResult['completion'], output: string, commandSent: boolean, exitCode?: number): AgentCommandResult => ({
+      command,
+      output,
+      completion,
+      commandSent,
+      ...(exitCode === undefined ? {} : { exitCode }),
+      duration: Date.now() - startedAt
+    })
+    if (!this.isConnected()) return result('disconnected', '终端已断开', false)
+    if (signal?.aborted) return result('aborted', '执行前已取消', false)
+    if (!this.isAgentReady()) return result('unsupported', '终端 Shell 尚未就绪', false)
+    if (process.platform === 'win32' && this.session.sessionMeta?.source === 'local') {
+      return result('unsupported', '本地 Windows cmd/PowerShell 尚未实现可信完成协议', false)
+    }
+
+    const probeNonce = randomBytes(16).toString('hex')
+    const probeMarker = `__ZTERM_AGENT_READY_${probeNonce}__`
+    // 每条业务命令都重探测：用户可在同一 PTY 中手工切换 shell，不能沿用旧能力缓存。
+    // 标记在输入中分成两个字符串，PTY 命令回显不会冒充完成信号。
+    // printf 可在 fish/tcsh 上工作,不足以证明后续的 $? / var=... 语法。
+    // 用无副作用子进程 exit 37 完整演练同一外层协议，退出码不符即拒绝业务命令。
+    const probe = `command sh -c 'exit 37'; __zterm_agent_probe=$?; printf '\\n%s%s:%d\\n' '__ZTERM_AGENT_READY_' '${probeNonce}__' "$__zterm_agent_probe"\n`
+    const handshake = await this.captureAgentMarker(probeMarker, probe, Math.min(timeout, PROBE_TIMEOUT_MS), signal, true)
+    if (handshake.completion !== 'verified') {
+      return result(handshake.completion, `终端不支持 Agent POSIX 完成协议或探测失败：${handshake.output}`, false)
+    }
+    if (handshake.exitCode !== 37) {
+      return result('unsupported', '交互 Shell 未通过退出码探测，业务命令未下发', false)
+    }
+
+    const nonce = randomBytes(16).toString('hex')
+    const marker = `__ZTERM_AGENT_END_${nonce}__`
+    // 用户命令被完整引用为 sh -c 的一个参数，不能提前结束外层完成协议。
+    // wait 只等待该子 shell 自身的后台任务；显式脱离该 shell 的守护进程
+    // 不属于同步命令结果，不能据此推断外部异步副作用已结束。
+    const script = `${command}\n__zterm_agent_ec=$?\nwait\nexit "$__zterm_agent_ec"`
+    // 命令可能没有输出末尾换行（如 printf foo）；标记必须自起一行。
+    const wrapped = `command sh -c ${quoteForSh(script)}; __zterm_agent_ec=$?; printf '\\n%s%s:%d\\n' '__ZTERM_AGENT_END_' '${nonce}__' "$__zterm_agent_ec"\n`
+    const execution = await this.captureAgentMarker(marker, wrapped, timeout, signal, true)
+    return result(execution.completion, execution.output, execution.sent, execution.exitCode)
+  }
+
+  private captureAgentMarker(
+    marker: string,
+    input: string,
+    timeout: number,
+    signal?: AbortSignal,
+    withExitCode = false
+  ): Promise<{ completion: AgentCommandResult['completion']; output: string; sent: boolean; exitCode?: number }> {
+    if (!this.isAgentReady()) return Promise.resolve({ completion: 'disconnected', output: '终端 Shell 未就绪或已断开', sent: false })
+    if (signal?.aborted) return Promise.resolve({ completion: 'aborted', output: '执行前已取消', sent: false })
+    return new Promise((resolve) => {
+      const decoder = new TextDecoder()
+      const pattern = withExitCode
+        ? new RegExp(`(?:^|\\r?\\n)${marker}:(\\d{1,3})(?=\\r?\\n|$)`)
+        : new RegExp(`(?:^|\\r?\\n)${marker}(?=\\r?\\n|$)`)
+      let capture = ''
+      let truncated = false
+      let settled = false
+      let sent = false
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const finish = (completion: AgentCommandResult['completion'], exitCode?: number, markerIndex?: number): void => {
+        if (settled) return
+        settled = true
+        if (timer) clearTimeout(timer)
+        this.session.removeListener('data', onData)
+        this.session.removeListener('closed', onDisconnect)
+        this.session.removeListener('shell-closed', onDisconnect)
+        this.session.removeListener('error', onDisconnect)
+        signal?.removeEventListener('abort', onAbort)
+        const output = markerIndex === undefined ? capture : capture.slice(0, markerIndex)
+        resolve({
+          completion,
+          output: `${truncated ? '[前段输出已截断]\n' : ''}${output}`.trim() || '(无输出)',
+          sent,
+          ...(exitCode === undefined ? {} : { exitCode })
+        })
+      }
+      const onData = (raw: Buffer | string): void => {
+        capture += typeof raw === 'string' ? raw : decoder.decode(raw, { stream: true })
+        if (capture.length > CAPTURE_LIMIT) {
+          capture = capture.slice(-CAPTURE_LIMIT)
+          truncated = true
+        }
+        const match = pattern.exec(capture)
+        if (match) finish('verified', withExitCode ? Number(match[1]) : undefined, match.index)
+      }
+      const onDisconnect = (): void => finish('disconnected')
+      const onAbort = (): void => finish('aborted')
+      this.session.on('data', onData)
+      this.session.on('closed', onDisconnect)
+      this.session.on('shell-closed', onDisconnect)
+      this.session.on('error', onDisconnect)
+      signal?.addEventListener('abort', onAbort, { once: true })
+      timer = setTimeout(() => finish('timedOut'), timeout)
+      if (signal?.aborted || !this.isAgentReady()) {
+        finish(signal?.aborted ? 'aborted' : 'disconnected')
+        return
+      }
+      try {
+        sent = true
+        this.session.write(input)
+      } catch {
+        finish('disconnected')
+      }
+    })
+  }
+
+  // Legacy graph command path: output stabilization does NOT prove command completion.
   // Write a command to the terminal (appends newline)
   writeCommand(command: string): void {
     this.session.write(command + '\n')

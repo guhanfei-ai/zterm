@@ -2,13 +2,16 @@ import { homedir } from 'os'
 import { join } from 'path'
 import { existsSync, mkdirSync } from 'fs'
 
-const DATA_ROOT = join(homedir(), '.zterm')
+// ZTERM_DATA_ROOT:测试注入专用(测试拥有唯一目录,不写用户真实 ~/.zterm;
+// 亦是 H04 精神在 Controller 持久化层的落实——测试不触碰共享数据)。
+// 生产不设置该变量,行为与原先完全一致。
+const DATA_ROOT = process.env.ZTERM_DATA_ROOT ?? join(homedir(), '.zterm')
 
 let ensured = false
 
 /**
- * 返回 ~/.zterm/ 绝对路径，首次调用时自动创建目录。
- * 所有持久化数据统一存放在此目录下。
+ * 返回数据根目录绝对路径，首次调用时自动创建目录。
+ * 生产为 ~/.zterm/；测试可经 ZTERM_DATA_ROOT 注入独立目录。
  */
 export function getDataRoot(): string {
   if (!ensured) {

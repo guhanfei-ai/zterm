@@ -423,6 +423,18 @@ export function checkCommand(command: string, allowWrite = false): SafetyCheck {
   if (!trimmed) {
     return { safe: true, blocked: false, isWrite: false, isUnknown: false }
   }
+  // PTY cooked mode may turn CR/Ctrl-C 等字节 into line submission or signals even
+  // inside quotes. Newline and tab remain valid shell syntax; other controls fail closed.
+  if (/[\x00-\x08\x0b-\x1f\x7f]/.test(command)) {
+    return {
+      safe: false,
+      blocked: true,
+      isWrite: false,
+      isUnknown: true,
+      reason: '命令包含终端控制字符',
+      category: '终端协议'
+    }
+  }
 
   const segments = splitCommandSegments(trimmed)
 

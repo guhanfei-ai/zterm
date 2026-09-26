@@ -25,6 +25,7 @@ import {
 } from './agentGraphState'
 import { TerminalBridge } from './terminalBridge'
 import { AiClient } from './aiClient'
+import type { AgentRuntime } from './agentRuntime'
 
 // ---- Per-tab runtime state ----
 interface TabRuntime {
@@ -46,7 +47,7 @@ interface TabRuntime {
 /**
  * Manages all graph runtime instances keyed by chatTabId.
  */
-export class AgentGraphRuntime {
+export class AgentGraphRuntime implements AgentRuntime {
   private tabs = new Map<string, TabRuntime>()
   private aiClient: AiClient
 
@@ -152,13 +153,14 @@ export class AgentGraphRuntime {
         systemInfo?: AgentGraphState['systemInfo']
         recentKeyOutputs?: KeyOutput[]
         stopReason: StopReason
-        phase: GraphPhase
+        phase?: GraphPhase
       }
     }
   ): Promise<void> {
     // Reinitialize for a fresh task
     this.reinitTab(chatTabId, bridge, callbacks)
     const tab = this.tabs.get(chatTabId)!
+    tab.graphCtx.allowWrite = options?.allowWrite ?? false
     tab.running = true
 
     const initialState = createInitialState()
@@ -185,7 +187,7 @@ export class AgentGraphRuntime {
       if (rs.systemInfo) initialState.systemInfo = rs.systemInfo
       if (rs.recentKeyOutputs) initialState.recentKeyOutputs = [...rs.recentKeyOutputs]
       initialState.stopReason = rs.stopReason
-      initialState.phase = rs.phase
+      initialState.phase = rs.phase ?? 'planning'
     }
 
     // 记录本轮 turn 起始时已有的业务步骤数：
@@ -219,7 +221,8 @@ export class AgentGraphRuntime {
   /** Continue with additional steps after reaching step limit */
   async continueTask(
     chatTabId: string,
-    additionalSteps: number
+    additionalSteps: number,
+    options?: { bridge?: TerminalBridge; allowWrite?: boolean }
   ): Promise<void> {
     const tab = this.tabs.get(chatTabId)
     if (!tab) throw new Error('未找到 Agent 会话')
@@ -230,6 +233,14 @@ export class AgentGraphRuntime {
     if (tab.running) {
       throw new Error('任务正在执行中，无法续跑')
     }
+    // 重绑后必须使用 Controller 当前 bridge,绝不能沿用 Graph 闭包里的旧 bridge。
+    if (options?.bridge) {
+      if (!options.bridge.isConnected()) throw new Error('续跑绑定的终端已断开')
+      tab.graphCtx.bridge = options.bridge
+    } else if (!tab.graphCtx.bridge.isConnected()) {
+      throw new Error('续跑绑定的终端已断开')
+    }
+    tab.graphCtx.allowWrite = options?.allowWrite ?? tab.graphCtx.allowWrite ?? false
 
     tab.running = true
     try {
@@ -277,6 +288,7 @@ export class AgentGraphRuntime {
             goto: ['reply'] as any,
             update: {
               maxSteps: newMaxSteps,
+              allowWrite: tab.graphCtx.allowWrite,
               turnStartStepCount: turnBase,
               aborted: false,
               stopReason: null
@@ -329,6 +341,12 @@ export class AgentGraphRuntime {
       tab.abortController.abort()
       this.tabs.delete(chatTabId)
     }
+  }
+
+  /** 写权限即时生效；安全节点与真正的 terminal write 都读取这个值。 */
+  updateAllowWrite(chatTabId: string, allowWrite: boolean): void {
+    const tab = this.tabs.get(chatTabId)
+    if (tab) tab.graphCtx.allowWrite = allowWrite
   }
 
   /** Update callbacks for a tab (e.g., when webContents changes) */

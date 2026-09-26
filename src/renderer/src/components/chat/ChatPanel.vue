@@ -40,7 +40,7 @@
             </div>
             <div class="resume-row">
               <span class="resume-label">当前进度：</span>
-              <span class="resume-value">已累计执行 {{ chatStore.pendingContext.steps.length }} 条命令（单轮预算 {{ chatStore.pendingContext.maxSteps }} 步，介入后重置）</span>
+              <span class="resume-value">已记录 {{ chatStore.pendingContext.steps.length }} 条命令步骤（单轮预算 {{ chatStore.pendingContext.maxSteps }} 步，介入后重置）</span>
               <span v-if="chatStore.pendingContext.stopReason" class="resume-reason-tag" :class="`reason-${chatStore.pendingContext.stopReason.toLowerCase()}`">
                 {{ stopReasonLabel(chatStore.pendingContext.stopReason) }}
               </span>
@@ -53,11 +53,34 @@
               <span class="resume-label">已完成：</span>
               <span class="resume-value">{{ doneStepCount(chatStore.pendingContext) }} 步</span>
             </div>
+            <div v-if="!chatStore.pendingContext.boundTargetId" class="resume-row resume-row--warning">
+              这份旧历史缺少可验证的终端身份，只能查看，不能自动续跑。
+            </div>
+            <div v-if="pendingUnverifiedCommand" class="resume-row resume-row--warning">
+              命令 <code>{{ pendingUnverifiedCommand }}</code> 的远端结果未验证；为防重复副作用，只能查看历史并在人工核实后开启新任务。
+            </div>
+            <details
+              v-if="chatStore.pendingContext.steps.length > 0 || chatStore.pendingContext.lastConclusion"
+              class="resume-history"
+            >
+              <summary>查看历史详情</summary>
+              <div v-for="step in chatStore.pendingContext.steps" :key="step.stepNumber" class="resume-history-step">
+                <code v-if="step.command">{{ step.command }}</code>
+                <span>{{ step.observation || step.status }}</span>
+              </div>
+              <p v-if="chatStore.pendingContext.lastConclusion">{{ chatStore.pendingContext.lastConclusion }}</p>
+            </details>
           </div>
           <div class="resume-prompt-actions">
             <button class="btn-resume btn-resume-discard" @click="onDiscardPendingContext">开启新任务</button>
-            <button class="btn-resume btn-resume-continue" @click="onAcceptPendingContext">
-              {{ chatStore.pendingContext.stopReason === 'ROUND_LIMIT' ? '继续当前任务' : '基于历史重新规划' }}
+            <button
+              class="btn-resume btn-resume-continue"
+              :disabled="!chatStore.pendingContext.boundTargetId || !!pendingUnverifiedCommand"
+              @click="onAcceptPendingContext"
+            >
+              {{ !chatStore.pendingContext.boundTargetId || pendingUnverifiedCommand
+                ? '无法自动续跑'
+                : chatStore.pendingContext.stopReason === 'ROUND_LIMIT' ? '继续当前任务' : '基于历史重新规划' }}
             </button>
           </div>
         </div>
@@ -224,12 +247,18 @@ const currentInput = computed({
   }
 })
 
+const pendingUnverifiedCommand = computed(() =>
+  chatStore.pendingContext?.steps.find((step) => step.status === 'executing' && step.command)?.command ?? ''
+)
+
 const currentPlaceholder = computed(() => {
   if (chatStore.mode === 'chat') {
     return chatStore.isStreaming ? '等待回复...' : '输入问题... (Shift+Enter 换行)'
   }
   if (chatStore.pendingContext && !chatStore.contextResolved) {
-    return '上次任务未完成，直接输入将基于历史继续，也可在上方选择「开启新任务」'
+    return pendingUnverifiedCommand.value
+      ? '上次有命令结果未验证，请人工核实后选择「开启新任务」'
+      : '上次任务未完成，直接输入将基于历史继续，也可在上方选择「开启新任务」'
   }
   switch (chatStore.agentState) {
     case 'idle': return '输入任务，按 Enter 启动...'
@@ -582,10 +611,13 @@ async function onStartAgent(): Promise<void> {
   // 不再调 agent:reset——startTask 内部会自己处理状态重置
   // 不再清空 agentMessages / resetAgent——让上一轮执行轨迹保留可见
 
-  // 第一轮收口：把用户发言作为 user_turn 推进时间线，让 UI 立即出现用户气泡。
-  // 持久化与 graph state 由后端 agentController.startTask 内部负责。
+  const pendingContext = chatStore.pendingContext
+  const contextWasResolved = chatStore.contextResolved
+  // 一次性消费模式；发起级失败时会恢复，避免“开启新任务”意图丢失。
+  const isNewTask = chatStore.takeAgentMode() === 'new'
+  const userTurnId = `user-turn-${Date.now()}`
   chatStore.addAgentMessage({
-    id: `user-turn-${Date.now()}`,
+    id: userTurnId,
     type: 'user_turn',
     content: text,
     createdAt: new Date().toISOString()
@@ -593,12 +625,6 @@ async function onStartAgent(): Promise<void> {
 
   agentInput.value = ''
   chatStore.setError(null)
-  chatStore.setAgentTask(text)
-  // 启动即视为已对悬空上下文做出选择（无论 follow-up 还是新任务）：
-  // 清决策条并解锁后续输入。定向到发起的 tab，防 IPC 期间切标签清理错位。
-  // follow-up 由 takeAgentMode() 的默认值保证（未被显式置为 'new' 时 isNewTask=false）
-  chatStore.setPendingContextByTabId(chatTabId, null)
-  chatStore.setContextResolvedByTabId(chatTabId, true)
   resetInputHeight()
   // 新任务启动：重置滚动状态，强制贴底
   agentScrollState.set(chatStore.activeTabId, false)
@@ -606,23 +632,36 @@ async function onStartAgent(): Promise<void> {
 
   registerAgentListeners(chatTabId)
 
+  const restoreRejectedStart = (error: string): void => {
+    chatStore.removeMessageByIdByTabId(chatTabId, userTurnId)
+    chatStore.setPendingContextByTabId(chatTabId, pendingContext)
+    chatStore.setContextResolvedByTabId(chatTabId, contextWasResolved)
+    chatStore.setAgentModeByTabId(chatTabId, isNewTask ? 'new' : 'followup')
+    chatStore.setErrorByTabId(chatTabId, error)
+    if (chatStore.activeTabId === chatTabId) {
+      agentInput.value = text
+      nextTick(resetInputHeight)
+    }
+    cleanupAgentListeners(chatTabId)
+  }
+
   try {
-    // 第三轮补丁：一次性消费 agentMode —— 用户点过"重置"后，下一次发言才传 isNewTask=true；
-    // 消费后立即回退到 followup，避免连续多条发言都按新任务处理。
-    const isNewTask = chatStore.takeAgentMode() === 'new'
     const result = await window.electronAPI.agent.startTask({
       chatTabId,
       description: text,
       maxSteps: 25,
       isNewTask
     })
-    if (!result.success && result.error) {
-      chatStore.setError(result.error)
-      cleanupAgentListeners(chatTabId)
+    if (!result.success) {
+      restoreRejectedStart(result.error || '启动 Agent 失败')
+    } else {
+      // 只有主进程通过目标/配置等发起级校验后，才消费恢复决策。
+      chatStore.setAgentTaskByTabId(chatTabId, text)
+      chatStore.setPendingContextByTabId(chatTabId, null)
+      chatStore.setContextResolvedByTabId(chatTabId, true)
     }
   } catch (err) {
-    chatStore.setError(String(err))
-    cleanupAgentListeners(chatTabId)
+    restoreRejectedStart(String(err))
   }
 
   await refreshAgentStatusByTabId(chatTabId)
@@ -732,6 +771,14 @@ async function refreshPendingContext(): Promise<void> {
 
 async function onAcceptPendingContext(): Promise<void> {
   const chatTabId = chatStore.activeTabId
+  if (!chatStore.pendingContext?.boundTargetId) {
+    chatStore.setError('旧历史缺少可验证的终端身份，只能查看，不能自动续跑')
+    return
+  }
+  if (pendingUnverifiedCommand.value) {
+    chatStore.setError('历史中有结果未验证的命令；请先人工核实，再开启新任务')
+    return
+  }
 
   // 注册 Agent 消息监听
   registerAgentListeners(chatTabId)
@@ -1443,6 +1490,30 @@ watch(() => chatStore.tabs.map(t => t.id), (newIds, oldIds) => {
 .resume-reason-tag.reason-error { background: var(--danger-muted); color: var(--danger); border-color: var(--danger); }
 .resume-reason-tag.reason-completed { background: var(--success-muted); color: var(--success); border-color: var(--success); }
 
+.resume-row--warning {
+  color: var(--warning);
+}
+
+.resume-history {
+  margin-top: 2px;
+  color: var(--text-secondary);
+}
+
+.resume-history summary {
+  cursor: pointer;
+  color: var(--text-primary);
+}
+
+.resume-history-step {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 6px;
+  padding-left: 8px;
+  border-left: 2px solid var(--divider);
+  word-break: break-word;
+}
+
 .resume-prompt-actions {
   display: flex;
   gap: 8px;
@@ -1475,7 +1546,12 @@ watch(() => chatStore.tabs.map(t => t.id), (newIds, oldIds) => {
   font-weight: 600;
 }
 
-.btn-resume-continue:hover {
+.btn-resume-continue:hover:not(:disabled) {
   background: var(--accent-hover);
+}
+
+.btn-resume:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 </style>

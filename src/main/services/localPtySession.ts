@@ -121,6 +121,10 @@ export class LocalPtySession extends EventEmitter {
     })
   }
 
+  isShellReady(): boolean {
+    return this.connected && this.ptyProcess !== null
+  }
+
   write(data: string): void {
     if (this.ptyProcess) {
       this.ptyProcess.write(data)

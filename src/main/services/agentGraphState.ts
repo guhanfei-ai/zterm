@@ -127,6 +127,8 @@ export const AgentStateAnnotation = Annotation.Root({
   aborted: Annotation<boolean>(),
   phase: Annotation<GraphPhase>(),
   stopReason: Annotation<StopReason>(),
+  /** 最近一条已验证 Agent 命令的退出码；用于防止非零退出被宣告完成。 */
+  lastCommandExitCode: Annotation<number | null>(),
 
   // ---- Configuration ----
   allowWrite: Annotation<boolean>(),
@@ -172,6 +174,7 @@ export function createInitialState(): AgentGraphState {
     aborted: false,
     phase: 'idle',
     stopReason: null,
+    lastCommandExitCode: null,
     allowWrite: false,
     boundHost: '',
     conclusion: '',

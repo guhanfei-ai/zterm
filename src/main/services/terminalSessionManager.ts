@@ -34,6 +34,8 @@ export interface SessionMeta {
   source: 'direct' | 'jumpserver' | 'local'
   displayName: string
   displaySecondary?: string
+  /** Jumpserver 的稳定配置/资产/账号 ID；展示名称不足以验证恢复目标。 */
+  targetId?: string
 }
 
 export interface TerminalEvent {
@@ -64,6 +66,8 @@ export class TerminalSession extends EventEmitter {
   public connected = false
   public currentHost?: SshConnectionIdentity
   public sessionMeta?: SessionMeta
+  /** 本连接实际通过校验的 SSH host key；trust-once 也必须进入 Agent 目标身份。 */
+  public verifiedHostKey?: { algorithm: string; fingerprint: string }
   private outputBuffer: string[] = []
   private maxBufferLines = 5000
   private connHadError = false
@@ -116,6 +120,12 @@ export class TerminalSession extends EventEmitter {
     this.pendingHostTrust = null
     clearTimeout(pending.timer)
     this.hostTrustFailure = failure
+    if (allowed) {
+      this.verifiedHostKey = {
+        algorithm: pending.candidate.algorithm,
+        fingerprint: pending.candidate.fingerprint,
+      }
+    }
     pending.verify(allowed)
   }
 
@@ -152,6 +162,7 @@ export class TerminalSession extends EventEmitter {
     const existing = getSshHostTrustRecord(candidate.host, candidate.port)
     if (existing) {
       if (existing.algorithm === candidate.algorithm && existing.fingerprint === candidate.fingerprint) {
+        this.verifiedHostKey = { algorithm: candidate.algorithm, fingerprint: candidate.fingerprint }
         verify(true)
         return
       }
@@ -207,6 +218,7 @@ export class TerminalSession extends EventEmitter {
   async connect(opts: SshConnectionOptions): Promise<void> {
     return new Promise((resolve, reject) => {
       this.currentHost = { host: opts.host, port: opts.port || 22, username: opts.username }
+      this.verifiedHostKey = undefined
       this.connectSettled = false
       this.rejectConnect = reject
       const conn = this.clientFactory()
@@ -315,6 +327,10 @@ export class TerminalSession extends EventEmitter {
         }
       )
     })
+  }
+
+  isShellReady(): boolean {
+    return this.connected && !!this.stream?.writable
   }
 
   write(data: string): void {

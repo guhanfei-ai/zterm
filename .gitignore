@@ -37,6 +37,10 @@ npm-prefix
 tmp/
 ._*
 _*
+# 交付可见性修复:第二个 `_*` 会覆盖 20-21 行的 __tests__ 豁免,
+# 导致新增测试文件被忽略(验收退回 F09)。此处重新声明豁免。
+!**/__tests__/
+!**/__tests__/**
 .agents
 zterm-redesign/
 .video_agent

@@ -432,6 +432,13 @@ export const useChatStore = defineStore('chat', () => {
     if (tab) tab.error = err
   }
 
+  function removeMessageByIdByTabId(tabId: string, messageId: string): void {
+    const tab = getTab(tabId)
+    if (!tab) return
+    const index = tab.messages.findIndex((message) => message.id === messageId)
+    if (index >= 0) tab.messages.splice(index, 1)
+  }
+
   /** Add agent message to a specific tab — 单时间线收口版 */
   function addAgentMessageByTabId(tabId: string, msg: AgentDisplayMessage): void {
     const tab = getTab(tabId)
@@ -531,6 +538,11 @@ export const useChatStore = defineStore('chat', () => {
       thinkingId: msg.thinkingId
     }
     tab.messages.push(cardMsg)
+  }
+
+  function setAgentTaskByTabId(tabId: string, description: string): void {
+    const tab = getTab(tabId)
+    if (tab) tab.agentTask = description
   }
 
   /** Set agent state in a specific tab */
@@ -686,6 +698,8 @@ export const useChatStore = defineStore('chat', () => {
     finishLastMessageByTabId,
     setErrorByTabId,
     addAgentMessageByTabId,
+    removeMessageByIdByTabId,
+    setAgentTaskByTabId,
     setAgentStateByTabId,
     finalizeExecutionMessagesByTabId,
     finalizeThinkingOnStopByTabId,
