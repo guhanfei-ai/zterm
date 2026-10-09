@@ -1,21 +1,7 @@
-// 命令安全分类：默认只允许读，未识别命令不允许直接放行
-//
-// v2 判定架构（引号感知分段）：
-//   1. 按 shell 语义把整条命令拆成"段"：; | && || 换行切分；
-//      $(...) 与反引号内的内容递归提取为独立段（命令替换会被真实执行）。
-//   2. 危险模式匹配基于"剥离引号内数据"后的段文本 —— 引号里的 "rm -rf"
-//      只是数据，不再误杀；段内真实结构（重定向、flag 组合）仍然命中。
-//   3. 读操作白名单只认"段首命令词"（^ 锚定）—— 复合命令中任何一个
-//      非白名单段都会让整条命令落入未识别，不再因为包含 ls/echo 等词
-//      而被整体放行。
-//   4. 代码载体命令（awk/sed/xargs/find 等）的参数（含引号内）额外检查
-//      危险执行模式与写操作词。
-//
-// MVP 简化（作者决策，2026-09-16）：移除人工确认通道 ——
-//   - 只读模式：白名单命中即直接执行（含敏感路径读取）；
-//   - 读写模式：写命令也直接执行；
-//   - P0 危险命令仍然永久拦截。
+import { posix } from 'node:path'
 
+// Agent 命令是受限的 shell 语言，不是任意脚本执行入口。
+// 保留参数与重定向语义；无法证明安全的展开、解释器和语法一律拒绝。
 export interface SafetyCheck {
   safe: boolean
   blocked: boolean
@@ -25,502 +11,218 @@ export interface SafetyCheck {
   category?: string
 }
 
-// P0 永久禁止执行的命令模式（匹配对象：剥离引号数据后的段文本）
-const BLOCKED_PATTERNS: { pattern: RegExp; reason: string; category: string }[] = [
-  { pattern: /\brm\s+(?:-[a-zA-Z]*(?:r[a-zA-Z]*f|f[a-zA-Z]*r)[a-zA-Z]*|-[a-zA-Z]*r[a-zA-Z]*\s+-[a-zA-Z]*f[a-zA-Z]*|-[a-zA-Z]*f[a-zA-Z]*\s+-[a-zA-Z]*r[a-zA-Z]*|--recursive\b[^|&;]*--force|--force\b[^|&;]*--recursive)/, reason: '禁止执行 rm -rf', category: '数据删除' },
-  { pattern: /\brm\s+-r\s+\//, reason: '禁止删除根目录', category: '数据删除' },
-  { pattern: /\bmkfs\b/, reason: '禁止格式化文件系统', category: '磁盘操作' },
-  { pattern: /\bshutdown\b/, reason: '禁止关机命令', category: '系统控制' },
-  { pattern: /\breboot\b/, reason: '禁止重启命令', category: '系统控制' },
-  { pattern: /\bhalt\b/, reason: '禁止关机命令', category: '系统控制' },
-  { pattern: /\bpoweroff\b/, reason: '禁止关机命令', category: '系统控制' },
-  { pattern: /\binit\s+[06]\b/, reason: '禁止切换运行级别', category: '系统控制' },
-  { pattern: /\bdd\s+if=.*of=\/dev\//, reason: '禁止直接写磁盘', category: '磁盘操作' },
-  { pattern: />+\s*\/etc\//, reason: '禁止覆盖系统配置', category: '系统配置' },
-  { pattern: /\bchmod\s+777\s+\//, reason: '禁止修改根目录权限', category: '权限操作' },
-]
+interface Word { value: string; dynamic: boolean }
+interface Segment { words: Word[]; redirects: Array<{ op: string; target: Word }> }
 
-// 写操作命令模式 — 读操作下直接阻断；写操作下直接执行（MVP：不再人工确认）
-// （匹配对象：剥离引号数据后的段文本；对代码载体命令还会用原始文本复查）
-const WRITE_PATTERNS: { pattern: RegExp; reason: string; category: string }[] = [
-  // ---- 高危变体（优先级必须高于后面的读操作白名单） ----
-  { pattern: /\bfind\b.*\s-delete\b/, reason: '高风险写操作：find -delete 会删除文件', category: '文件操作' },
-  { pattern: /\bfind\b.*\s-exec\s+rm\b/, reason: '高风险写操作：find -exec rm 会删除文件', category: '文件操作' },
-  { pattern: /\bgit\s+branch\s+-[a-zA-Z]*D/, reason: '写操作：强制删除 Git 分支', category: '版本控制' },
-  { pattern: /\bgit\s+tag\s+-d\b/, reason: '写操作：删除 Git 标签', category: '版本控制' },
-  { pattern: /\bgit\s+clean\s+-[a-zA-Z]*f/, reason: '高风险写操作：git clean 会删除未跟踪文件', category: '版本控制' },
-  // 覆盖式重定向 / 覆盖写入变体
-  { pattern: /\btee\s+/, reason: '写操作：写入文件', category: '文件写入' },
-  { pattern: />\s*\S/, reason: '写操作：输出重定向到文件', category: '文件写入' },
-  { pattern: />>\s*\S/, reason: '写操作：追加写入文件', category: '文件写入' },
-  { pattern: /\b\d+>\s*\S/, reason: '写操作：文件描述符重定向', category: '文件写入' },
-  { pattern: /\b&>\s*\S/, reason: '写操作：合并重定向', category: '文件写入' },
-  // 文件删除
-  { pattern: /\brm\b/, reason: '写操作：删除文件', category: '文件操作' },
-  // 文件操作
-  { pattern: /\bmkdir\b/, reason: '写操作：创建目录', category: '文件操作' },
-  { pattern: /\bcp\s+/, reason: '写操作：复制文件', category: '文件操作' },
-  { pattern: /\bmv\s+/, reason: '写操作：移动文件', category: '文件操作' },
-  { pattern: /\btouch\s+/, reason: '写操作：创建文件', category: '文件操作' },
-  { pattern: /\bln\s+/, reason: '写操作：创建链接', category: '文件操作' },
-  { pattern: /\binstall\b/, reason: '写操作：安装文件', category: '文件操作' },
-  // 权限/所有者
-  { pattern: /\bchmod\b/, reason: '写操作：修改权限', category: '权限操作' },
-  { pattern: /\bchown\b/, reason: '写操作：修改所有者', category: '权限操作' },
-  { pattern: /\bchgrp\b/, reason: '写操作：修改组', category: '权限操作' },
-  // 用户管理
-  { pattern: /\buseradd\b/, reason: '写操作：创建用户', category: '用户管理' },
-  { pattern: /\busermod\b/, reason: '写操作：修改用户', category: '用户管理' },
-  { pattern: /\buserdel\b/, reason: '写操作：删除用户', category: '用户管理' },
-  { pattern: /\bgroupadd\b/, reason: '写操作：创建用户组', category: '用户管理' },
-  { pattern: /\bgroupdel\b/, reason: '写操作：删除用户组', category: '用户管理' },
-  { pattern: /\bpasswd\b/, reason: '写操作：修改密码', category: '用户管理' },
-  // 进程控制
-  { pattern: /\bkill\s+-9\b/, reason: '写操作：强制终止进程', category: '进程控制' },
-  { pattern: /\bkillall\b/, reason: '写操作：批量终止进程', category: '进程控制' },
-  { pattern: /\bpkill\b/, reason: '写操作：按名称终止进程', category: '进程控制' },
-  // 服务控制
-  { pattern: /\bsystemctl\s+(start|stop|restart|enable|disable|mask|unmask)\b/, reason: '写操作：控制服务', category: '服务控制' },
-  { pattern: /\bservice\s+\w+\s+(start|stop|restart)\b/, reason: '写操作：控制服务', category: '服务控制' },
-  // 包管理
-  { pattern: /\bapt(-get)?\s+(install|remove|purge|upgrade|dist-upgrade)\b/, reason: '写操作：管理软件包', category: '包管理' },
-  { pattern: /\byum\s+(install|remove|update)\b/, reason: '写操作：管理软件包', category: '包管理' },
-  { pattern: /\bdnf\s+(install|remove|upgrade)\b/, reason: '写操作：管理软件包', category: '包管理' },
-  { pattern: /\bpip\s+install\b/, reason: '写操作：安装 Python 包', category: '包管理' },
-  { pattern: /\bpip\s+uninstall\b/, reason: '写操作：卸载 Python 包', category: '包管理' },
-  { pattern: /\bnpm\s+install\b/, reason: '写操作：安装 npm 包', category: '包管理' },
-  { pattern: /\bnpm\s+uninstall\b/, reason: '写操作：卸载 npm 包', category: '包管理' },
-  // 配置修改
-  { pattern: /\bsed\s+.*-i\b/, reason: '写操作：原地修改文件', category: '配置修改' },
-  { pattern: /\bcrontab\b/, reason: '写操作：修改定时任务', category: '配置修改' },
-  { pattern: /\bexport\s+\w+=/, reason: '写操作：设置环境变量', category: '配置修改' },
-  { pattern: /\bunset\b/, reason: '写操作：删除环境变量', category: '配置修改' },
-  { pattern: /\bsource\b/, reason: '写操作：执行脚本', category: '配置修改' },
-  { pattern: /\b\.\s+\/\w/, reason: '写操作：执行脚本', category: '配置修改' },
-  // 网络修改
-  { pattern: /\bip\s+(addr|address|link|route|neigh|rule)\s+(add|del|set|replace|change|flush)\b/, reason: '写操作：修改网络配置', category: '网络配置' },
-  { pattern: /\bip\s+route\s+flush\b/, reason: '写操作：清空路由表', category: '网络配置' },
-  { pattern: /\bip\s+neigh\s+flush\b/, reason: '写操作：清空邻居表', category: '网络配置' },
-  { pattern: /\biptables\b/, reason: '写操作：修改防火墙规则', category: '网络配置' },
-  // 容器操作
-  { pattern: /\bdocker\s+(rm|rmi|system\s+prune)\b/, reason: '写操作：删除 Docker 资源', category: '容器操作' },
-  { pattern: /\bdocker\s+run\b/, reason: '写操作：运行 Docker 容器', category: '容器操作' },
-  { pattern: /\bdocker\s+exec\b/, reason: '写操作：在容器中执行命令', category: '容器操作' },
-  { pattern: /\bdocker\s+(start|stop|restart|pause|unpause|kill)\b/, reason: '写操作：控制 Docker 容器', category: '容器操作' },
-  { pattern: /\bdocker\s+(build|push|pull|tag|save|load)\b/, reason: '写操作：Docker 镜像操作', category: '容器操作' },
-  { pattern: /\bdocker\s+network\s+(create|rm|connect|disconnect)\b/, reason: '写操作：Docker 网络操作', category: '容器操作' },
-  { pattern: /\bdocker\s+volume\s+(create|rm)\b/, reason: '写操作：Docker 卷操作', category: '容器操作' },
-  // 版本控制
-  { pattern: /\bgit\s+push\b/, reason: '写操作：推送到远端仓库', category: '版本控制' },
-  { pattern: /\bgit\s+push\s+--force\b/, reason: '写操作：强制推送 Git', category: '版本控制' },
-  { pattern: /\bgit\s+commit\b/, reason: '写操作：提交代码', category: '版本控制' },
-  { pattern: /\bgit\s+(merge|rebase|reset|checkout|cherry-pick|stash\s+pop|stash\s+drop)\b/, reason: '写操作：修改 Git 仓库状态', category: '版本控制' },
-]
-
-// 读操作白名单 — 只匹配"段的首命令词"（^ 锚定）。
-// 任何段只要不是以白名单命令开头，整条命令即落入未识别，
-// 不允许进入确认执行阶段。
-const READ_ONLY_PATTERNS: { pattern: RegExp; reason: string }[] = [
-  // 文件查看
-  { pattern: /^ls\b/, reason: '列出文件' },
-  { pattern: /^ll\b/, reason: '列出文件（长格式）' },
-  { pattern: /^cat\b/, reason: '查看文件内容' },
-  { pattern: /^less\b/, reason: '分页查看文件' },
-  { pattern: /^more\b/, reason: '分页查看文件' },
-  { pattern: /^head\b/, reason: '查看文件头部' },
-  { pattern: /^tail\b/, reason: '查看文件尾部' },
-  { pattern: /^wc\b/, reason: '统计文件行数/字数' },
-  { pattern: /^file\b/, reason: '查看文件类型' },
-  { pattern: /^stat\b/, reason: '查看文件状态' },
-  { pattern: /^md5sum\b/, reason: '查看文件校验值' },
-  { pattern: /^sha256sum\b/, reason: '查看文件校验值' },
-  // 搜索
-  { pattern: /^grep\b/, reason: '搜索文本' },
-  { pattern: /^egrep\b/, reason: '搜索文本（扩展正则）' },
-  { pattern: /^fgrep\b/, reason: '搜索文本（固定字符串）' },
-  { pattern: /^find\b/, reason: '查找文件' },
-  { pattern: /^which\b/, reason: '查找命令路径' },
-  { pattern: /^whereis\b/, reason: '查找命令位置' },
-  { pattern: /^locate\b/, reason: '查找文件' },
-  // 系统信息
-  { pattern: /^ps\b/, reason: '查看进程' },
-  { pattern: /^top\b/, reason: '查看进程状态' },
-  { pattern: /^htop\b/, reason: '查看进程状态' },
-  { pattern: /^free\b/, reason: '查看内存' },
-  { pattern: /^df\b/, reason: '查看磁盘' },
-  { pattern: /^du\b/, reason: '查看目录大小' },
-  { pattern: /^uname\b/, reason: '查看系统信息' },
-  { pattern: /^hostname\b/, reason: '查看主机名' },
-  { pattern: /^uptime\b/, reason: '查看运行时间' },
-  { pattern: /^w\b/, reason: '查看登录用户' },
-  { pattern: /^who\b/, reason: '查看登录用户' },
-  { pattern: /^whoami\b/, reason: '查看当前用户' },
-  { pattern: /^id\b/, reason: '查看用户身份' },
-  { pattern: /^date\b/, reason: '查看日期' },
-  { pattern: /^cal\b/, reason: '查看日历' },
-  { pattern: /^lscpu\b/, reason: '查看CPU信息' },
-  { pattern: /^lsmem\b/, reason: '查看内存信息' },
-  { pattern: /^lspci\b/, reason: '查看PCI设备' },
-  { pattern: /^lsusb\b/, reason: '查看USB设备' },
-  { pattern: /^lsblk\b/, reason: '查看块设备' },
-  { pattern: /^mount\b/, reason: '查看挂载信息' },
-  // 网络查看
-  { pattern: /^ifconfig\b/, reason: '查看网络接口' },
-  { pattern: /^ip\s+(addr|address)\s+show\b/, reason: '查看网络地址' },
-  { pattern: /^ip\s+link\s+show\b/, reason: '查看网络链路' },
-  { pattern: /^ip\s+route\s+show\b/, reason: '查看路由表' },
-  { pattern: /^ip\s+neigh\s+show\b/, reason: '查看邻居表' },
-  { pattern: /^netstat\b/, reason: '查看网络连接' },
-  { pattern: /^ss\b/, reason: '查看网络连接' },
-  { pattern: /^ping\b/, reason: '网络连通性测试' },
-  { pattern: /^traceroute\b/, reason: '路由追踪' },
-  { pattern: /^dig\b/, reason: 'DNS查询' },
-  { pattern: /^nslookup\b/, reason: 'DNS查询' },
-  { pattern: /^host\b/, reason: 'DNS查询' },
-  // 服务查看
-  { pattern: /^systemctl\s+status\b/, reason: '查看服务状态' },
-  { pattern: /^systemctl\s+list\b/, reason: '查看服务列表' },
-  { pattern: /^systemctl\s+is-(active|enabled|failed)\b/, reason: '查看服务状态' },
-  { pattern: /^service\s+\w+\s+status\b/, reason: '查看服务状态' },
-  // 日志查看
-  { pattern: /^journalctl\b/, reason: '查看系统日志' },
-  { pattern: /^dmesg\b/, reason: '查看内核日志' },
-  // 版本控制（读操作）
-  { pattern: /^git\s+(status|log|diff|show|branch|tag|remote|blame|reflog|describe|shortlog|stash\s+list)\b/, reason: 'Git读操作' },
-  { pattern: /^git\s+config\s+--(get|list)\b/, reason: 'Git配置查看' },
-  // 环境查看
-  { pattern: /^env\b/, reason: '查看环境变量' },
-  { pattern: /^printenv\b/, reason: '查看环境变量' },
-  { pattern: /^export\b/, reason: '查看环境变量' },
-  { pattern: /^echo\b/, reason: '输出文本' },
-  { pattern: /^printf\b/, reason: '输出文本' },
-  { pattern: /^type\b/, reason: '查看命令类型' },
-  { pattern: /^command\s+-v\b/, reason: '查看命令路径' },
-  { pattern: /^apropos\b/, reason: '搜索手册' },
-  { pattern: /^man\b/, reason: '查看手册' },
-  { pattern: /^info\b/, reason: '查看信息' },
-  // 磁盘读操作
-  { pattern: /^fdisk\s+-l\b/, reason: '查看磁盘分区' },
-  { pattern: /^parted\s+-l\b/, reason: '查看分区表' },
-  { pattern: /^blkid\b/, reason: '查看块设备标识' },
-  // 容器查看
-  { pattern: /^docker\s+(ps|images|logs|inspect|top|stats|version|info|history|diff|port|compose\s+ps|compose\s+logs)\b/, reason: 'Docker读操作' },
-  // 包信息查看
-  { pattern: /^rpm\s+(-q|-qa)\b/, reason: '查看已安装RPM包' },
-  { pattern: /^dpkg\s+(-l|-s|-L)\b/, reason: '查看已安装DEB包' },
-  { pattern: /^apt(-get)?\s+(list|show|search)\b/, reason: '查看软件包信息' },
-  { pattern: /^yum\s+(list|info|search|provides)\b/, reason: '查看软件包信息' },
-  // 文本处理（读操作）
-  { pattern: /^sort\b/, reason: '排序输出' },
-  { pattern: /^uniq\b/, reason: '去重输出' },
-  { pattern: /^cut\b/, reason: '截取字段' },
-  { pattern: /^awk\b/, reason: '文本处理' },
-  { pattern: /^sed\b(?!.*-i\b)/, reason: '文本处理（非原地修改）' },
-  { pattern: /^tr\b/, reason: '字符替换' },
-  { pattern: /^xargs\b/, reason: '参数传递' },
-  { pattern: /^paste\b/, reason: '合并行' },
-  // 条件与控制
-  { pattern: /^test\b/, reason: '条件测试' },
-  { pattern: /^\[\b/, reason: '条件测试' },
-  { pattern: /^true\b/, reason: '空操作' },
-  { pattern: /^false\b/, reason: '空操作' },
-  // 其他读操作
-  { pattern: /^history\b/, reason: '查看命令历史' },
-  { pattern: /^lsof\b/, reason: '查看打开文件' },
-  { pattern: /^strace\b/, reason: '系统调用追踪' },
-  { pattern: /^readelf\b/, reason: '查看ELF文件' },
-  { pattern: /^objdump\b/, reason: '查看目标文件' },
-  { pattern: /^nm\b/, reason: '查看符号表' },
-  { pattern: /^strings\b/, reason: '查看字符串' },
-  { pattern: /^xxd\b/, reason: '查看十六进制' },
-  { pattern: /^od\b/, reason: '查看八进制' },
-  { pattern: /^hexdump\b/, reason: '查看十六进制' },
-  { pattern: /^pwd\b/, reason: '查看当前目录' },
-  { pattern: /^realpath\b/, reason: '查看真实路径' },
-  { pattern: /^readlink\b/, reason: '查看符号链接' },
-  // 原"低风险确认"命令（MVP 决策并入白名单，直接执行）：
-  // kill -9 / killall / pkill 仍在 WRITE_PATTERNS，读写分级不受影响
-  { pattern: /^kill\b/, reason: '终止进程' },
-  { pattern: /^vgcreate\b/, reason: '创建卷组' },
-  { pattern: /^lvcreate\b/, reason: '创建逻辑卷' },
-]
-
-// 代码载体命令：参数（含引号内）可能携带可执行代码，需用原始文本复查
-const CODE_CARRIER_PATTERN = /^(awk|gawk|mawk|sed|perl|python3?|xargs|find)\b/
-
-// 代码载体命令参数中的危险执行模式（在原始段文本上检查）
-const CODE_DANGER_PATTERNS: { pattern: RegExp; reason: string }[] = [
-  { pattern: /\bsystem\s*\(/, reason: '脚本内调用 system() 执行外部命令' },
-  { pattern: /\bpopen\s*\(/, reason: '脚本内调用 popen() 执行外部命令' },
-  { pattern: /\bos\.system\b/, reason: '脚本内调用 os.system 执行外部命令' },
-  { pattern: /\bexec\s*\(/, reason: '脚本内调用 exec 执行外部命令' },
-  { pattern: /\beval\b/, reason: '脚本内使用 eval 动态执行' },
-  { pattern: /\bsubprocess\b/, reason: '脚本内使用 subprocess 执行外部命令' },
-]
-
-// ==================== 引号感知分段 ====================
-
-export interface CommandSegment {
-  /** 段的原始文本（保留引号），用于代码载体命令的复查 */
-  raw: string
-  /** 剥离引号内数据后的匹配文本（引号内容替换为空格），用于模式匹配 */
-  matchable: string
+function denied(reason: string, category = '权限控制', isWrite = false, isUnknown = false): SafetyCheck {
+  return { safe: false, blocked: true, isWrite, isUnknown, reason, category }
 }
 
-/** $( 嵌套深度上限：超限按未识别处理（保守阻断） */
-const MAX_SUBSTITUTION_DEPTH = 8
-
-/** 从 openIndex（指向 '('）起找配对的 ')'，引号内的括号不计入；未闭合返回文本末尾 */
-function findMatchingParen(text: string, openIndex: number): number {
-  let depth = 0
-  let inSingle = false
-  let inDouble = false
-  for (let i = openIndex; i < text.length; i++) {
-    const ch = text[i]
-    if (inSingle) {
-      if (ch === "'") inSingle = false
-      continue
-    }
-    if (inDouble) {
-      if (ch === '\\') { i++; continue }
-      if (ch === '"') inDouble = false
-      continue
-    }
-    if (ch === "'") inSingle = true
-    else if (ch === '"') inDouble = true
-    else if (ch === '(') depth++
-    else if (ch === ')') {
-      depth--
-      if (depth === 0) return i
-    }
-  }
-  return text.length
+function isProtectedWritePath(value: string): boolean {
+  const path = posix.normalize(value)
+  return /^\/(?:etc|proc|sys)(?:\/|$)/.test(path) || /^\/dev\/(?!null$)/.test(path)
 }
 
-/**
- * 把整条命令拆成段：
- * - normal 态遇到 ; | || && & 换行 → 段边界
- * - $(...) / 反引号内的内容递归提取为独立段（命令替换会被 shell 真实执行）
- * - 单引号内内容原样跳过（不切分、不参与匹配）
- * - 双引号内的 $(...)/反引号同样会被 shell 替换，因此其内容也递归提取
- */
-export function splitCommandSegments(command: string, depth = 0): CommandSegment[] {
-  const segments: CommandSegment[] = []
-  let raw = ''
-  let matchable = ''
-  let i = 0
-
-  const pushSegment = (): void => {
-    const trimmedRaw = raw.trim()
-    if (trimmedRaw) {
-      segments.push({ raw: trimmedRaw, matchable: matchable.trim() })
-    }
-    raw = ''
-    matchable = ''
+/** 只解析普通参数、管道和串联；不模拟完整 shell，也不执行任何展开。 */
+function parseCommands(command: string): Segment[] | null {
+  const segments: Segment[] = []
+  let segment: Segment = { words: [], redirects: [] }
+  let word = ''
+  let active = false
+  let dynamic = false
+  let quote = ''
+  let redirect: string | null = null
+  const pushWord = (): boolean => {
+    if (!active) return true
+    const token = { value: word, dynamic }
+    if (redirect) { segment.redirects.push({ op: redirect, target: token }); redirect = null }
+    else segment.words.push(token)
+    word = ''; active = false; dynamic = false
+    return true
   }
-
-  while (i < command.length) {
+  const pushSegment = (): boolean => {
+    pushWord()
+    if (redirect || !segment.words.length) return false
+    segments.push(segment)
+    segment = { words: [], redirects: [] }
+    return true
+  }
+  for (let i = 0; i < command.length; i++) {
     const ch = command[i]
-
-    // 单引号：内容原样，不参与切分与匹配
-    if (ch === "'") {
-      let j = i + 1
-      while (j < command.length && command[j] !== "'") j++
-      raw += command.slice(i, Math.min(j + 1, command.length))
-      matchable += ' '
-      i = j + 1
+    if (quote === "'") {
+      if (ch === "'") quote = ''
+      else word += ch
       continue
     }
-
-    // 双引号：内容不切分，但内部命令替换仍递归提取
-    if (ch === '"') {
-      let j = i + 1
-      let content = ''
-      while (j < command.length && command[j] !== '"') {
-        if (command[j] === '\\' && j + 1 < command.length) {
-          content += command[j] + command[j + 1]
-          j += 2
-          continue
-        }
-        content += command[j]
-        j++
-      }
-      raw += command.slice(i, Math.min(j + 1, command.length))
-      if (depth < MAX_SUBSTITUTION_DEPTH && (content.includes('$(') || content.includes('`'))) {
-        segments.push(...splitCommandSegments(content, depth + 1))
-      }
-      matchable += ' '
-      i = j + 1
+    if (ch === '\\') {
+      if (++i >= command.length) return null
+      const next = command[i]
+      // 双引号内只有这些字符可由反斜杠转义；其余反斜杠属于参数。
+      if (quote === '"' && !['$', '`', '"', '\\'].includes(next)) word += '\\'
+      word += next; active = true
       continue
     }
-
-    // 反斜杠转义
-    if (ch === '\\' && i + 1 < command.length) {
-      raw += ch + command[i + 1]
-      matchable += ch + command[i + 1]
-      i += 2
+    if (quote === '"' && ch === '"') { quote = ''; continue }
+    if (!quote && (ch === "'" || ch === '"')) { quote = ch; active = true; continue }
+    if (ch === '`' || ch === '$') {
+      // 仅保留简单环境变量作为只读路径参数；拒绝命令替换与参数运算。
+      const variable = command.slice(i).match(/^\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})/)
+      if (ch !== '$' || !variable) return null
+      word += variable[0]; i += variable[0].length - 1; dynamic = true; active = true
       continue
     }
-
-    // $(...) 命令替换：递归提取
-    if (ch === '$' && command[i + 1] === '(') {
-      const close = findMatchingParen(command, i + 1)
-      const inner = command.slice(i + 2, close)
-      raw += command.slice(i, Math.min(close + 1, command.length))
-      matchable += ' '
-      if (depth < MAX_SUBSTITUTION_DEPTH) {
-        segments.push(...splitCommandSegments(inner, depth + 1))
-      } else {
-        // 深度超限：塞入一个空 matchable 段，外层将落入未识别（保守阻断）
-        segments.push({ raw: inner, matchable: '' })
-      }
-      i = close + 1
+    if (quote) { word += ch; continue }
+    if (ch !== '\n' && /\s/.test(ch)) { pushWord(); continue }
+    if (ch === '#' && !active) break
+    if (ch === '(' || ch === ')' || ch === '{' || ch === '}') return null
+    if (ch === '>' || ch === '<') {
+      // fd 前缀属于重定向，而不是普通参数。
+      if (active && /^\d+$/.test(word)) { word = ''; active = false }
+      else pushWord()
+      if (redirect) return null
+      let op = ch
+      if (command[i + 1] === ch || command[i + 1] === '&' || command[i + 1] === '|') op += command[++i]
+      if (op === '<<' || op === '<>' || op === '>|') return null
+      redirect = op
       continue
     }
-
-    // 反引号命令替换：递归提取
-    if (ch === '`') {
-      const close = command.indexOf('`', i + 1)
-      const end = close === -1 ? command.length : close
-      const inner = command.slice(i + 1, end)
-      raw += command.slice(i, Math.min(end + 1, command.length))
-      matchable += ' '
-      if (depth < MAX_SUBSTITUTION_DEPTH) {
-        segments.push(...splitCommandSegments(inner, depth + 1))
-      } else {
-        segments.push({ raw: inner, matchable: '' })
-      }
-      i = end + 1
+    if (ch === ';' || ch === '|' || ch === '&' || ch === '\n') {
+      if (redirect || !pushSegment()) return null
+      if ((ch === '|' || ch === '&') && command[i + 1] === ch) i++
+      // 后台执行不能由前台结束标记证明其副作用已结束。
+      else if (ch === '&') return null
       continue
     }
-
-    // 命令分隔符：; | || && & 换行
-    if (ch === ';' || ch === '\n' || ch === '|' || ch === '&') {
-      pushSegment()
-      if ((ch === '|' || ch === '&') && command[i + 1] === ch) i += 2
-      else i += 1
-      continue
-    }
-
-    raw += ch
-    matchable += ch
-    i += 1
+    if ('*?[]~'.includes(ch)) dynamic = true
+    word += ch; active = true
   }
-
-  pushSegment()
-  return segments
+  if (quote) return null
+  pushWord()
+  if (redirect) return null
+  if (segment.words.length) segments.push(segment)
+  return segments.length ? segments : null
 }
 
-// ==================== 主判定 ====================
+const READ_COMMANDS = new Set([
+  'ls', 'cat', 'head', 'tail', 'wc', 'file', 'stat', 'md5sum', 'sha256sum',
+  'grep', 'egrep', 'fgrep', 'rg', 'which', 'whereis', 'locate', 'ps', 'free',
+  'df', 'du', 'uname', 'uptime', 'w', 'who', 'whoami', 'id', 'cal', 'lscpu',
+  'lsmem', 'lspci', 'lsusb', 'lsblk', 'netstat', 'ss', 'ping', 'traceroute',
+  'dig', 'nslookup', 'host', 'printenv', 'echo', 'printf', 'type', 'apropos',
+  'cut', 'tr', 'paste', 'test', '[', 'true', 'false', 'lsof', 'readelf',
+  'objdump', 'nm', 'strings', 'od', 'hexdump', 'pwd', 'realpath', 'readlink',
+])
+const WRITE_COMMANDS = new Set([
+  'rm', 'mkdir', 'cp', 'mv', 'touch', 'ln', 'install', 'chmod', 'chown', 'chgrp',
+  'useradd', 'usermod', 'userdel', 'groupadd', 'groupdel', 'passwd', 'kill',
+  'killall', 'pkill', 'vgcreate', 'lvcreate', 'mount', 'tee', 'export', 'unset',
+  'iptables', 'crontab',
+])
+const CODE_COMMANDS = new Set(['awk', 'gawk', 'mawk', 'sed', 'xargs', 'sh', 'bash', 'zsh', 'dash', 'fish', 'perl', 'python', 'python3', 'node', 'eval', 'exec', 'source', '.', 'export', 'unset'])
 
-interface WriteHit {
-  reason: string
-  category: string
+function commandKind(words: Word[]): 'read' | 'write' | 'unknown' {
+  const [head, ...args] = words.map((w) => w.value)
+  if (!head || words[0].dynamic || head.includes('/')) return 'unknown'
+  if (CODE_COMMANDS.has(head)) return 'unknown'
+  if (head === 'cd') return args.length <= 1 ? 'read' : 'unknown'
+  if (head === 'env') return args.every((a) => ['-0', '--null'].includes(a)) ? 'read' : 'unknown'
+  if (head === 'command') return args[0] === '-v' && args.slice(1).every((a) => !a.startsWith('-')) ? 'read' : 'unknown'
+  if (head === 'find') {
+    if (args.some((a) => /^-(?:exec|execdir|ok|okdir)$/.test(a))) return 'unknown'
+    if (args.some((a) => /^-(?:delete|fprint|fprint0|fprintf|fls)$/.test(a))) return 'write'
+    return 'read'
+  }
+  if (head === 'git') {
+    const [verb, ...rest] = args
+    if (['status', 'log', 'diff', 'show', 'blame', 'describe', 'shortlog'].includes(verb)) {
+      return rest.some((a) => /^(?:--output(?:=|$)|--ext-diff|--textconv|--exec-path)/.test(a)) ? 'unknown' : 'read'
+    }
+    if (verb === 'reflog') return !rest.length || rest[0] === 'show' ? 'read' : 'write'
+    if (verb === 'stash') return rest[0] === 'list' ? 'read' : 'write'
+    if (verb === 'config') return ['--get', '--get-all', '--get-regexp', '--list', '-l'].includes(rest[0]) ? 'read' : 'write'
+    if (verb === 'branch' || verb === 'tag') {
+      return rest.every((a) => /^(?:-a|-r|-v|-vv|-l|--all|--list|--show-current)$/.test(a)) ? 'read' : 'write'
+    }
+    if (verb === 'remote') return rest.every((a) => a === '-v' || a === '--verbose') ? 'read' : 'write'
+    if (verb === 'clean') return rest.some((a) => a === '--dry-run' || /^-[a-z]*n[a-z]*$/.test(a)) ? 'read' : 'write'
+    return ['add', 'commit', 'push', 'merge', 'rebase', 'reset', 'checkout', 'switch', 'cherry-pick', 'restore', 'fetch', 'pull', 'rm', 'mv', 'init', 'clone'].includes(verb) ? 'write' : 'unknown'
+  }
+  if (head === 'docker') {
+    const [verb, sub] = args
+    if (['ps', 'images', 'logs', 'inspect', 'top', 'stats', 'version', 'info', 'history', 'diff', 'port'].includes(verb)) return 'read'
+    if (verb === 'compose') return ['ps', 'logs'].includes(sub) ? 'read' : 'unknown'
+    return ['rm', 'rmi', 'run', 'exec', 'start', 'stop', 'restart', 'pause', 'unpause', 'kill', 'build', 'push', 'pull', 'tag', 'save', 'load'].includes(verb) ? 'write' : 'unknown'
+  }
+  if (head === 'systemctl') return /^(?:status|list-[a-z-]+|is-active|is-enabled|is-failed|show)$/.test(args[0]) ? 'read' : /^(?:start|stop|restart|enable|disable|mask|unmask)$/.test(args[0]) ? 'write' : 'unknown'
+  if (head === 'service') return args[1] === 'status' ? 'read' : ['start', 'stop', 'restart'].includes(args[1]) ? 'write' : 'unknown'
+  if (head === 'ip') return ['addr', 'address', 'link', 'route', 'neigh'].includes(args[0]) && args[1] === 'show' ? 'read' : ['add', 'del', 'set', 'replace', 'change', 'flush'].includes(args[1]) ? 'write' : 'unknown'
+  if (head === 'ifconfig') return args.length <= 1 ? 'read' : 'write'
+  if (head === 'hostname') return args.every((a) => ['-f', '-s', '-d', '-i', '-I', '-a', '-A', '--fqdn'].includes(a)) ? 'read' : 'write'
+  if (head === 'date') return args.some((a) => a === '-s' || a.startsWith('--set') || /^\d/.test(a)) ? 'write' : 'read'
+  if (head === 'journalctl') return args.some((a) => /^--(?:rotate|vacuum|flush|sync|relinquish|setup-keys|update-catalog)/.test(a)) ? 'write' : 'read'
+  if (head === 'dmesg') return args.some((a) => /^--(?:clear|read-clear|console)/.test(a) || /^-[a-zA-Z]*[cCnD][a-zA-Z]*$/.test(a)) ? 'write' : 'read'
+  if (head === 'ss' && args.some((a) => a === '--kill' || /^-[a-zA-Z]*K/.test(a))) return 'write'
+  if (head === 'sort') return args.some((a) => /^-o|^--output/.test(a)) ? 'write' : 'read'
+  if (head === 'uniq' || head === 'xxd') return args.some((a) => a === '-r') || args.filter((a) => !a.startsWith('-')).length > 1 ? 'write' : 'read'
+  if (head === 'fdisk' || head === 'parted') return args[0] === '-l' && args.length === 1 ? 'read' : 'unknown'
+  if (head === 'blkid') return args.some((a) => a === '-w') ? 'write' : 'read'
+  if (['rpm', 'dpkg', 'apt', 'apt-get', 'yum', 'dnf', 'pip', 'npm'].includes(head)) {
+    if (/^(?:-q[a-zA-Z]*|-l|-s|-L|list|show|search|info|provides)$/.test(args[0])) return 'read'
+    return ['install', 'uninstall', 'remove', 'purge', 'upgrade', 'dist-upgrade', 'update'].includes(args[0]) ? 'write' : 'unknown'
+  }
+  if (head === 'mount' && !args.length) return 'read'
+  if (READ_COMMANDS.has(head)) return head === 'file' && args.some((a) => a === '-C' || a === '--compile') ? 'write' : 'read'
+  return WRITE_COMMANDS.has(head) ? 'write' : 'unknown'
 }
 
 export function checkCommand(command: string, allowWrite = false): SafetyCheck {
-  const trimmed = command.trim()
-  if (!trimmed) {
-    return { safe: true, blocked: false, isWrite: false, isUnknown: false }
-  }
-  // PTY cooked mode may turn CR/Ctrl-C 等字节 into line submission or signals even
-  // inside quotes. Newline and tab remain valid shell syntax; other controls fail closed.
-  if (/[\x00-\x08\x0b-\x1f\x7f]/.test(command)) {
-    return {
-      safe: false,
-      blocked: true,
-      isWrite: false,
-      isUnknown: true,
-      reason: '命令包含终端控制字符',
-      category: '终端协议'
+  if (typeof command !== 'string' || command.length > 16_000) return denied('命令无效或过长', '终端协议', false, true)
+  if (!command.trim()) return { safe: true, blocked: false, isWrite: false, isUnknown: false }
+  if (/[\x00-\x08\x0b-\x1f\x7f]/.test(command)) return denied('命令包含终端控制字符', '终端协议', false, true)
+  const segments = parseCommands(command)
+  if (!segments) return denied('不支持的 shell 语法或命令展开，请使用直接命令', '命令注入', false, true)
+  let write = false
+  let unknown = false
+  for (const { words, redirects } of segments) {
+    const [head, ...args] = words.map((w) => w.value)
+    if (/^mkfs(?:\.|$)/.test(head) || ['shutdown', 'reboot', 'halt', 'poweroff', 'dd'].includes(head) || head === 'init' && args.some((a) => a === '0' || a === '6')) return denied('禁止执行危险系统命令', '系统控制')
+    if (head === 'rm') {
+      const options = args.slice(0, args.indexOf('--') < 0 ? args.length : args.indexOf('--')).filter((a) => a.startsWith('-'))
+      const recursive = options.some((a) => /^-[^-]*[rR]/.test(a) || a.startsWith('--rec'))
+      const force = options.some((a) => /^-[^-]*f/.test(a) || a.startsWith('--for'))
+      if (recursive && force) return denied('禁止执行 rm -rf', '数据删除')
+      if (recursive && args.some((a) => a.startsWith('/'))) return denied('禁止递归删除绝对路径', '数据删除')
+      if (options.some((a) => a.startsWith('--') && !['--recursive', '--force', '--verbose', '--interactive'].includes(a))) unknown = true
     }
-  }
-
-  const segments = splitCommandSegments(trimmed)
-
-  let sawWrite: WriteHit | null = null
-  let sawUnknown = false
-
-  for (const seg of segments) {
-    const m = seg.matchable
-
-    // 1. P0 永久禁止（引号内数据已剥离，不参与匹配）
-    for (const { pattern, reason, category } of BLOCKED_PATTERNS) {
-      if (m && pattern.test(m)) {
-        return { safe: false, blocked: true, isWrite: false, isUnknown: false, reason, category }
+    if (head === 'chmod' && args[0] === '777' && args.some((a) => a.startsWith('/'))) return denied('禁止修改绝对路径为全开放权限', '权限操作')
+    // 插件、外部 diff、pager 等参数可能在看似查询的命令中执行程序。
+    if (args.some((a) => /^(?:--plugin|--pre(?:=|$)|--exec(?:=|$)|--pager|--use-pager|--compress-program)/.test(a))) unknown = true
+    for (const { op, target } of redirects) {
+      if (op.includes('>')) {
+        if (target.dynamic) return denied('重定向目标必须是确定的路径', '文件写入', true, true)
+        if (op === '>&' && /^\d+$/.test(target.value)) continue
+        if (isProtectedWritePath(target.value)) return denied('禁止覆盖系统配置或设备', '系统配置')
+        write = true
       }
     }
-
-    // 2. git clean dry-run 预演特例：该段视为安全（必须在写操作规则之前）
-    if (m && /\bgit\s+clean\b/.test(m)) {
-      const hasDryRun = /\bgit\s+clean\b[^|&;]*(?:--dry-run|\s-[^-]*n)/.test(m)
-      if (hasDryRun) continue
+    const kind = commandKind(words)
+    // tee/cp/mv 也能写入系统路径，不能只防 shell 重定向。
+    if (kind === 'write' && ['tee', 'cp', 'mv', 'ln', 'touch', 'mkdir', 'rm'].includes(head)) {
+      const targets = ['cp', 'mv', 'ln'].includes(head) ? [args.at(-1) ?? ''] : args
+      const optionTargets = args.flatMap((a, i) => a === '-t' || a === '--target-directory' ? [args[i + 1] ?? ''] : a.startsWith('--target-directory=') ? [a.split('=').slice(1).join('=')] : a.startsWith('-t') ? [a.slice(2)] : [])
+      if ([...targets, ...optionTargets].some(isProtectedWritePath)) return denied('禁止通过文件工具修改系统配置或设备', '系统配置', true)
     }
-
-    // 3. 写操作（读模式阻断 / 写模式直接执行）
-    for (const { pattern, reason, category } of WRITE_PATTERNS) {
-      if (m && pattern.test(m)) {
-        if (!sawWrite) sawWrite = { reason, category }
-        break
-      }
+    if (kind === 'write') write = true
+    if (kind === 'unknown') {
+      unknown = true
+      if (CODE_COMMANDS.has(head) && /\b(?:rm|touch|mkdir|mv|cp)\b/.test(args.join(' '))) write = true
     }
-
-    // 4. 段首白名单判定（深度超限段 matchable 为空 → 未识别）
-    const isReadOnlySeg = !!m && READ_ONLY_PATTERNS.some(({ pattern }) => pattern.test(m))
-
-    if (isReadOnlySeg) {
-      // 4a. 代码载体命令：参数（含引号内）用原始文本复查
-      if (CODE_CARRIER_PATTERN.test(m)) {
-        let danger: string | null = null
-        for (const { pattern, reason } of CODE_DANGER_PATTERNS) {
-          if (pattern.test(seg.raw)) {
-            danger = reason
-            break
-          }
-        }
-        if (danger) {
-          return {
-            safe: false,
-            blocked: true,
-            isWrite: false,
-            isUnknown: false,
-            reason: `禁止执行：${danger}`,
-            category: '命令注入'
-          }
-        }
-        // xargs/find/awk 等参数里携带的命令词（如 `xargs rm`、`find -exec rm`）
-        // 用原始文本再查一遍写操作
-        for (const { pattern, reason, category } of WRITE_PATTERNS) {
-          if (pattern.test(seg.raw)) {
-            if (!sawWrite) sawWrite = { reason, category }
-            break
-          }
-        }
-      }
-    } else {
-      sawUnknown = true
-    }
+    // 动态参数不能改变结构化子命令、写目标或危险选项。
+    if (words.some((w) => w.dynamic) && (kind !== 'read' || !READ_COMMANDS.has(head) && !['find', 'cd'].includes(head))) unknown = true
+    if (['rg', 'file', 'nm', 'objdump'].includes(head) && words.some((w) => w.dynamic)) unknown = true
   }
-
-  // 合并优先级：blocked（已在段内返回）> write > unknown > safe
-  if (sawWrite) {
-    if (!allowWrite) {
-      return { safe: false, blocked: true, isWrite: true, isUnknown: false, reason: sawWrite.reason, category: sawWrite.category }
-    }
-    // MVP：写模式直接执行，不再人工确认（isWrite 保留用于步骤记录展示）
-    return { safe: true, blocked: false, isWrite: true, isUnknown: false, reason: sawWrite.reason, category: sawWrite.category }
-  }
-
-  if (sawUnknown) {
-    return {
-      safe: false,
-      blocked: true,
-      isWrite: false,
-      isUnknown: true,
-      reason: '未识别的命令，当前不允许执行',
-      category: '权限控制'
-    }
-  }
-
-  return { safe: true, blocked: false, isWrite: false, isUnknown: false }
+  // 未识别段优先：不能用一条已识别写命令替任意脚本取得授权。
+  if (unknown) return denied('未识别命令、解释器或可执行参数，当前不允许执行', '命令注入', write, true)
+  if (write && !allowWrite) return denied('写操作需要开启读写模式', '文件写入', true)
+  return { safe: true, blocked: false, isWrite: write, isUnknown: false }
 }

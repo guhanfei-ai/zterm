@@ -5,7 +5,7 @@
         <span class="provider-badge">OpenAI 兼容</span>
       </div>
       <h2 class="card-title">模型设置</h2>
-      <p class="card-desc">配置 AI 模型提供商连接参数，填写后可点击测试连接验证。</p>
+      <p class="card-desc">配置模型服务后可测试；测试会发送一条简短请求，验证所选模型的工具调用能力。</p>
     </div>
 
     <div class="card-body">
@@ -50,7 +50,7 @@
             <svg v-else width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
           </button>
         </div>
-        <span class="field-hint">{{ hasExistingKey ? '已有密钥，不修改则留空；输入新密钥将覆盖旧值' : '密钥只会存储在本地，不会上传到任何服务器' }}</span>
+        <span class="field-hint">{{ hasExistingKey ? '已有密钥，不修改则留空；输入新密钥将覆盖旧值' : '密钥加密保存在本机，请求时用于所配置服务的鉴权' }}</span>
       </div>
 
       <!-- 模型名称 -->
@@ -61,6 +61,16 @@
           class="field-input"
           placeholder="deepseek-flash"
         />
+      </div>
+
+      <div class="field">
+        <label class="field-label">模型上下文窗口（tokens）</label>
+        <input v-model.number="form.contextWindow" class="field-input" type="number" min="8192" max="2000000" />
+        <span class="field-hint">按服务商公布的模型限制填写，未知时使用保守默认值 32768</span>
+      </div>
+      <div class="field">
+        <label class="field-label">单次输出上限（tokens）</label>
+        <input v-model.number="form.maxOutputTokens" class="field-input" type="number" min="256" :max="form.contextWindow / 2" />
       </div>
 
       <!-- 流式响应 -->
@@ -134,7 +144,9 @@ const form = reactive({
   baseUrl: 'https://api.deepseek.com/v1',
   apiKey: '',
   model: 'deepseek-flash',
-  enableStreaming: true
+  enableStreaming: true,
+  contextWindow: 32768,
+  maxOutputTokens: 4096,
 })
 
 const valid = computed(
@@ -148,8 +160,10 @@ onMounted(async () => {
     form.baseUrl = config.baseUrl
     form.model = config.model
     form.enableStreaming = config.enableStreaming
+    form.contextWindow = config.contextWindow ?? 32768
+    form.maxOutputTokens = config.maxOutputTokens ?? 4096
     // 已保存密钥默认不回填，避免打开设置页时直接明文暴露。
-    if (config.apiKey && config.apiKey.length > 0) {
+    if (config.hasApiKey) {
       hasExistingKey.value = true
     }
   }
@@ -163,10 +177,9 @@ async function toggleKeyVisibility(): Promise<void> {
 
   if (!form.apiKey && hasExistingKey.value) {
     try {
-      const config = await window.electronAPI.ai.getProviderConfig()
-      if (config?.apiKey) {
-        form.apiKey = config.apiKey
-      }
+      const apiKey = await window.electronAPI.ai.revealApiKey()
+      if (!apiKey) return
+      form.apiKey = apiKey
     } catch {
       saveResult.value = '读取已保存密钥失败'
       saveResultClass.value = 'error'
@@ -191,17 +204,18 @@ async function onTest(): Promise<void> {
       apiKey: form.apiKey,
       model: form.model,
       enableStreaming: form.enableStreaming,
-      reasoningMode: 'auto'
+      reasoningMode: 'auto',
+      contextWindow: form.contextWindow, maxOutputTokens: form.maxOutputTokens
     })
     if (result.valid) {
-      testResult.value = '连接成功'
+      testResult.value = '模型与工具调用可用'
       testResultClass.value = 'success'
     } else {
       testResult.value = result.error || '连接失败'
       testResultClass.value = 'error'
     }
-  } catch {
-    testResult.value = '测试失败'
+  } catch (err) {
+    testResult.value = err instanceof Error ? err.message : '测试失败'
     testResultClass.value = 'error'
   } finally {
     testing.value = false
@@ -222,7 +236,8 @@ async function onSave(): Promise<void> {
       apiKey: form.apiKey.trim(),
       model: form.model.trim(),
       enableStreaming: form.enableStreaming,
-      reasoningMode: 'auto'
+      reasoningMode: 'auto',
+      contextWindow: form.contextWindow, maxOutputTokens: form.maxOutputTokens
     })
     if (result.success) {
       saveResult.value = '配置已保存'

@@ -552,7 +552,9 @@ function createExecuteCommandNode(ctx: AgentGraphContext) {
 
         attempted = true
         try {
-          const result = await bridge.executeAgentCommand(cmd, STEP_TIMEOUT_MS, signal)
+          const result = await bridge.executeAgentCommand(cmd, STEP_TIMEOUT_MS, signal,
+            () => !signal.aborted && !bridge.isDisposed() && !checkCommand(cmd, ctx.allowWrite ?? state.allowWrite).blocked)
+          if (result.authorizationDenied) return { kind: 'blocked', reason: '执行授权已撤销，业务命令未下发' }
           if (result.completion !== 'verified') markAgentTerminalUncertain(key as object)
           return { kind: 'exec', result }
         } catch (err) {

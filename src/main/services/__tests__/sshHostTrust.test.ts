@@ -136,6 +136,15 @@ describe('SSH 主机信任记录', () => {
 })
 
 describe('SSH 主机密钥握手', () => {
+  it('Koko 等调用方省略保护参数时仍强制指纹验证', async () => {
+    const client = new FakeClient()
+    const session = createTrustedSession(client)
+    const connecting = session.connect({ ...connection, requireHostTrust: undefined })
+    expect(typeof client.config?.hostVerifier).toBe('function')
+    const rejected = expect(connecting).rejects.toThrow()
+    session.disconnect()
+    await rejected
+  })
   it('未知主机在用户决定前不进入 ready，且仅本次信任不落盘', async () => {
     const client = new FakeClient()
     const session = createTrustedSession(client)

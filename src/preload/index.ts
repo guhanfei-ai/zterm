@@ -63,8 +63,9 @@ const api = {
   },
 
   ai: {
-    getProviderConfig: (): Promise<ProviderConfig | null> =>
+    getProviderConfig: (): Promise<(ProviderConfig & { hasApiKey: boolean }) | null> =>
       ipcRenderer.invoke('ai:getProviderConfig'),
+    revealApiKey: (): Promise<string | null> => ipcRenderer.invoke('ai:revealApiKey'),
     saveProviderConfig: (
       config: Omit<ProviderConfig, 'providerType'>
     ): Promise<{ success: boolean; error?: string }> => ipcRenderer.invoke('ai:saveProviderConfig', config),
@@ -175,6 +176,8 @@ const api = {
       ipcRenderer.invoke('terminal:respondHostTrust', data),
     resetHostTrust: (hostId: string): Promise<{ success: boolean; error?: string }> =>
       ipcRenderer.invoke('terminal:resetHostTrust', hostId),
+    resetHostTrustEndpoint: (data: { host: string; port: number }): Promise<{ success: boolean }> =>
+      ipcRenderer.invoke('terminal:resetHostTrustEndpoint', data),
     getRecentOutput: (tabId: string, lines?: number): Promise<string> =>
       ipcRenderer.invoke('terminal:getRecentOutput', tabId, lines),
     exportOutput: (data: { defaultFileName?: string; content: string }): Promise<{ success: boolean; filePath?: string; canceled?: boolean; error?: string }> =>

@@ -68,6 +68,7 @@ vi.mock('@earendil-works/pi-coding-agent', async (importOriginal) => {
         },
       }
       const session = {
+        setActiveToolsByName: vi.fn(),
         get prompts() { return stub.prompts },
         get rejectNext() { return stub.rejectNext },
         set rejectNext(v: boolean) { stub.rejectNext = v },
@@ -211,6 +212,12 @@ function makeConfig(overrides?: Record<string, string>) {
   }
 }
 
+/** 保留通用命令链路的生命周期回归，显式开启读写模式。 */
+function startLegacyTask(runtime: PiAgentRuntime, ...args: Parameters<PiAgentRuntime['startTask']>) {
+  const [tabId, description, maxSteps, bridge, callbacks, options] = args
+  return runtime.startTask(tabId, description, maxSteps, bridge, callbacks, { allowWrite: true, ...options })
+}
+
 async function execTool(
   tools: Parameters<PromptScript>[0],
   toolCallId: string,
@@ -276,7 +283,7 @@ describe('G01 旧任务迟到结果不写入新任务', () => {
       }, { timeout: 2000 })
     })
 
-    const oldTask = runtime.startTask('tab-g1', '旧任务', 25, oldBridge, callbacks, {
+    const oldTask = startLegacyTask(runtime, 'tab-g1', '旧任务', 25, oldBridge, callbacks, {
       userMessage: '旧任务',
     })
     await vi.waitFor(() => {
@@ -289,7 +296,7 @@ describe('G01 旧任务迟到结果不写入新任务', () => {
 
     // 新任务:同 tab、新绑定、rebuild;脚本空跑(纯收尾)
     promptScripts.push(async () => {})
-    await runtime.startTask('tab-g1', '新任务', 25, newBridge, callbacks, {
+    await startLegacyTask(runtime, 'tab-g1', '新任务', 25, newBridge, callbacks, {
       userMessage: '新任务', sessionPolicy: 'rebuild',
     })
 
@@ -321,7 +328,7 @@ describe('G01 旧任务迟到结果不写入新任务', () => {
     // 第一轮:挂起 prompt(会话保留)
     createdSessions.length = 0
     promptScripts.push(async () => {})
-    const first = runtime.startTask('tab-g1e', '任务一', 25, bridge, callbacks)
+    const first = startLegacyTask(runtime, 'tab-g1e', '任务一', 25, bridge, callbacks)
     await vi.waitFor(() => expect(createdSessions.length).toBe(1))
     const oldSession = createdSessions[0]
     oldSession.arrestPrompt()
@@ -331,7 +338,7 @@ describe('G01 旧任务迟到结果不写入新任务', () => {
 
     // 第二轮:rebuild(新 session、新 turn)
     promptScripts.push(async () => {})
-    const second = runtime.startTask('tab-g1e', '任务二', 25, bridge, callbacks, {
+    const second = startLegacyTask(runtime, 'tab-g1e', '任务二', 25, bridge, callbacks, {
       userMessage: '任务二', sessionPolicy: 'rebuild',
     })
     await vi.waitFor(() => expect(createdSessions.length).toBe(2))
@@ -371,7 +378,7 @@ describe('G01 旧任务迟到结果不写入新任务', () => {
     const callbacks = makeCallbacks()
 
     promptScripts.push(async () => {})
-    await runtime.startTask('tab-g1r', '任务一', 25, bridge, callbacks)
+    await startLegacyTask(runtime, 'tab-g1r', '任务一', 25, bridge, callbacks)
     runtime.removeTab('tab-g1r')
     expect(runtime.hasTab('tab-g1r')).toBe(false)
     // 旧 session 已 dispose
@@ -381,7 +388,7 @@ describe('G01 旧任务迟到结果不写入新任务', () => {
       const r = await execTool(tools, 'new-1', { command: 'uptime' })
       expect(r.details.error).toBeUndefined()
     })
-    await runtime.startTask('tab-g1r', '任务二', 25, bridge, callbacks)
+    await startLegacyTask(runtime, 'tab-g1r', '任务二', 25, bridge, callbacks)
     expect(fake.log.some((l) => l.includes('uptime'))).toBe(true)
   })
 })
@@ -402,7 +409,7 @@ describe('G02 继续执行时的配置传播', () => {
       await execTool(tools, 'a1', { command: 'uptime' })
       await execTool(tools, 'a2', { command: 'df -h' }) // 触发预算耗尽
     })
-    await runtime.startTask('tab-g2', '任务', 1, bridge, callbacks)
+    await startLegacyTask(runtime, 'tab-g2', '任务', 1, bridge, callbacks)
     expect(callbacks.states).toContain('stepLimitReached')
 
     // 配置修改入口(F04/G02 真实路径:设置页改配置 → Application 重读 →
@@ -431,7 +438,7 @@ describe('G02 继续执行时的配置传播', () => {
     const callbacks = makeCallbacks()
 
     promptScripts.push(async () => {})
-    await runtime.startTask('tab-g2b', '任务', 25, bridge, callbacks)
+    await startLegacyTask(runtime, 'tab-g2b', '任务', 25, bridge, callbacks)
 
     const beforeSessions = createdSessions.length
     promptScripts.push(async () => {})
@@ -492,7 +499,7 @@ describe('G03 系统提示文件不自动发现', () => {
     const bridge = new TerminalBridge(fake.session)
 
     promptScripts.push(async () => {})
-    await runtime.startTask('tab-g3', '任务', 25, bridge, makeCallbacks())
+    await startLegacyTask(runtime, 'tab-g3', '任务', 25, bridge, makeCallbacks())
 
     const opts = createdOptions[createdOptions.length - 1] as {
       resourceLoader?: { getSystemPrompt(): string | undefined; getAppendSystemPrompt(): string[] }

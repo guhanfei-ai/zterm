@@ -37,8 +37,9 @@ export function useSshHostTrust() {
     const current = request.value
     if (!current || current.kind !== 'changed') return
     const hostId = terminalStore.getTabById(current.tabId)?.hostId
-    if (!hostId) return
-    const result = await window.electronAPI.terminal.resetHostTrust(hostId)
+    const result = hostId
+      ? await window.electronAPI.terminal.resetHostTrust(hostId)
+      : await window.electronAPI.terminal.resetHostTrustEndpoint({ host: current.host, port: current.port })
     if (result.success) request.value = null
   }
 

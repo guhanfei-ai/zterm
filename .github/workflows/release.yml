@@ -13,11 +13,8 @@ jobs:
       matrix:
         include:
           - os: macos-latest
-            script: build:mac
           - os: windows-latest
-            script: build:win
           - os: ubuntu-latest
-            script: build:linux
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -27,7 +24,32 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run verify
-      - run: npm run ${{ matrix.script }}
+      - run: npm audit --omit=dev --audit-level=moderate
+      - name: macOS 签名与公证构建
+        if: runner.os == 'macOS'
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: 5MWQ45Z9F7
+        run: npm run build:mac -- --config.forceCodeSigning=true --config.mac.notarize=true
+      - name: 校验 macOS 公证票据
+        if: runner.os == 'macOS'
+        run: xcrun stapler validate builds/mac-arm64/zTerm.app
+      - name: Windows 签名构建
+        if: runner.os == 'Windows'
+        env:
+          CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
+          ZTERM_UPDATE_WIN_PUBLISHER: ${{ vars.ZTERM_UPDATE_WIN_PUBLISHER }}
+        shell: pwsh
+        run: |
+          if (-not $env:ZTERM_UPDATE_WIN_PUBLISHER) { throw '缺少受信任 Windows 发布者配置' }
+          npm run build:win -- --config.forceCodeSigning=true
+      - name: Linux 构建
+        if: runner.os == 'Linux'
+        run: npm run build:linux
       - uses: actions/upload-artifact@v4
         with:
           name: zterm-${{ matrix.os }}
@@ -59,6 +81,8 @@ jobs:
             echo '没有找到任何安装包' >&2
             exit 1
           fi
+          (cd builds && sha256sum * > SHA256SUMS)
+          assets+=(builds/SHA256SUMS)
           gh release create "${{ github.ref_name }}" \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \

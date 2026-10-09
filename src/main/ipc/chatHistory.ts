@@ -1,4 +1,4 @@
-import { ipcMain } from 'electron'
+import { registerIpcHandler } from '../services/ipcSecurity'
 import {
   clearChatHistory,
   loadChatHistory,
@@ -6,7 +6,7 @@ import {
 } from '../services/chatHistoryStore'
 
 export function registerChatHistoryIpc(): void {
-  ipcMain.handle('chatHistory:load', () => loadChatHistory())
-  ipcMain.handle('chatHistory:save', (_event, history: unknown) => saveChatHistory(history))
-  ipcMain.handle('chatHistory:clear', () => clearChatHistory())
+  registerIpcHandler('chatHistory:load', () => loadChatHistory())
+  registerIpcHandler('chatHistory:save', (_event, history: unknown) => saveChatHistory(history))
+  registerIpcHandler('chatHistory:clear', () => clearChatHistory())
 }

@@ -82,6 +82,7 @@ vi.mock('@earendil-works/pi-coding-agent', async (importOriginal) => {
       const listeners: Array<(e: AgentSessionEvent) => void> = []
       const stub = {
         prompts: [] as string[],
+        setActiveToolsByName: vi.fn(),
         disposed: false,
         emit: (event: AgentSessionEvent) => { for (const l of [...listeners]) l(event) },
         prompt: vi.fn(async (text: string) => {
@@ -217,23 +218,24 @@ async function waitForSettled(log: SinkLog, timeout = 3000): Promise<void> {
 async function execTool(
   tools: Parameters<PromptScript>[0],
   toolCallId: string,
-  params: Record<string, unknown>
+  params: Record<string, unknown>,
+  toolName = 'execute_bound_terminal',
 ) {
-  const t = tools.find((x) => x.name === 'execute_bound_terminal')
-  if (!t) throw new Error('execute_bound_terminal not registered')
+  const t = tools.find((x) => x.name === toolName)
+  if (!t) throw new Error(toolName + ' not registered')
   // SDK 真实行为:工具执行前后发 tool_execution_start/end 事件
   const session = createdSessions[createdSessions.length - 1]
   session.emit({
     type: 'tool_execution_start',
     toolCallId,
-    toolName: 'execute_bound_terminal',
+    toolName,
     args: params,
   } as unknown as AgentSessionEvent)
   const result = await t.execute(toolCallId, params, undefined, undefined, undefined)
   session.emit({
     type: 'tool_execution_end',
     toolCallId,
-    toolName: 'execute_bound_terminal',
+    toolName,
     result: { details: result.details, content: result.content },
     isError: false,
   } as unknown as AgentSessionEvent)
@@ -269,6 +271,7 @@ function thinkingDelta(text: string): AgentSessionEvent {
 async function bootAndFirstTurn(app: AgentApplication, sink: { send: (channel: string, payload: unknown) => void }, fake: FakeTerminal): Promise<{ success: boolean; error?: string }> {
   const bindResult = app.bind({ chatTabId: 'tab-h', terminalTabId: (fake.session as { tabId: string }).tabId }, sink)
   expect(bindResult.success).toBe(true)
+  expect(app.setAllowWrite(true, 'tab-h').success).toBe(true)
   promptScripts.push(async (tools) => {
     const r = await execTool(tools, 't1', { command: 'uptime' })
     expect(r.details.error).toBeUndefined()
@@ -330,6 +333,36 @@ async function seedPendingContext(
 }
 
 describe('恢复与改绑安全边界', () => {
+  it('默认读模式走内置读取并保存工具证据，切换模式同步 SDK 工具集合', async () => {
+    providerConfigStore = makeProviderConfig()
+    const fake = makeFakeSession()
+    const app = new AgentApplication()
+    app.setAiClient({} as never)
+    const { sink, log } = makeSink()
+    const tabId = 'tab-builtin-read'
+    expect(app.bind({ chatTabId: tabId, terminalTabId: fake.session.tabId }, sink).success).toBe(true)
+    promptScripts.push(async (tools) => {
+      const raw = await execTool(tools, 'raw-denied', { command: 'uptime' })
+      expect(raw.details).toMatchObject({ blocked: true })
+      const read = await execTool(tools, 'read-system', {}, 'read_bound_system')
+      expect(read.details).toMatchObject({ fidelity: 'verified', exitCode: 0 })
+      createdSessions.at(-1)!.emit(assistantMessageEnd('系统观察完成'))
+    })
+    expect((await app.startTask({ chatTabId: tabId, description: '看看系统', isNewTask: true }, sink)).success).toBe(true)
+    await waitForSettled(log)
+    const session = createdSessions.at(-1)!
+    expect(vi.mocked(session.setActiveToolsByName).mock.calls.at(-1)?.[0]).not.toContain('execute_bound_terminal')
+    expect(fake.writes.some((item) => item.includes('command uname'))).toBe(true)
+    const { loadContext } = await import('../agentContextStore')
+    expect(loadContext(tabId)?.conversationHistory?.some((turn) =>
+      turn.role === 'tool' && turn.command === '查看系统概况')).toBe(true)
+    expect(app.setAllowWrite(true, tabId).success).toBe(true)
+    expect(vi.mocked(session.setActiveToolsByName).mock.calls.at(-1)?.[0]).toContain('execute_bound_terminal')
+    expect(app.setAllowWrite(false, tabId).success).toBe(true)
+    expect(vi.mocked(session.setActiveToolsByName).mock.calls.at(-1)?.[0]).not.toContain('execute_bound_terminal')
+    expect(log.states.at(-1)).toBe('completed')
+  })
+
   it('旧任务在 A、当前绑定 B:拒绝恢复且零 prompt/零写入', async () => {
     providerConfigStore = makeProviderConfig()
     const a = makeFakeSession()
@@ -550,7 +583,7 @@ describe('恢复与改绑安全边界', () => {
     try {
       expect(app.bind({ chatTabId: 'tab-nonzero', terminalTabId: fake.session.tabId }, sink).success).toBe(true)
       promptScripts.push(async (tools) => {
-        const r = await execTool(tools, 'nonzero', { command: 'cat /definitely-missing' })
+        const r = await execTool(tools, 'nonzero', { path: '/definitely-missing' }, 'read_bound_file')
         expect(r.details).toMatchObject({ fidelity: 'verified', exitCode: 2 })
         createdSessions[createdSessions.length - 1].emit(assistantMessageEnd('文件不存在'))
       })
@@ -582,8 +615,8 @@ describe('恢复与改绑安全边界', () => {
     try {
       expect(app.bind({ chatTabId: 'tab-optional-probe', terminalTabId: fake.session.tabId }, sink).success).toBe(true)
       promptScripts.push(async (tools) => {
-        await execTool(tools, 'success', { command: 'uname -a' })
-        await execTool(tools, 'missing', { command: 'docker ps -a' })
+        await execTool(tools, 'success', {}, 'read_bound_system')
+        await execTool(tools, 'missing', {}, 'list_bound_sockets')
         createdSessions[createdSessions.length - 1].emit(assistantMessageEnd('Docker 未安装，系统为 Linux'))
       })
       expect((await app.startTask({ chatTabId: 'tab-optional-probe', description: '看看这台服务器上有啥', isNewTask: true }, sink)).success).toBe(true)
@@ -609,7 +642,7 @@ describe('恢复与改绑安全边界', () => {
     try {
       expect(app.bind({ chatTabId: 'tab-unknown-end', terminalTabId: fake.session.tabId }, sink).success).toBe(true)
       promptScripts.push(async (tools) => {
-        const r = await execTool(tools, 'unknown-end', { command: 'uptime' })
+        const r = await execTool(tools, 'unknown-end', {}, 'read_bound_system')
         expect(r.details.fidelity).toBe('timedOut')
         createdSessions[createdSessions.length - 1].emit(assistantMessageEnd('该命令结果未知'))
       })
@@ -706,6 +739,7 @@ describe('矩阵2:预算暂停 → 配置不变 → 点继续', () => {
     // 首轮:耗尽预算(maxSteps=1,第二条触发)
     const bindResult = app.bind({ chatTabId: 'tab-h', terminalTabId: fake.session.tabId }, sink)
     expect(bindResult.success).toBe(true)
+    expect(app.setAllowWrite(true, 'tab-h').success).toBe(true)
     promptScripts.push(async (tools) => {
       await execTool(tools, 't1', { command: 'uptime' })
       await execTool(tools, 't2', { command: 'df -h' }) // 触发预算耗尽
@@ -762,6 +796,7 @@ describe('矩阵3:配置变化后继续', () => {
       // 首轮:工具执行 + 回复 + 耗尽预算
       const bindResult = app.bind({ chatTabId: 'tab-h', terminalTabId: fake.session.tabId }, sink)
       expect(bindResult.success).toBe(true)
+      expect(app.setAllowWrite(true, 'tab-h').success).toBe(true)
       promptScripts.push(async (tools) => {
         await execTool(tools, 't1', { command: 'uptime' })
         await execTool(tools, 't2', { command: 'df -h' })
@@ -851,6 +886,7 @@ describe('矩阵4:旧轮迟到 vs 新轮正常事件', () => {
     // 用户重新绑定的真实路径:bind 到新终端 + startTask 新任务
     const rebind = app.bind({ chatTabId: 'tab-h', terminalTabId: newFake.session.tabId }, sink)
     expect(rebind.success).toBe(true)
+    expect(app.setAllowWrite(true, 'tab-h').success).toBe(true)
     promptScripts.push(async (tools) => {
       const r = await execTool(tools, 'n1', { command: 'hostname' })
       expect(r.details.error).toBeUndefined()
@@ -1111,6 +1147,15 @@ vi.mock('@earendil-works/pi-ai/compat', () => ({
 }))
 
 describe('M01 授权层单元:stop-only 后直接调用 provider 被拒', () => {
+  it('IPC 预算拒绝非有限值，不能绕过无人值守上限', async () => {
+    const app = new AgentApplication()
+    const { sink } = makeSink()
+    for (const maxSteps of [Number.NaN, Infinity, -1, 0, 1.5, 1001]) {
+      expect(await app.startTask({ chatTabId: 'budget-check', description: 'test', maxSteps }, sink))
+        .toMatchObject({ success: false, error: expect.stringContaining('预算') })
+      expect(app.continueTask(maxSteps, 'budget-check')).toMatchObject({ success: false, error: expect.stringContaining('预算') })
+    }
+  })
   async function modelSendViaProvider(sessionIndex: number): Promise<{ passedAuth: boolean }> {
     const opts = createdOptions[sessionIndex] as {
       modelRuntime?: {
@@ -1164,8 +1209,11 @@ describe('M01 授权层单元:stop-only 后直接调用 provider 被拒', () => 
     // 传输桩零调用(真实发送边界计数)
     expect(transportCalls.length).toBe(transportBefore)
 
-    // 合法新轮:追问 → 重建 → 正常发送
+    // 正控必须发生在新轮 prompt 内；收尾后没有后台发送授权。
+    const transportBeforeNew = transportCalls.length
+    let activePassed = false
     promptScripts.push(async () => {
+      activePassed = (await modelSendViaProvider(1)).passedAuth
       const newSession = createdSessions[createdSessions.length - 1]
       newSession.emit(assistantMessageEnd('新轮回复'))
     })
@@ -1174,9 +1222,9 @@ describe('M01 授权层单元:stop-only 后直接调用 provider 被拒', () => 
     await waitForSettled(log)
     expect(createdSessions.length).toBe(2)
 
-    const transportBeforeNew = transportCalls.length
+    expect(activePassed).toBe(true)
     const rn = await modelSendViaProvider(1)
-    expect(rn.passedAuth).toBe(true)
+    expect(rn.passedAuth).toBe(false)
     expect(transportCalls.length).toBe(transportBeforeNew + 1)
     const rOld = await modelSendViaProvider(0)
     expect(rOld.passedAuth).toBe(false)
@@ -1205,8 +1253,11 @@ describe('M01 授权层单元:stop-only 后直接调用 provider 被拒', () => 
     const rStopped = await modelSendViaProvider(0)
     expect(rStopped.passedAuth).toBe(false)
 
-    // 合法 reuse:stop 后追问(旧 prompt 已 settle)→ prompt 前升级授权
+    // 合法 reuse 在活动 prompt 内重新取得授权，收尾后再次拒绝。
+    const transportBefore = transportCalls.length
+    let activePassed = false
     promptScripts.push(async () => {
+      activePassed = (await modelSendViaProvider(0)).passedAuth
       const session = createdSessions[createdSessions.length - 1]
       session.emit(assistantMessageEnd('追问回复'))
     })
@@ -1214,9 +1265,9 @@ describe('M01 授权层单元:stop-only 后直接调用 provider 被拒', () => 
     expect(second.success).toBe(true)
     await waitForSettled(log)
 
-    const transportBefore = transportCalls.length
+    expect(activePassed).toBe(true)
     const rAfter = await modelSendViaProvider(0)
-    expect(rAfter.passedAuth).toBe(true)
+    expect(rAfter.passedAuth).toBe(false)
     expect(transportCalls.length).toBe(transportBefore + 1)
   })
 })
@@ -1344,10 +1395,10 @@ describe('K01:旧 preflight 恢复后的工具调用被不可逆拒绝', () => {
     expect(fake.writes.length).toBe(0)
 
     const newTools = (createdOptions[createdOptions.length - 1].customTools ?? []) as Parameters<PromptScript>[0]
-    const newTool = newTools.find((t) => t.name === 'execute_bound_terminal')!
-    const r3 = await newTool.execute('new-1', { command: 'hostname' }, undefined, undefined, undefined)
+    const newTool = newTools.find((t) => t.name === 'list_bound_processes')!
+    const r3 = await newTool.execute('new-1', {}, undefined, undefined, undefined)
     expect(r3.details.error).toBeUndefined()
-    expect(fake.writes.some((w) => w.includes('hostname'))).toBe(true)
+    expect(fake.writes.some((w) => w.includes('command ps'))).toBe(true)
     expect(fake.writes.some((w) => w.includes('uptime') || w.includes('df -h'))).toBe(false)
   })
 
@@ -1435,6 +1486,11 @@ describe('L01:旧 preflight 恢复后,旧模型请求在发送前被拒', () => 
     await setupOldPreflight2('tab-l1a', fake, app, sink)
 
     app.stop('tab-l1a')
+    let activeSent = false
+    promptScripts.push(async () => {
+      activeSent = (await modelSend(1)).sent
+      createdSessions[1].emit(assistantMessageEnd('新轮回复'))
+    })
     const followUp = app.startTask({ chatTabId: 'tab-l1a', description: '继续聊', maxSteps: 25 }, sink)
     await new Promise((r) => setTimeout(r, 50))
 
@@ -1450,8 +1506,9 @@ describe('L01:旧 preflight 恢复后,旧模型请求在发送前被拒', () => 
     expect(r2.sent).toBe(false)
     expect(r2.error).toContain('旧轮模型请求被拒绝')
 
+    expect(activeSent).toBe(true)
     const r3 = await modelSend(1)
-    expect(r3.error ?? '').not.toContain('旧轮模型请求被拒绝')
+    expect(r3.sent).toBe(false)
   })
 
   it('L01-b 超时重建后释放旧门:旧模型零发包,新轮正常工作不受影响', async () => {
@@ -1464,6 +1521,11 @@ describe('L01:旧 preflight 恢复后,旧模型请求在发送前被拒', () => 
     await setupOldPreflight2('tab-l1b', fake, app, sink)
 
     app.stop('tab-l1b')
+    let activeSent = false
+    promptScripts.push(async () => {
+      activeSent = (await modelSend(1)).sent
+      createdSessions[1].emit(assistantMessageEnd('新轮回复'))
+    })
     const followUp = app.startTask({ chatTabId: 'tab-l1b', description: '继续聊', maxSteps: 25 }, sink)
     await vi.waitFor(() => expect(createdSessions.length).toBe(2), { timeout: 5000 })
     await followUp
@@ -1474,8 +1536,9 @@ describe('L01:旧 preflight 恢复后,旧模型请求在发送前被拒', () => 
     expect(r.sent).toBe(false)
     expect(r.error).toContain('旧轮模型请求被拒绝')
 
+    expect(activeSent).toBe(true)
     const rn = await modelSend(1)
-    expect(rn.error ?? '').not.toContain('旧轮模型请求被拒绝')
+    expect(rn.sent).toBe(false)
 
     const oldTools = (createdOptions[0].customTools ?? []) as Parameters<PromptScript>[0]
     const oldTool = oldTools.find((t) => t.name === 'execute_bound_terminal')!

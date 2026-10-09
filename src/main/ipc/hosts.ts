@@ -1,7 +1,8 @@
-import { ipcMain, dialog, BrowserWindow } from 'electron'
+import { registerIpcHandler, confirmSecretDisclosure } from '../services/ipcSecurity'
+import { dialog, BrowserWindow } from 'electron'
 import { getStore } from '../services/store'
 import { storeSecret, getSecret, deleteSecret } from '../services/secretVault'
-import { v4 as uuidv4 } from 'uuid'
+import { randomUUID } from 'node:crypto'
 import { basename } from 'node:path'
 import { writeFileSync } from 'node:fs'
 import { serializeSshConfig } from '../services/sshConfigFile'
@@ -39,7 +40,7 @@ function saveAllHosts(hosts: HostRecord[]): void {
 }
 
 export function registerHostsIpc(): void {
-  ipcMain.handle('hosts:list', () => {
+  registerIpcHandler('hosts:list', () => {
     const hosts = getAllHosts()
     // Return without sensitive data
     return hosts.map((h) => ({
@@ -49,10 +50,15 @@ export function registerHostsIpc(): void {
     }))
   })
 
-  ipcMain.handle('hosts:get', (_event, id: string) => {
+  registerIpcHandler('hosts:get', async (event, id: string) => {
     const hosts = getAllHosts()
     const host = hosts.find((h) => h.id === id)
     if (!host) return null
+    if (host.authType === 'password' || host.authType === 'privateKeyFile') {
+      if (!await confirmSecretDisclosure(event, '主机密码或私钥口令')) {
+        return { ...host, password: undefined, privateKeyFilePassphrase: undefined }
+      }
+    }
 
     // Decrypt password if present — 注意：不要改 store 缓存对象本身，
     // 否则后续 saveAllHosts 可能把明文 password 一起持久化。
@@ -73,7 +79,7 @@ export function registerHostsIpc(): void {
     return host
   })
 
-  ipcMain.handle('hosts:pickPrivateKeyFile', async () => {
+  registerIpcHandler('hosts:pickPrivateKeyFile', async () => {
     try {
       const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0]
       const result = await dialog.showOpenDialog(win, {
@@ -99,7 +105,7 @@ export function registerHostsIpc(): void {
     }
   })
 
-  ipcMain.handle(
+  registerIpcHandler(
     'hosts:create',
     (
       _event,
@@ -119,7 +125,7 @@ export function registerHostsIpc(): void {
       const hosts = getAllHosts()
       const now = new Date().toISOString()
       const record: HostRecord = {
-        id: uuidv4(),
+        id: randomUUID(),
         name: data.name,
         host: data.host,
         port: data.port || 22,
@@ -151,7 +157,7 @@ export function registerHostsIpc(): void {
     }
   )
 
-  ipcMain.handle(
+  registerIpcHandler(
     'hosts:update',
     (
       _event,
@@ -174,6 +180,13 @@ export function registerHostsIpc(): void {
       if (idx === -1) return null
 
       const existing = hosts[idx]
+      const targetChanged = (data.host !== undefined && data.host !== existing.host) ||
+        (data.port !== undefined && data.port !== existing.port) ||
+        (data.username !== undefined && data.username !== existing.username)
+      // 已有密码不能随端点修改静默转送到另一台服务器。
+      if (targetChanged && existing.authType === 'password' && !data.password?.trim()) {
+        throw new Error('连接目标已变更，请重新填写该目标的密码')
+      }
       const nextAuthType = data.authType ?? existing.authType
       const nextPrivateKeyFilePath =
         nextAuthType === 'privateKeyFile'
@@ -229,7 +242,7 @@ export function registerHostsIpc(): void {
     }
   )
 
-  ipcMain.handle('hosts:delete', (_event, id: string): boolean => {
+  registerIpcHandler('hosts:delete', (_event, id: string): boolean => {
     let hosts = getAllHosts()
     const before = hosts.length
     hosts = hosts.filter((h) => h.id !== id)
@@ -249,7 +262,7 @@ export function registerHostsIpc(): void {
     return BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0]
   }
 
-  ipcMain.handle(
+  registerIpcHandler(
     'hosts:exportSshConfig',
     async (): Promise<{ success: boolean; filePath?: string; canceled?: boolean; error?: string }> => {
       const hosts = getAllHosts()

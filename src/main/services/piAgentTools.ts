@@ -1,7 +1,5 @@
 /**
- * Pi 自定义终端工具:read_bound_terminal_context + execute_bound_terminal。
- *
- * 这是 zTerm Agent 模式接入 Pi 后模型唯一可见的两个工具。
+ * Pi 自定义终端工具：内置观察工具与读写模式的通用命令。
  * host/terminalTabId/allowWrite 由宿主注入,模型不能用参数自由选择资产
  * 或提高权限(总纲 6.1)。
  *
@@ -22,6 +20,7 @@ import type { AgentCommandResult, TerminalBridge } from './terminalBridge'
 import type { SafetyCheck } from './safetyGuard'
 import type { AgentGraphCallbacks } from './agentGraph'
 import type { StepRecord } from './agentGraphState'
+import { createBuiltinReadTools, type PreparedRead, type ReadExecutionDetails } from './agentReadTools'
 import {
   getAgentTerminalKey,
   isAgentTerminalUncertain,
@@ -46,7 +45,7 @@ interface ReadToolDetails {
 }
 
 /** execute_bound_terminal 的 details 字段。 */
-interface ExecToolDetails {
+interface ExecToolDetails extends ReadExecutionDetails {
   skipped?: boolean
   reason?: string
   error?: string
@@ -191,7 +190,7 @@ function bindCallContext(ctx: PiToolExecutionContext) {
 // ---- 工具工厂 ----
 
 /**
- * 创建两个自定义终端工具。
+ * 注册观察工具和保留的通用执行实现；模型可见集合由 runtime 按模式选择。
  * 每次 startTask 时调用,turn 通过上下文传入(同一可变对象,非快照)。
  */
 export function createBoundTerminalTools(
@@ -259,27 +258,22 @@ export function createBoundTerminalTools(
     },
   })
 
-  const executeTool = defineTool<
-    typeof ExecuteCommandParams,
-    ExecToolDetails
-  >({
-    name: 'execute_bound_terminal',
-    label: '执行终端命令',
-    description:
-      '在已绑定的真实终端上执行一条命令并返回输出。每次调用在独立 POSIX 子 shell 中运行；cd/export/source 不会改变后续调用，必须与依赖它们的操作合并在同一条命令中。命令经 zTerm 安全策略校验:默认只读,危险命令永远阻断,写命令需用户已开启写模式。不能选择其他主机,不能提升权限。命令执行按终端串行,每次调用消耗一个命令预算;预算耗尽后停止执行。超时或结果不明的命令不会自动重试。',
-    parameters: ExecuteCommandParams,
-    executionMode: 'sequential',
-    async execute(
+  // 内置读操作与通用命令共用绑定、串行锁、预算、审计和可信完成协议。
+  // preparedRead 仅由宿主工具构造，模型参数不能启用这个通道。
+  const executeCommand = async (
       toolCallId: string,
       params: Static<typeof ExecuteCommandParams>,
       signal: AbortSignal | undefined,
-      ..._rest: ToolExecuteRest
-    ): Promise<AgentToolResult<ExecToolDetails>> {
+      preparedRead?: PreparedRead,
+    ): Promise<AgentToolResult<ExecToolDetails>> => {
       // F01/G01:入口绑定本次调用的 turn/bridge;后续用绑定值,
       // 完成时不再查找"最新任务" —— 旧轮迟到结果不写新轮。
-      const { turn, bridge, isConnectionValid, recordStep, nextStepNumber } = bindCallContext(ctx)
+      const { turn, bridge, isConnectionValid, recordStep: recordCommandStep, nextStepNumber } = bindCallContext(ctx)
       const command = params.command
       const plan = params.plan
+      const recordStep = (step: StepRecord): void => recordCommandStep(
+        preparedRead ? { ...step, command: preparedRead.label } : step
+      )
 
       // 防相同 toolCallId 重放
       if (turn.executedToolCallIds.has(toolCallId)) {
@@ -358,6 +352,12 @@ export function createBoundTerminalTools(
               return { kind: 'skip', reason: 'no_bound_terminal' }
             }
             if (isAgentTerminalUncertain(key)) return { kind: 'uncertain' }
+            if (!preparedRead && !turn.allowWrite) {
+              return { kind: 'blocked', safetyCheck: {
+                safe: false, blocked: true, isWrite: false, isUnknown: false,
+                reason: '读模式仅使用内置读工具，通用命令执行入口已关闭', category: '权限控制',
+              } }
+            }
             // PTY 行规程会在引号内照样解释回车、Ctrl-C、退格等字节；
             // 它们不能作为单行 sh -c 参数安全发送,必须在模型参数边界拒绝。
             if (/[\x00-\x1f\x7f]/.test(command)) {
@@ -366,7 +366,9 @@ export function createBoundTerminalTools(
                 reason: 'Agent 命令不能包含换行、回车或其他终端控制字符', category: '终端协议'
               } }
             }
-            const safetyCheck: SafetyCheck = checkCommand(command, turn.allowWrite)
+            const safetyCheck: SafetyCheck = preparedRead
+              ? { safe: true, blocked: false, isWrite: false, isUnknown: false, category: '内置读取' }
+              : checkCommand(command, turn.allowWrite)
             if (safetyCheck.blocked) return { kind: 'blocked', safetyCheck }
             // 在真实下发前先持久化 executing。若随后 stop/断线，旧轮结果事件可丢弃，
             // 但恢复历史仍明确知道该命令“可能已执行”，不会把它当作从未下发。
@@ -381,7 +383,12 @@ export function createBoundTerminalTools(
             })
             attempted = true
             try {
-              const result = await bridge.executeAgentCommand(command, STEP_TIMEOUT_MS, signal)
+              const result = await bridge.executeAgentCommand(command, STEP_TIMEOUT_MS, signal,
+                () => isConnectionValid() && (!!preparedRead || turn.allowWrite && !checkCommand(command, turn.allowWrite).blocked))
+              if (result.authorizationDenied) return { kind: 'blocked', safetyCheck: {
+                ...checkCommand(command, turn.allowWrite), safe: false, blocked: true,
+                reason: '执行授权已撤销，业务命令未下发', category: '权限控制',
+              } }
               // 没有可信结束标记时，即使输出已稳定/只读/下一轮也不能下发。
               if (result.completion !== 'verified') markAgentTerminalUncertain(key)
               return { kind: 'exec', safetyCheck, result }
@@ -463,7 +470,7 @@ export function createBoundTerminalTools(
         if (fidelity !== 'verified') turn.uncertainResult = true
         else turn.lastCommandExitCode = result.exitCode
 
-        const output = result.output || '(无输出)'
+        const output = result.output || (preparedRead ? '' : '(无输出)')
         const truncated = output.length > MAX_TOOL_OUTPUT_CHARS
 
         if (isWrite && fidelity !== 'verified') turn.unknownWriteCommands.add(command)
@@ -528,6 +535,7 @@ export function createBoundTerminalTools(
             exitCode: result.exitCode,
             fidelity,
             truncated,
+            ...(preparedRead ? { output: truncateToolOutput(output) } : {}),
           },
         }
       } catch (err) {
@@ -562,8 +570,47 @@ export function createBoundTerminalTools(
           terminate: true,
         }
       }
+    }
+
+  const executeTool = defineTool<typeof ExecuteCommandParams, ExecToolDetails>({
+    name: 'execute_bound_terminal',
+    label: '执行终端命令',
+    description:
+      '仅在用户开启读写模式后，在已绑定的真实终端自动执行命令。默认优先使用内置读工具取证。每次调用在独立 POSIX 子 shell 中运行；cd 不会改变后续调用。命令继续经过安全策略校验，危险命令永久阻断，解释器和不明确的命令仍拒绝。不能选择其他主机或提升权限。命令按终端串行并消耗预算，结果不明不会自动重试。',
+    parameters: ExecuteCommandParams,
+    executionMode: 'sequential',
+    async execute(toolCallId, params, signal) {
+      return executeCommand(toolCallId, params, signal)
     },
   })
 
-  return [readTool, executeTool]
+  const builtinReads = createBuiltinReadTools(async (toolCallId, prepare, signal) => {
+    const { turn, isConnectionValid } = bindCallContext(ctx)
+    if (!isConnectionValid()) return {
+      content: [{ type: 'text', text: '终端未绑定、已断开或任务已停止，读取未执行。' }],
+      details: { error: 'no_bound_terminal' }, terminate: true,
+    }
+    if (turn.executedToolCallIds.has(toolCallId)) return {
+      content: [{ type: 'text', text: '重复调用已跳过。' }],
+      details: { error: 'duplicate_tool_call_id' }, terminate: true,
+    }
+    if (turn.readCallsUsed >= READ_CALLS_LIMIT || turn.readLimitExhausted) {
+      turn.readLimitExhausted = true
+      return { content: [{ type: 'text', text: '本轮读取调用已达上限，请总结当前发现。' }],
+        details: { error: 'read_limit_exhausted' }, terminate: true }
+    }
+    turn.readCallsUsed++
+    let prepared: PreparedRead
+    try {
+      prepared = prepare()
+    } catch (error) {
+      turn.executedToolCallIds.add(toolCallId)
+      const reason = error instanceof Error ? error.message : '读取参数无效'
+      return { content: [{ type: 'text', text: '读取未执行：' + reason }],
+        details: { blocked: true, error: 'invalid_read_parameters', reason } }
+    }
+    return executeCommand(toolCallId, { command: prepared.command, plan: prepared.label }, signal, prepared)
+  })
+
+  return [readTool, executeTool, ...builtinReads]
 }

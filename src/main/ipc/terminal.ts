@@ -1,4 +1,5 @@
-import { ipcMain, BrowserWindow, dialog } from 'electron'
+import { registerIpcHandler } from '../services/ipcSecurity'
+import { BrowserWindow, dialog } from 'electron'
 import { TerminalSession } from '../services/terminalSessionManager'
 import { getSecret } from '../services/secretVault'
 import { getStore } from '../services/store'
@@ -333,7 +334,8 @@ async function connectJumpserverTerminal(data: {
           host: connectHosts[index],
           port: kokoResolve.params.port,
           username: kokoResolve.params.username,
-          password: kokoResolve.params.password
+          password: kokoResolve.params.password,
+          requireHostTrust: true
         })
         break
       } catch (err) {
@@ -379,7 +381,7 @@ async function connectJumpserverTerminal(data: {
 }
 
 export function registerTerminalIpc(): void {
-  ipcMain.handle(
+  registerIpcHandler(
     'terminal:connect',
     async (
       _event,
@@ -387,7 +389,7 @@ export function registerTerminalIpc(): void {
     ): Promise<TerminalConnectResult> => connectDirectTerminal(data)
   )
 
-  ipcMain.handle(
+  registerIpcHandler(
     'terminal:respondHostTrust',
     (_event, data: unknown): { success: boolean; error?: string } => {
       if (!data || typeof data !== 'object' || Array.isArray(data)) {
@@ -413,7 +415,7 @@ export function registerTerminalIpc(): void {
     }
   )
 
-  ipcMain.handle('terminal:resetHostTrust', (_event, hostId: unknown): { success: boolean; error?: string } => {
+  registerIpcHandler('terminal:resetHostTrust', (_event, hostId: unknown): { success: boolean; error?: string } => {
     if (typeof hostId !== 'string' || !hostId) return { success: false, error: '主机标识无效' }
     const rawHosts = getStore().get('hosts_list')
     const hosts: HostRecord[] = Array.isArray(rawHosts) ? (rawHosts as HostRecord[]) : []
@@ -423,11 +425,16 @@ export function registerTerminalIpc(): void {
     return { success: true }
   })
 
+  // Koko 端点不属于普通主机列表；使用已展示的端点移除信任，仍须重新连接确认。
+  registerIpcHandler('terminal:resetHostTrustEndpoint', (_event, data: { host: string; port: number }) => {
+    return { success: resetSshHostTrustRecord(data?.host, data?.port) }
+  })
+
   // ===== Jumpserver 终端连接入口（v4.3：经 koko SSH 令牌直连）=====
   // 路线：旧 tokenId 查上下文 → 现连现创 fresh 令牌 → resolveKokoSshParams 组装 koko SSH 参数
   //       → 复用 ssh2 TerminalSession.connect() + openShell()
   // 不再依赖 /exchange/ 做直连判断（exchangeJumpserverConnectionToken 函数本体保留不删）
-  ipcMain.handle(
+  registerIpcHandler(
     'terminal:connectJumpserver',
     async (
       _event,
@@ -450,7 +457,7 @@ export function registerTerminalIpc(): void {
     }
   )
 
-  ipcMain.handle(
+  registerIpcHandler(
     'terminal:reconnect',
     async (
       _event,
@@ -494,7 +501,7 @@ export function registerTerminalIpc(): void {
   )
 
   // ===== 本地终端连接入口 =====
-  ipcMain.handle(
+  registerIpcHandler(
     'terminal:connectLocal',
     async (
       _event,
@@ -526,7 +533,7 @@ export function registerTerminalIpc(): void {
 
   // P2-1：write 改 handle 拿到 ack，避免 renderer 端高频按键时 send 调用堆积。
   // 异常路径显式返回 error 字符串，让 renderer 可以感知。
-  ipcMain.handle('terminal:write', (_event, data: { tabId: string; data: string }) => {
+  registerIpcHandler('terminal:write', (_event, data: { tabId: string; data: string }) => {
     try {
       // 优先查 SSH 会话，再查本地会话
       const sshSession = terminalSessionManager.getSession(data.tabId)
@@ -545,7 +552,7 @@ export function registerTerminalIpc(): void {
     }
   })
 
-  ipcMain.handle('terminal:resize', (_event, tabId: string, cols: number, rows: number) => {
+  registerIpcHandler('terminal:resize', (_event, tabId: string, cols: number, rows: number) => {
     try {
       const sshSession = terminalSessionManager.getSession(tabId)
       if (sshSession) {
@@ -561,7 +568,7 @@ export function registerTerminalIpc(): void {
     }
   })
 
-  ipcMain.handle('terminal:disconnect', (_event, tabId: string) => {
+  registerIpcHandler('terminal:disconnect', (_event, tabId: string) => {
     try {
       // 同时检查 SSH 会话和本地会话
       if (terminalSessionManager.hasSession(tabId)) {
@@ -575,7 +582,7 @@ export function registerTerminalIpc(): void {
     return { success: true }
   })
 
-  ipcMain.handle('terminal:getRecentOutput', (_event, tabId: string, lines: number) => {
+  registerIpcHandler('terminal:getRecentOutput', (_event, tabId: string, lines: number) => {
     const sshSession = terminalSessionManager.getSession(tabId)
     if (sshSession) {
       return sshSession.getRecentOutput(lines || 200)
@@ -587,7 +594,7 @@ export function registerTerminalIpc(): void {
     return ''
   })
 
-  ipcMain.handle('terminal:getCurrentHost', (_event, tabId: string) => {
+  registerIpcHandler('terminal:getCurrentHost', (_event, tabId: string) => {
     const session = terminalSessionManager.getSession(tabId)
     if (session) {
       return session.currentHost || null
@@ -596,7 +603,7 @@ export function registerTerminalIpc(): void {
     return null
   })
 
-  ipcMain.handle('terminal:isConnected', (_event, tabId: string) => {
+  registerIpcHandler('terminal:isConnected', (_event, tabId: string) => {
     const sshSession = terminalSessionManager.getSession(tabId)
     if (sshSession) return sshSession.connected
     const localSession = getLocalSession(tabId)
@@ -605,7 +612,7 @@ export function registerTerminalIpc(): void {
 
   // 导出终端记录：内容（含滚动回溯）由渲染进程从 xterm buffer 读取，
   // 主进程只负责选路径、写文件，不缓存终端输出。
-  ipcMain.handle(
+  registerIpcHandler(
     'terminal:exportOutput',
     async (
       _event,

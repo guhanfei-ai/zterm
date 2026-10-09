@@ -1,4 +1,4 @@
-import { ipcMain } from 'electron'
+import { registerIpcHandler } from '../services/ipcSecurity'
 import {
   clearWorkspaceSnapshot,
   loadWorkspaceSnapshot,
@@ -6,7 +6,7 @@ import {
 } from '../services/workspaceSnapshotStore'
 
 export function registerWorkspaceIpc(): void {
-  ipcMain.handle('workspace:load', () => loadWorkspaceSnapshot())
-  ipcMain.handle('workspace:save', (_event, snapshot: unknown) => saveWorkspaceSnapshot(snapshot))
-  ipcMain.handle('workspace:clear', () => clearWorkspaceSnapshot())
+  registerIpcHandler('workspace:load', () => loadWorkspaceSnapshot())
+  registerIpcHandler('workspace:save', (_event, snapshot: unknown) => saveWorkspaceSnapshot(snapshot))
+  registerIpcHandler('workspace:clear', () => clearWorkspaceSnapshot())
 }

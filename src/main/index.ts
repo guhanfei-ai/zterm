@@ -1,4 +1,4 @@
-import { app, BrowserWindow, shell, ipcMain, dialog } from 'electron'
+import { app, BrowserWindow, shell, dialog } from 'electron'
 import { join } from 'path'
 import { existsSync } from 'fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
@@ -17,6 +17,7 @@ import { registerChatHistoryIpc } from './ipc/chatHistory'
 import { initStore } from './services/store'
 import { initSecretVault } from './services/secretVault'
 import { calculateWindowOptions } from './services/windowState'
+import { configureTrustedRenderer, isTrustedRendererUrl, registerIpcHandler } from './services/ipcSecurity'
 
 function resolvePreloadPath(): string {
   const jsPath = join(__dirname, '../preload/index.js')
@@ -27,20 +28,7 @@ function resolvePreloadPath(): string {
 }
 
 function isAllowedAppNavigation(url: string): boolean {
-  if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
-    try {
-      return new URL(url).origin === new URL(process.env['ELECTRON_RENDERER_URL']).origin
-    } catch {
-      return false
-    }
-  }
-
-  try {
-    const parsed = new URL(url)
-    return parsed.protocol === 'file:' && parsed.pathname.endsWith('/index.html')
-  } catch {
-    return false
-  }
+  return isTrustedRendererUrl(url)
 }
 
 function handleNavigationAttempt(event: Electron.Event, url: string): void {
@@ -74,7 +62,7 @@ function createWindow(): BrowserWindow {
     ),
     webPreferences: {
       preload: resolvePreloadPath(),
-      sandbox: false,
+      sandbox: true,
       contextIsolation: true,
       nodeIntegration: false
     }
@@ -128,6 +116,8 @@ function tryInit(label: string, fn: () => void): void {
 }
 
 app.whenReady().then(() => {
+  configureTrustedRenderer(join(__dirname, '../renderer/index.html'),
+    is.dev ? process.env['ELECTRON_RENDERER_URL'] : undefined)
   electronApp.setAppUserModelId('com.zterm')
 
   app.on('browser-window-created', (_, window) => {
@@ -154,8 +144,8 @@ app.whenReady().then(() => {
   // handler 内动态取当前窗口，不闭包引用某个具体窗口实例
   const getTargetWindow = (): BrowserWindow | undefined =>
     BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
-  ipcMain.handle('window:minimize', () => getTargetWindow()?.minimize())
-  ipcMain.handle('window:maximize', () => {
+  registerIpcHandler('window:minimize', () => getTargetWindow()?.minimize())
+  registerIpcHandler('window:maximize', () => {
     const win = getTargetWindow()
     if (!win) return
     if (win.isMaximized()) {
@@ -164,8 +154,8 @@ app.whenReady().then(() => {
       win.maximize()
     }
   })
-  ipcMain.handle('window:close', () => getTargetWindow()?.close())
-  ipcMain.handle('window:isMaximized', () => getTargetWindow()?.isMaximized() ?? false)
+  registerIpcHandler('window:close', () => getTargetWindow()?.close())
+  registerIpcHandler('window:isMaximized', () => getTargetWindow()?.isMaximized() ?? false)
 
   try {
     createWindow()

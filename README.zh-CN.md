@@ -12,7 +12,7 @@ zTerm 是一个开源的 Electron 终端应用，提供可选的 AI 辅助能力
 - 终端搜索（`Cmd/Ctrl+F`）与终端记录导出
 - 主机列表导出为 OpenSSH config（不含密码与私钥内容）
 - 工作区与 AI 聊天记录持久化，重启后可恢复
-- Chat / Agent 两种 AI 模式，可附带终端上下文，命令有安全检查与读写分级（默认只读，高危命令一律拦截）
+- Chat / Agent 两种 AI 模式，可附带终端上下文；Agent 默认读模式，用内置工具查看目录、文件、文本、系统、进程和端口；开启读写模式后自动执行受安全策略约束的命令，高危命令一律拦截
 
 ## 开发
 
@@ -22,7 +22,9 @@ cp .env.example .env
 npm run dev
 ```
 
-设置 `OPENAI_API_KEY` 即可启用 AI 功能。SSH 主机和 Jumpserver 实例均在应用内配置；项目不内置任何服务器或凭据。
+在应用内「设置 → 模型服务」配置地址、模型及 API 密钥即可启用 AI。Agent 默认使用固定版本的 Pi SDK；模型需要支持原生工具调用。命令使用受限 shell 语法，解释器、命令替换及不明确的命令会被拒绝。SSH 主机和 Jumpserver 实例均在应用内配置；项目不内置任何服务器或凭据。
+
+内置读工具复用已绑定的本地、SSH 或 Jumpserver 终端，远端无需安装 zTerm 组件。文件读取和搜索有大小上限，文本搜索目前只覆盖单文件或目录直接子文件；端口查询使用目标已有的 ss 或 lsof，权限不足或工具缺失会如实返回。读模式不开放 AI 自行拼装命令的入口；原执行实现保留供读写模式使用。切回读模式后，尚未下发的通用命令会被拒绝。
 
 ## 打包
 
@@ -39,7 +41,7 @@ npm run dev
 
 ## 分支与 CI
 
-`main` 为稳定分支，`dev` 为集成分支，短生命周期的 `dev/<topic>` 或 `feature/<topic>` 分支用于承载具体功能开发。每次 push 和 pull request 时，GitHub Actions 会运行类型检查与测试；只有在推送 `v*` 标签时，才会构建 macOS、Windows 和 Linux 安装包并发布到 GitHub Release。
+`main` 为稳定分支，`dev` 为集成分支，短生命周期的 `dev/<topic>` 或 `feature/<topic>` 分支用于承载具体功能开发。每次 push 和 pull request 时，GitHub Actions 会运行类型检查、测试、生产依赖审计及代码构建；只有在推送 `v*` 标签时，才会构建安装包。正式 macOS 发布要求签名与公证，Windows 要求签名及发布者身份配置；缺少凭据时发布会失败，不会上传未验证的正式安装包。
 
 ## 许可证
 

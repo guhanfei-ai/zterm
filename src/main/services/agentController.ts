@@ -10,9 +10,7 @@ import { EventEmitter } from 'events'
 import { AiClient, type ProviderConfig } from './aiClient'
 import { TerminalBridge } from './terminalBridge'
 import type { AgentRuntime, AgentEngine } from './agentRuntime'
-import { readAgentEnginePreference } from './agentRuntime'
 import { createAgentRuntime } from './agentRuntimeFactory'
-import { getStore } from './store'
 import { AgentGraphCallbacks } from './agentGraph'
 import { GraphPhase, StopReason } from './agentGraphState'
 import type { SafetyCheck } from './safetyGuard'
@@ -205,7 +203,9 @@ export class AgentController extends EventEmitter {
   private runtimeEngine: AgentEngine | null = null
 
   init(aiClient: AiClient, bridge: TerminalBridge, config: ProviderConfig): void {
-    const selectedEngine = readAgentEnginePreference(getStore().get.bind(getStore()))
+    // 产品的两种权限模式统一走 Pi 内置工具；旧 Graph 实现保留，
+    // 但旧设置或环境变量不能重新开放“读模式拼命令”的入口。
+    const selectedEngine: AgentEngine = 'pi'
     if (this.runtime && this.runtimeEngine && this.runtimeEngine !== selectedEngine) {
       if (this.chatTabId && this.runtime.isRunning(this.chatTabId)) {
         throw new Error('Agent 正在运行，不能切换执行内核')

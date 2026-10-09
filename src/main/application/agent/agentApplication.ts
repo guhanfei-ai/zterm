@@ -74,8 +74,11 @@ export class AgentApplication {
 
   async startTask(command: StartAgentTaskCommand, sink: AgentEventSink): Promise<{ success: boolean; error?: string }> {
     try {
-      if (!command?.chatTabId || !command.description) {
+      if (typeof command?.chatTabId !== 'string' || typeof command.description !== 'string' || !command.chatTabId || !command.description.trim()) {
         return { success: false, error: '缺少对话标签或任务描述' }
+      }
+      if (command.maxSteps !== undefined && (!Number.isSafeInteger(command.maxSteps) || command.maxSteps < 1 || command.maxSteps > 1000)) {
+        return { success: false, error: '命令预算必须是 1～1000 的整数' }
       }
       if (!this.aiClient) return { success: false, error: 'Agent 服务未初始化' }
 
@@ -206,6 +209,9 @@ export class AgentApplication {
   }
 
   continueTask(additionalSteps?: number, chatTabId?: string): { success: boolean; error?: string } {
+    if (additionalSteps !== undefined && (!Number.isSafeInteger(additionalSteps) || additionalSteps < 1 || additionalSteps > 1000)) {
+      return { success: false, error: '命令预算必须是 1～1000 的整数' }
+    }
     const tab = chatTabId ? this.tabs.get(chatTabId) : undefined
     if (!tab) return { success: false, error: '未找到 Agent 会话' }
     try {
@@ -257,6 +263,9 @@ export class AgentApplication {
     tab.controller.setChatTabId(command.chatTabId)
     const session = this.resolveAnySession(command.terminalTabId)
     if (!session?.connected) return { success: false, error: '终端未连接，无法绑定' }
+    if (process.platform === 'win32' && session.sessionMeta?.source === 'local') {
+      return { success: false, error: 'Windows 本地终端暂不支持 Agent 完成协议；请绑定具有 POSIX Shell 的 SSH 或 Jumpserver 终端' }
+    }
     const config = this.getProviderConfig()
     if (!this.aiClient || !config) return { success: false, error: 'Agent 服务未初始化或模型未配置' }
 

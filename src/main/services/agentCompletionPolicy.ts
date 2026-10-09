@@ -13,6 +13,6 @@ export function isMissingOptionalProbe(
   if (allowWrite || lastExitCode !== 127) return false
   const executed = steps.filter((step) => step.status === 'done' && !!step.command)
   const last = executed.at(-1)
-  if (!last || steps.at(-1) !== last || last.exitCode !== 127 || !/(?:command not found|command not recognized)/i.test(last.commandOutput || '')) return false
+  if (!last || steps.at(-1) !== last || last.exitCode !== 127 || !/(?:command not found|command not recognized|:\s*[^\n:]+:\s*not found)/i.test(last.commandOutput || '')) return false
   return executed.slice(0, -1).some((step) => step.exitCode === 0)
 }

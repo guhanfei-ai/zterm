@@ -3,7 +3,6 @@ import { ref, computed } from 'vue'
 import type { ChatMessage } from '../types/chat'
 import type { AgentMessage, AgentStatus, AgentState } from '../../../main/services/agentController'
 import type { AgentContextSnapshot } from '../../../main/services/agentContextStore'
-import { v4 as uuidv4 } from 'uuid'
 import type { ChatTabSnapshot } from '../../../main/model/workspace'
 import type { ChatHistoryV1 } from '../../../main/model/chatHistory'
 
@@ -57,7 +56,7 @@ export interface ChatTab {
 
 function createChatTab(override?: Partial<ChatTab>): ChatTab {
   return {
-    id: uuidv4(),
+    id: crypto.randomUUID(),
     title: '对话',
     mode: 'agent',
     messages: [],
@@ -152,7 +151,7 @@ export const useChatStore = defineStore('chat', () => {
   // ---- Chat mode functions (active tab) ----
   function addUserMessage(text: string): ChatMessage {
     const msg: ChatMessage = {
-      id: uuidv4(),
+      id: crypto.randomUUID(),
       role: 'user',
       text,
       status: 'done',
@@ -164,7 +163,7 @@ export const useChatStore = defineStore('chat', () => {
 
   function addAssistantMessage(): ChatMessage {
     const msg: ChatMessage = {
-      id: uuidv4(),
+      id: crypto.randomUUID(),
       role: 'assistant',
       text: '',
       reasoning: '',

@@ -39,7 +39,7 @@ export const ZTERM_PROVIDER_ID = 'zterm-openai-completions'
 
 /**
  * 纯内存 CredentialStore(R04):
- * 0.87.1 不再导出 AuthStorage,自实现接口 —— 一个 provider 一条 api_key 凭据,
+ * Pi 的 CredentialStore 接口 —— 一个 provider 一条 api_key 凭据,
  * 全部留在内存,不读写任何文件,没有命令型配置解析入口。
  */
 class InMemoryCredentialStore implements CredentialStore {
@@ -103,8 +103,8 @@ export function buildCompletionsModel(config: ProviderConfig): Model<'openai-com
     reasoning: config.reasoningMode === 'auto',
     input: ['text'],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 128000,
-    maxTokens: 4096,
+    contextWindow: config.contextWindow ?? 32768,
+    maxTokens: config.maxOutputTokens ?? 4096,
   }
 }
 
@@ -192,6 +192,8 @@ export async function buildPiModelSetup(
 
   // R04/F05:Settings 全内存 —— 优先复用宿主共享实例
   const settingsManager = options?.settingsManager ?? SettingsManager.inMemory()
+  // 宿主未授权后台保温请求；模型发送只能由当前人类启动的轮次发起。
+  settingsManager.setCacheWarmingMode('off')
 
   // 会话上下文内存维护(历史导入见 piAgentRuntime 的 buildHistoryEntries)
   const sessionManager = SessionManager.inMemory()

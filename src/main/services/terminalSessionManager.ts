@@ -1,3 +1,4 @@
+import { TerminalOutputBuffer } from './terminalOutputBuffer'
 import ssh2 from 'ssh2'
 import type { Client, ConnectConfig, ClientChannel } from 'ssh2'
 import { EventEmitter } from 'events'
@@ -68,8 +69,7 @@ export class TerminalSession extends EventEmitter {
   public sessionMeta?: SessionMeta
   /** 本连接实际通过校验的 SSH host key；trust-once 也必须进入 Agent 目标身份。 */
   public verifiedHostKey?: { algorithm: string; fingerprint: string }
-  private outputBuffer: string[] = []
-  private maxBufferLines = 5000
+  private outputBuffer = new TerminalOutputBuffer()
   private connHadError = false
   private keepaliveTriggered = false
   private closedEmitted = false
@@ -233,9 +233,8 @@ export class TerminalSession extends EventEmitter {
         keepaliveCountMax: 3
       }
 
-      if (opts.requireHostTrust) {
-        config.hostVerifier = (key: Buffer, verify: (allowed: boolean) => void) => this.verifyHostKey(opts, key, verify)
-      }
+      // 所有 SSH 通道（含 Koko）都必须验证服务端身份，调用方不能省略保护。
+      config.hostVerifier = (key: Buffer, verify: (allowed: boolean) => void) => this.verifyHostKey(opts, key, verify)
 
       if (opts.privateKey) {
         config.privateKey = opts.privateKey
@@ -303,9 +302,6 @@ export class TerminalSession extends EventEmitter {
 
           stream.on('data', (data: Buffer) => {
             this.outputBuffer.push(data.toString())
-            if (this.outputBuffer.length > this.maxBufferLines) {
-              this.outputBuffer = this.outputBuffer.slice(-this.maxBufferLines)
-            }
             this.emit('data', data)
           })
 
@@ -347,9 +343,7 @@ export class TerminalSession extends EventEmitter {
 
   getRecentOutput(lines: number): string {
     // 先 join 再按 \n split，确保按行截断而非按 buffer 元素截取
-    const joined = this.outputBuffer.join('')
-    const allLines = joined.split('\n')
-    return allLines.slice(-lines).join('\n')
+    return this.outputBuffer.recent(lines)
   }
 
   disconnect(): void {
@@ -374,7 +368,7 @@ export class TerminalSession extends EventEmitter {
     this.connected = false
     this.currentHost = undefined
     this.sessionMeta = undefined
-    this.outputBuffer = []
+    this.outputBuffer.clear()
     this.emitClosedOnce('user-disconnect', false)
     this.removeAllListeners()
   }

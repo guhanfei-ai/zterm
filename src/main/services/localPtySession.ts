@@ -1,3 +1,4 @@
+import { TerminalOutputBuffer } from './terminalOutputBuffer'
 import { EventEmitter } from 'events'
 import * as fs from 'fs'
 import * as pty from 'node-pty'
@@ -14,8 +15,7 @@ export class LocalPtySession extends EventEmitter {
   public connected = false
   public sessionMeta?: SessionMeta
   private ptyProcess: pty.IPty | null = null
-  private outputBuffer: string[] = []
-  private maxBufferLines = 5000
+  private outputBuffer = new TerminalOutputBuffer()
   private hadOutput = false // 是否曾收到 shell 输出，用于区分“启动失败”与“运行中退出”
   private disconnectRequested = false // 主动断开标记：grace 期内的 kill 不判“启动失败”
 
@@ -54,9 +54,6 @@ export class LocalPtySession extends EventEmitter {
         this.ptyProcess.onData((data: string) => {
           this.hadOutput = true
           this.outputBuffer.push(data)
-          if (this.outputBuffer.length > this.maxBufferLines) {
-            this.outputBuffer = this.outputBuffer.slice(-this.maxBufferLines)
-          }
           this.emit('data', Buffer.from(data, 'utf-8'))
         })
 
@@ -142,9 +139,7 @@ export class LocalPtySession extends EventEmitter {
     // outputBuffer 元素是任意大小的输出块，块边界与行边界无关：
     // 按 chunk 数截取会把一行腰斩、长度完全不可控，
     // Agent 的行级 diff（extractLineDelta）与观察提取会拿到错位内容
-    const joined = this.outputBuffer.join('')
-    const allLines = joined.split('\n')
-    return allLines.slice(-lines).join('\n')
+    return this.outputBuffer.recent(lines)
   }
 
   disconnect(): void {
@@ -159,7 +154,7 @@ export class LocalPtySession extends EventEmitter {
     }
     this.connected = false
     this.hadOutput = false
-    this.outputBuffer = []
+    this.outputBuffer.clear()
     // 统一 closed 事件签名（C1）
     this.emit('closed', { reason: 'user-disconnect', hadError: false })
     this.removeAllListeners()

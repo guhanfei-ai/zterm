@@ -5,7 +5,7 @@ const ENCRYPTED_PREFIX = '__encrypted__'
 
 export function initSecretVault(): void {
   // P2-2：safeStorage 不可用时不再静默降级，记录强警告让用户从启动日志/UI 立刻知情。
-  if (!safeStorage.isEncryptionAvailable()) {
+  if (!isEncryptionReady()) {
     console.warn(
       '[secretVault] safeStorage 加密不可用。后续 storeSecret 调用会拒绝写入（throw），' +
         '避免凭据以明文落盘。请检查系统钥匙串/凭据管理器是否被禁用。'
@@ -14,7 +14,8 @@ export function initSecretVault(): void {
 }
 
 function isEncryptionReady(): boolean {
-  return safeStorage.isEncryptionAvailable()
+  return safeStorage.isEncryptionAvailable() &&
+    (process.platform !== 'linux' || safeStorage.getSelectedStorageBackend() !== 'basic_text')
 }
 
 function encrypt(value: string): string {
@@ -29,12 +30,13 @@ function encrypt(value: string): string {
 }
 
 function decrypt(value: string): string {
-  if (value.startsWith(ENCRYPTED_PREFIX) && safeStorage.isEncryptionAvailable()) {
+  if (value.startsWith(ENCRYPTED_PREFIX)) {
+    if (!isEncryptionReady()) throw new Error('凭据安全存储不可用，请检查系统钥匙串后重试')
     try {
       const buf = Buffer.from(value.slice(ENCRYPTED_PREFIX.length), 'base64')
       return safeStorage.decryptString(buf)
     } catch {
-      return value
+      throw new Error('凭据解密失败，请检查系统钥匙串或重新保存凭据')
     }
   }
   return value

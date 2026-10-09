@@ -39,6 +39,7 @@ vi.mock('@earendil-works/pi-coding-agent', async (importOriginal) => {
       const listeners: Array<(e: AgentSessionEvent) => void> = []
       const stub = {
         prompts: [] as string[],
+        setActiveToolsByName: vi.fn(),
         disposed: false,
         prompt: vi.fn(async (text: string) => {
           stub.prompts.push(text)
@@ -162,6 +163,12 @@ function makeFakeSession(): FakeTerminal {
 //  通用脚手架
 // ================================================================
 
+/** 本文件保留通用执行链路的生命周期回归，明确开启读写权限。 */
+function startLegacyTask(runtime: PiAgentRuntime, ...args: Parameters<PiAgentRuntime['startTask']>) {
+  const [tabId, description, maxSteps, bridge, callbacks, options] = args
+  return runtime.startTask(tabId, description, maxSteps, bridge, callbacks, { allowWrite: true, ...options })
+}
+
 interface RecordedCallbacks {
   messages: Array<{ type: string; content: string; details?: Record<string, unknown>; stepNumber?: number }>
   states: string[]
@@ -236,7 +243,7 @@ describe('F01 第二轮与续跑的真实工具调用', () => {
       const r = await execTool(tools, 't1', { command: 'uptime' })
       expect(r.details.error).toBeUndefined()
     })
-    await runtime.startTask('tab-f1', '任务', 25, bridge1, callbacks, { userMessage: '第一轮' })
+    await startLegacyTask(runtime, 'tab-f1', '任务', 25, bridge1, callbacks, { userMessage: '第一轮' })
     expect(fake1.log.some((l) => l.includes('uptime'))).toBe(true)
     expect(callbacks.states).toContain('completed') // 有命令执行 → completed
 
@@ -246,7 +253,7 @@ describe('F01 第二轮与续跑的真实工具调用', () => {
       // F01 核心:不能是 no_bound_terminal(旧实现闭包读第一轮已停止的 turn)
       expect(r.details.error).toBeUndefined()
     })
-    await runtime.startTask(
+    await startLegacyTask(runtime,
       'tab-f1', '任务', 25, bridge2, callbacks,
       {
         userMessage: '第二轮追问',
@@ -270,7 +277,7 @@ describe('F01 第二轮与续跑的真实工具调用', () => {
     const callbacks = makeCallbacks()
 
     promptScripts.push(async () => {})
-    await runtime.startTask('tab-f1b', '任务', 25, bridge, callbacks)
+    await startLegacyTask(runtime, 'tab-f1b', '任务', 25, bridge, callbacks)
 
     promptScripts.push(async (tools) => {
       const r1 = await execTool(tools, 't1', { command: 'uptime' })
@@ -279,7 +286,7 @@ describe('F01 第二轮与续跑的真实工具调用', () => {
       // 第二轮预算 1:第二条耗尽
       expect(r2.details.error).toBe('budget_exhausted')
     })
-    await runtime.startTask('tab-f1b', '任务', 1, bridge, callbacks, {
+    await startLegacyTask(runtime, 'tab-f1b', '任务', 1, bridge, callbacks, {
       userMessage: '追问', sessionPolicy: 'reuse',
     })
     // 第二轮预算 1:uptime 放行、df -h 被拒 → 本轮恰好 1 条 write
@@ -295,7 +302,7 @@ describe('F01 第二轮与续跑的真实工具调用', () => {
     const callbacks = makeCallbacks()
 
     promptScripts.push(async () => {})
-    await runtime.startTask('tab-f1c', '任务', 25, bridge, callbacks)
+    await startLegacyTask(runtime, 'tab-f1c', '任务', 25, bridge, callbacks)
 
     promptScripts.push(async (tools) => {
       const r = await execTool(tools, 't-cont', { command: 'free -m' })
@@ -324,7 +331,7 @@ describe('F02 两个 bridge 包同一 session:真实终端互斥', () => {
         maxSteps: 25, commandsUsed: 0, readCallsUsed: 0,
         budgetExhausted: false, readLimitExhausted: false, uncertainResult: false,
         steps: [] as StepRecord[],
-        allowWrite: false, boundHost: 'h',
+        allowWrite: true, boundHost: 'h',
         executedToolCallIds: new Set<string>(),
         unknownWriteCommands: new Set<string>(),
         callbacks: {
@@ -394,7 +401,7 @@ describe('F03 排队期间降为只读', () => {
       await pA
     })
 
-    await runtime.startTask('tab-f3', '任务', 25, bridge, callbacks, {
+    await startLegacyTask(runtime, 'tab-f3', '任务', 25, bridge, callbacks, {
       userMessage: '检查', allowWrite: true,
     })
 
@@ -420,7 +427,7 @@ describe('F04 配置变化传播到新轮', () => {
 
     // 第一轮:配置 A
     promptScripts.push(async () => {})
-    await runtime.startTask('tab-f4', '任务', 25, bridge, callbacks)
+    await startLegacyTask(runtime, 'tab-f4', '任务', 25, bridge, callbacks)
     // 传给 createAgentSession 的 model 是 A
     const firstOpts = createdOptions[createdOptions.length - 1] as { model?: { baseUrl?: string; id?: string } }
     expect(firstOpts?.model?.baseUrl).toBe('http://a/v1')
@@ -431,7 +438,7 @@ describe('F04 配置变化传播到新轮', () => {
 
     // 第二轮:reuse 政策 —— 但配置指纹变化必须 rebuild,新轮用 B
     promptScripts.push(async () => {})
-    await runtime.startTask('tab-f4', '任务', 25, bridge, callbacks, {
+    await startLegacyTask(runtime, 'tab-f4', '任务', 25, bridge, callbacks, {
       userMessage: '追问', sessionPolicy: 'reuse',
     })
     const secondOpts = createdOptions[createdOptions.length - 1] as { model?: { baseUrl?: string; id?: string } }
@@ -505,7 +512,7 @@ describe('F07 真实工具输出进入 observation', () => {
     promptScripts.push(async (tools) => {
       await execTool(tools, 't1', { command: 'uptime' })
     })
-    await runtime.startTask('tab-f7', '任务', 25, bridge, callbacks)
+    await startLegacyTask(runtime, 'tab-f7', '任务', 25, bridge, callbacks)
     const session = runtimeTabSession(runtime as never)
     session.emit({
       type: 'tool_execution_end',
@@ -551,7 +558,7 @@ describe('F08 重试终态与 thinking 卡片生命周期', () => {
     // 先挂起会话:直接用 arrestNextSession 机制不可用(本文件 stub 无门控),
     // 改为在脚本中同步注入事件后立即返回(prompt 尚未 resolve 时事件已处理)
     // —— 事件处理是同步的,prompt resolve 前 emit 即可
-    const started = runtime.startTask('tab-f8a', '任务', 25, bridge, callbacks)
+    const started = startLegacyTask(runtime, 'tab-f8a', '任务', 25, bridge, callbacks)
     // 注入:error 后 auto_retry 成功
     const session = (await vi.waitFor(() => {
       const s = runtimeTabSession(runtime as never)
@@ -594,7 +601,7 @@ describe('F08 重试终态与 thinking 卡片生命周期', () => {
     for (let round = 0; round < 2; round++) {
       promptScripts.push(async () => {})
       const sessionCountBefore = createdOptions.length
-      const started = runtime.startTask('tab-f8b', `任务${round}`, 25, bridge, callbacks, {
+      const started = startLegacyTask(runtime, 'tab-f8b', `任务${round}`, 25, bridge, callbacks, {
         userMessage: `第${round + 1}轮`,
       })
       // rebuild:等待本轮的新 session 创建完成再注入事件
@@ -658,7 +665,7 @@ describe('G05/I02 loader 全链路隔离(构造注入)', () => {
       const callbacks = makeCallbacks()
 
       promptScripts.push(async () => {})
-      await runtime.startTask('tab-g5', '任务', 25, bridge, callbacks)
+      await startLegacyTask(runtime, 'tab-g5', '任务', 25, bridge, callbacks)
 
       // 会话正常创建、无错误(隔离不破坏正常路径)
       expect(callbacks.messages.some((m) => m.type === 'error')).toBe(false)
@@ -701,7 +708,7 @@ describe('S01 补充:ROUND_LIMIT 收尾实断言', () => {
       await execTool(tools, 't1', { command: 'uptime' })
       await execTool(tools, 't2', { command: 'df -h' })
     })
-    await runtime.startTask('tab-s1a', '任务', 1, bridge, callbacks)
+    await startLegacyTask(runtime, 'tab-s1a', '任务', 1, bridge, callbacks)
 
     // ROUND_LIMIT 落库
     const last = callbacks.stepCompletions[callbacks.stepCompletions.length - 1]
@@ -738,7 +745,7 @@ describe('G04 初始化窗口门控真测', () => {
 
     try {
       const runtime = new PiAgentRuntime(undefined as never, makeConfig())
-      const started = runtime.startTask('tab-w1', '任务', 25, new TerminalBridge(makeFakeSession().session), makeCallbacks())
+      const started = startLegacyTask(runtime, 'tab-w1', '任务', 25, new TerminalBridge(makeFakeSession().session), makeCallbacks())
       // G04:先等生产代码确实进入 loader 窗口,再停止
       await vi.waitFor(() => { if (!entered) throw new Error('not entered') }, { timeout: 2000 })
       runtime.stop('tab-w1')
@@ -765,7 +772,7 @@ describe('G04 初始化窗口门控真测', () => {
 
     try {
       const runtime = new PiAgentRuntime(undefined as never, makeConfig())
-      const started = runtime.startTask('tab-w2', '任务', 25, new TerminalBridge(makeFakeSession().session), makeCallbacks())
+      const started = startLegacyTask(runtime, 'tab-w2', '任务', 25, new TerminalBridge(makeFakeSession().session), makeCallbacks())
       await vi.waitFor(() => { if (!entered) throw new Error('not entered') }, { timeout: 2000 })
       runtime.stop('tab-w2')
       release()
@@ -805,7 +812,7 @@ describe('G04 初始化窗口门控真测', () => {
 
     try {
       const runtime = new PiAgentRuntime(undefined as never, makeConfig())
-      const started = runtime.startTask('tab-w3', '任务', 25, new TerminalBridge(makeFakeSession().session), makeCallbacks())
+      const started = startLegacyTask(runtime, 'tab-w3', '任务', 25, new TerminalBridge(makeFakeSession().session), makeCallbacks())
       await vi.waitFor(() => { if (!entered) throw new Error('not entered') }, { timeout: 2000 })
       // session 创建挂起中停止
       runtime.stop('tab-w3')

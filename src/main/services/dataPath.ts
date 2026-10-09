@@ -1,6 +1,6 @@
 import { homedir } from 'os'
 import { join } from 'path'
-import { existsSync, mkdirSync } from 'fs'
+import { existsSync, mkdirSync, chmodSync } from 'fs'
 
 // ZTERM_DATA_ROOT:测试注入专用(测试拥有唯一目录,不写用户真实 ~/.zterm;
 // 亦是 H04 精神在 Controller 持久化层的落实——测试不触碰共享数据)。
@@ -16,8 +16,9 @@ let ensured = false
 export function getDataRoot(): string {
   if (!ensured) {
     if (!existsSync(DATA_ROOT)) {
-      mkdirSync(DATA_ROOT, { recursive: true })
+      mkdirSync(DATA_ROOT, { recursive: true, mode: 0o700 })
     }
+    if (process.platform !== 'win32') chmodSync(DATA_ROOT, 0o700)
     ensured = true
   }
   return DATA_ROOT

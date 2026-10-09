@@ -36,6 +36,7 @@ import type { ChatTurn, StepRecord, StopReason } from './agentGraphState'
 import type { AgentRuntime, AgentRuntimeStartOptions } from './agentRuntime'
 import { buildPiModelSetup, PI_SANDBOX_DIR, ensurePiSandboxEnv } from './piModelAdapter'
 import { createBoundTerminalTools, type PiToolTurnState } from './piAgentTools'
+import { activeTerminalToolNames, BUILTIN_READ_TOOL_NAMES } from './agentReadTools'
 import { isMissingOptionalProbe } from './agentCompletionPolicy'
 
 // ---- 每轮唯一可变状态(R01) ----
@@ -114,21 +115,24 @@ const PROMPT_SETTLE_TIMEOUT_MS = 1_500
 
 /** 配置指纹:baseUrl/model/apiKey 任一变化都应换会话。 */
 function piConfigKey(config: ProviderConfig): string {
-  return `${config.baseUrl}|${config.model}|${config.apiKey}`
+  return JSON.stringify([config.baseUrl, config.model, config.apiKey, config.contextWindow ?? 32768, config.maxOutputTokens ?? 4096])
 }
 
 const PI_AGENT_DIR = PI_SANDBOX_DIR
 
 /**
  * G03:宿主控制的模型系统提示(SDK loader 显式注入,替代 SYSTEM.md 文件发现)。
- * 保留 zTerm 的 SRE 行为指导与安全边界;模型只经两个受控终端工具行动。
+ * 保留 zTerm 的 SRE 行为指导与安全边界；按模式开放观察或执行工具。
  */
 const PI_HOST_SYSTEM_PROMPT = [
   '你是 zTerm 的 SRE 运维助手,绑定到一台真实远程终端执行任务。',
   '行为准则:',
   '- 对话优先:普通问候、解释、追问自然回答,不为了"像 Agent"执行无关命令。',
   '- 取证优先:需要机器现状证据时,用工具查看真实输出,不拿旧输出当本轮检查结果。',
-  '- 命令安全:默认只读;写操作只在用户开启写模式后执行;危险命令永远被拦截。',
+  '- 默认读模式：只通过内置读工具获取文件、目录、文本、系统、进程和端口信息，不自行拼装终端命令。',
+  '- 读写模式：用户开启后可以通过执行工具自动操作，无需逐条审批；危险命令和原有不支持的语法仍会被拦截。',
+  '- 两种模式都优先用内置读工具取证。读工具缺少能力时如实说明范围；不安装远端组件、不提权、不通过其他接口绕过。',
+  '- read_bound_terminal_context 只读取已有输出；需要当前机器状态时必须调用实际查询工具。',
   '- 只能操作已绑定的终端,不能选择其他主机或提升权限。',
   '- 结果不明(超时/取消/断线)的命令不会自动重试;写命令结果不明时先只读核实。',
   '- 命令预算有限;预算耗尽时总结当前进展,请用户决定是否继续。',
@@ -320,6 +324,7 @@ export class PiAgentRuntime implements AgentRuntime {
           agentDir: this.agentDir,
           settingsManager: this.sharedSettings,
           noExtensions: true,
+          disabledBuiltinExtensions: ['mcp', 'codemode'],
           noSkills: true,
           noPromptTemplates: true,
           noThemes: true,
@@ -495,7 +500,7 @@ export class PiAgentRuntime implements AgentRuntime {
             // stop 后即使 uid 尚未替换(未追问),发送也被拒
             currentTurnUid: () => {
               const t = runtimeRef.tabs.get(chatTabId)?.turn
-              if (!t || t.stopped || t.cancelled) return null
+              if (!t || !t.running || t.stopped || t.cancelled) return null
               return t.uid
             },
           })
@@ -515,12 +520,16 @@ export class PiAgentRuntime implements AgentRuntime {
         // K01:本会话专属轮次盒子(合法 reuse 时升级 allowedUid)
         const ownerBox: { allowedUid: number | null } = { allowedUid: turn.uid }
         const { session: freshSession } = await createAgentSession({
+          cwd: this.agentDir,
+          agentDir: this.agentDir,
           model,
           modelRuntime,
           settingsManager,
           sessionManager: restoredManager,
           resourceLoader: loader,
           noTools: 'builtin',
+          // 注册保留的执行实现；下方在 prompt 前按当前模式限制模型可见集合。
+          tools: activeTerminalToolNames(true),
           customTools: createBoundTerminalTools(this.buildToolContext(chatTabId, ownerBox)),
         })
         if (this.turnCancelled(turn)) {
@@ -548,6 +557,7 @@ export class PiAgentRuntime implements AgentRuntime {
         return
       }
 
+      session.setActiveToolsByName(activeTerminalToolNames(turn.allowWrite))
       // ---- 点火(R02:prompt 前最后检查;I01:本轮事件窗口已随登记打开) ----
       const userMessage = options?.userMessage ?? taskDescription
       callbacks.emitStateChange('planning')
@@ -666,6 +676,7 @@ export class PiAgentRuntime implements AgentRuntime {
     turn.callbacks.emitStateChange('planning')
 
     try {
+      session.setActiveToolsByName(activeTerminalToolNames(turn.allowWrite))
       // J01:续跑 prompt 同样记录(后续 reuse 等待其 settle)
       // L01:prompt 前升级本会话模型授权到当前轮
       if (tab.sessionModelAuth) tab.sessionModelAuth.allowedUid = turn.uid
@@ -718,7 +729,7 @@ export class PiAgentRuntime implements AgentRuntime {
     }
     if (wasRunning && turn) {
       turn.callbacks.emitStateChange('stopped')
-      turn.callbacks.emitMessage({ type: 'status', content: '任务已被用户停止' })
+      turn.callbacks.emitMessage({ type: 'status', content: 'Agent 已停止请求与后续命令；已下发的远端进程可能仍在运行，请在终端核实。' })
     }
   }
 
@@ -746,8 +757,10 @@ export class PiAgentRuntime implements AgentRuntime {
    * 工具在锁内下发边界读取,即时生效)。
    */
   updateAllowWrite(chatTabId: string, allowWrite: boolean): void {
-    const turn = this.tabs.get(chatTabId)?.turn
+    const tab = this.tabs.get(chatTabId)
+    const turn = tab?.turn
     if (turn) turn.allowWrite = allowWrite
+    tab?.session?.setActiveToolsByName(activeTerminalToolNames(allowWrite))
   }
 
   // ---- 内部 ----
@@ -995,7 +1008,7 @@ export class PiAgentRuntime implements AgentRuntime {
         break
       }
       case 'tool_execution_start': {
-        const args = (event as { args?: { command?: string; plan?: string } }).args
+        const args = (event as { args?: { command?: string; plan?: string; path?: string } }).args
         if (event.toolName === 'execute_bound_terminal' && args?.command) {
           turn.sawToolExecution = true
           callbacks.emitMessage({
@@ -1003,6 +1016,13 @@ export class PiAgentRuntime implements AgentRuntime {
             content: args.command,
             stepNumber: this.pendingStepHint(turn),
             details: { command: args.command, plan: args.plan },
+          })
+          callbacks.emitStateChange('executing')
+        } else if (BUILTIN_READ_TOOL_NAMES.includes(event.toolName)) {
+          callbacks.emitMessage({
+            type: 'status',
+            content: args?.path ? '正在读取：' + args.path : '正在获取系统信息',
+            details: { toolName: event.toolName },
           })
           callbacks.emitStateChange('executing')
         }
@@ -1020,11 +1040,24 @@ export class PiAgentRuntime implements AgentRuntime {
               blocked?: boolean
               reason?: string
               error?: string
+              displayOutput?: string
             }
           }
           isError?: boolean
         }).result
         const details = result?.details
+        if (BUILTIN_READ_TOOL_NAMES.includes(event.toolName)) {
+          const output = details?.displayOutput ?? (result?.content ?? []).filter((item) => item.type === 'text')
+            .map((item) => item.text ?? '').join('')
+          callbacks.emitMessage({
+            type: details?.blocked || details?.error || event.isError ? 'error' : 'observation',
+            content: output.length > 2000 ? output.slice(0, 2000) + '…[输出已截断]' : output,
+            stepNumber: details?.stepNumber,
+            details: { toolName: event.toolName, command: details?.command ?? event.toolName, fidelity: details?.fidelity },
+          })
+          callbacks.emitStateChange('observing')
+          break
+        }
         if (event.toolName === 'execute_bound_terminal' && details?.command) {
           const stepNumber = details.stepNumber
           if (details.blocked) {

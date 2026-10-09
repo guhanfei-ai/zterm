@@ -19,6 +19,7 @@
         <button
           v-if="agentState !== 'idle' && !isTerminal"
           class="btn-action btn-stop"
+          title="停止 Agent 请求与后续命令；已下发的远端进程可能仍在运行"
           @click="$emit('stop')"
         >
           停止
@@ -48,10 +49,10 @@
         :class="{ 'mode-switch--on': allowWrite }"
         role="switch"
         :aria-checked="allowWrite"
-        :aria-label="allowWrite ? '当前为读写模式，点击切回只读模式' : '当前为只读模式，点击切换到读写模式'"
+        :aria-label="allowWrite ? '当前为读写模式，点击切回读模式' : '当前为读模式，点击切换到读写模式'"
         @click="$emit('toggle-write', !allowWrite)"
       >
-        <span class="mode-switch-label" :class="{ 'is-active': !allowWrite }">只读模式</span>
+        <span class="mode-switch-label" :class="{ 'is-active': !allowWrite }">读模式</span>
         <span class="mode-switch-track">
           <span class="mode-switch-thumb"></span>
         </span>
@@ -59,7 +60,7 @@
       </button>
       <span v-if="!allowWrite" class="toolbar-hint">
         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-        仅读取信息，不修改文件或系统配置
+        使用内置工具读取信息，不修改文件或系统配置
       </span>
       <span v-else class="toolbar-hint">
         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>

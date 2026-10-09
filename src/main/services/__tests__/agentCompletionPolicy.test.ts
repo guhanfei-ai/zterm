@@ -15,6 +15,10 @@ describe('只读探查中的可选工具缺失', () => {
     expect(isMissingOptionalProbe([succeeded, missing], 127, false)).toBe(true)
   })
 
+  it('识别 Linux dash 的 not found 文案', () => {
+    expect(isMissingOptionalProbe([succeeded, step('docker ps', 127, 'sh: 1: docker: not found')], 127, false)).toBe(true)
+  })
+
   it('首个探测即失败、写模式或其他错误不放行', () => {
     expect(isMissingOptionalProbe([missing], 127, false)).toBe(false)
     expect(isMissingOptionalProbe([succeeded, missing], 127, true)).toBe(false)

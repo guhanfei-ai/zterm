@@ -1,6 +1,5 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import { v4 as uuidv4 } from 'uuid'
 import { useHostsStore, type ActiveMode } from './hosts'
 import type { ReconnectTarget, TerminalTabSnapshot } from '../../../main/model/workspace'
 
@@ -23,7 +22,7 @@ export interface TerminalTab {
 
 function createTerminalTab(mode: ActiveMode, override?: Partial<TerminalTab>): TerminalTab {
   return {
-    id: uuidv4(),
+    id: crypto.randomUUID(),
     title: '终端',
     defaultTitle: '终端',
     status: 'disconnected',

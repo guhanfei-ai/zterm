@@ -222,7 +222,7 @@ function safeWriteAll(
   const serialized = JSON.stringify(map, null, 2)
   try {
     // 1. 写 tmp
-    writeFileSync(tmp, serialized, 'utf-8')
+    writeFileSync(tmp, serialized, { encoding: 'utf-8', mode: 0o600 })
     // 2. 原子 rename 替换主文件（POSIX 语义：崩溃时只可能看到旧文件或新文件，不会有半截文件）
     renameSync(tmp, p)
   } catch (err) {

@@ -1,4 +1,5 @@
-import { BrowserWindow, dialog, ipcMain } from 'electron'
+import { registerIpcHandler } from '../services/ipcSecurity'
+import { BrowserWindow, dialog } from 'electron'
 import { writeFileSync } from 'fs'
 import {
   AgentApplication,
@@ -37,43 +38,43 @@ export function disposeAllAgentTabs(): void {
 
 /** Electron 传输适配：参数转发、事件转发与系统保存对话框。 */
 export function registerAgentIpc(): void {
-  ipcMain.handle('agent:startTask', (event, data: StartAgentTaskCommand) =>
+  registerIpcHandler('agent:startTask', (event, data: StartAgentTaskCommand) =>
     agentApplication.startTask(data, createEventSink(event.sender))
   )
 
-  ipcMain.handle('agent:stop', (_event, data?: { chatTabId?: string }) =>
+  registerIpcHandler('agent:stop', (_event, data?: { chatTabId?: string }) =>
     agentApplication.stop(data?.chatTabId)
   )
 
-  ipcMain.handle('agent:getStatus', (_event, data?: { chatTabId?: string }) =>
+  registerIpcHandler('agent:getStatus', (_event, data?: { chatTabId?: string }) =>
     agentApplication.getStatus(data?.chatTabId)
   )
 
-  ipcMain.handle('agent:reset', (_event, data?: { chatTabId?: string }) =>
+  registerIpcHandler('agent:reset', (_event, data?: { chatTabId?: string }) =>
     agentApplication.reset(data?.chatTabId)
   )
 
-  ipcMain.handle('agent:fullReset', (_event, data?: { chatTabId?: string }) =>
+  registerIpcHandler('agent:fullReset', (_event, data?: { chatTabId?: string }) =>
     agentApplication.fullReset(data?.chatTabId)
   )
 
-  ipcMain.handle('agent:destroy', (_event, data?: { chatTabId?: string }) =>
+  registerIpcHandler('agent:destroy', (_event, data?: { chatTabId?: string }) =>
     agentApplication.destroy(data?.chatTabId)
   )
 
-  ipcMain.handle('agent:setAllowWrite', (_event, enabled: boolean, data?: { chatTabId?: string }) =>
+  registerIpcHandler('agent:setAllowWrite', (_event, enabled: boolean, data?: { chatTabId?: string }) =>
     agentApplication.setAllowWrite(enabled, data?.chatTabId)
   )
 
-  ipcMain.handle('agent:continueTask', (_event, additionalSteps?: number, data?: { chatTabId?: string }) =>
+  registerIpcHandler('agent:continueTask', (_event, additionalSteps?: number, data?: { chatTabId?: string }) =>
     agentApplication.continueTask(additionalSteps, data?.chatTabId)
   )
 
-  ipcMain.handle('agent:bind', (event, data: BindAgentCommand) =>
+  registerIpcHandler('agent:bind', (event, data: BindAgentCommand) =>
     agentApplication.bind(data, createEventSink(event.sender))
   )
 
-  ipcMain.handle('agent:saveConclusion', async (_event, data: { content: string }) => {
+  registerIpcHandler('agent:saveConclusion', async (_event, data: { content: string }) => {
     try {
       const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0]
       if (!win) return { success: false, error: '无可用窗口' }
@@ -90,19 +91,19 @@ export function registerAgentIpc(): void {
     }
   })
 
-  ipcMain.handle('agent:getContext', (_event, data: { chatTabId: string }) =>
+  registerIpcHandler('agent:getContext', (_event, data: { chatTabId: string }) =>
     agentApplication.getContext(data?.chatTabId)
   )
 
-  ipcMain.handle('agent:hasPendingContext', (_event, data: { chatTabId: string }) =>
+  registerIpcHandler('agent:hasPendingContext', (_event, data: { chatTabId: string }) =>
     agentApplication.hasPendingContext(data?.chatTabId)
   )
 
-  ipcMain.handle('agent:discardContext', (_event, data: { chatTabId: string }) =>
+  registerIpcHandler('agent:discardContext', (_event, data: { chatTabId: string }) =>
     agentApplication.discardContext(data?.chatTabId)
   )
 
-  ipcMain.handle('agent:saveLastActiveTab', (_event, data: { chatTabId: string }) =>
+  registerIpcHandler('agent:saveLastActiveTab', (_event, data: { chatTabId: string }) =>
     agentApplication.saveLastActiveTab(data?.chatTabId)
   )
 }

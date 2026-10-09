@@ -6,6 +6,8 @@ export interface ProviderConfig {
   model: string
   enableStreaming: boolean
   reasoningMode: 'auto'
+  contextWindow?: number
+  maxOutputTokens?: number
 }
 
 export interface ChatMessage {

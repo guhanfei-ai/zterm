@@ -1,7 +1,7 @@
-import { ipcMain } from 'electron'
+import { registerIpcHandler, confirmSecretDisclosure } from '../services/ipcSecurity'
 import { getStore } from '../services/store'
 import { storeSecret, getSecret, deleteSecret } from '../services/secretVault'
-import { v4 as uuidv4 } from 'uuid'
+import { randomUUID } from 'node:crypto'
 
 export interface KeyRecord {
   id: string
@@ -25,7 +25,7 @@ function saveAllKeys(keys: KeyRecord[]): void {
 }
 
 export function registerKeysIpc(): void {
-  ipcMain.handle('keys:list', () => {
+  registerIpcHandler('keys:list', () => {
     const keys = getAllKeys()
     // Return without private key content in list (for security)
     return keys.map((k) => ({
@@ -35,10 +35,11 @@ export function registerKeysIpc(): void {
     }))
   })
 
-  ipcMain.handle('keys:get', (_event, id: string) => {
+  registerIpcHandler('keys:get', async (event, id: string) => {
     const keys = getAllKeys()
     const key = keys.find((k) => k.id === id)
     if (!key) return null
+    if (!await confirmSecretDisclosure(event, 'SSH 私钥及口令')) return null
 
     // Decrypt from store
     const storedKey = getSecret(`key_pk_${id}`)
@@ -51,7 +52,7 @@ export function registerKeysIpc(): void {
     }
   })
 
-  ipcMain.handle(
+  registerIpcHandler(
     'keys:create',
     (
       _event,
@@ -59,7 +60,7 @@ export function registerKeysIpc(): void {
     ): KeyRecord => {
       const keys = getAllKeys()
       const now = new Date().toISOString()
-      const id = uuidv4()
+      const id = randomUUID()
 
       // Store sensitive data ONLY in encrypted storage, never in plain list
       storeSecret(`key_pk_${id}`, data.privateKey)
@@ -84,7 +85,7 @@ export function registerKeysIpc(): void {
     }
   )
 
-  ipcMain.handle(
+  registerIpcHandler(
     'keys:update',
     (
       _event,
@@ -123,7 +124,7 @@ export function registerKeysIpc(): void {
     }
   )
 
-  ipcMain.handle('keys:delete', (_event, id: string): boolean => {
+  registerIpcHandler('keys:delete', (_event, id: string): boolean => {
     let keys = getAllKeys()
     const before = keys.length
     keys = keys.filter((k) => k.id !== id)

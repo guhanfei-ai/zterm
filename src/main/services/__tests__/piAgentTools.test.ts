@@ -39,7 +39,8 @@ function makeTurn(overrides?: Partial<PiToolTurnState>): PiToolTurnState {
     readLimitExhausted: false,
     uncertainResult: false,
     steps: [],
-    allowWrite: false,
+    // 本文件测试保留的通用执行链路；读模式契约由 agentReadTools.test 覆盖。
+    allowWrite: true,
     boundHost: 'test-host',
     executedToolCallIds: new Set<string>(),
     unknownWriteCommands: new Set<string>(),
@@ -55,6 +56,24 @@ function makeTurn(overrides?: Partial<PiToolTurnState>): PiToolTurnState {
   }
   return baseTurn
 }
+
+describe('生产安全规则接入真实工具路径', () => {
+  it.each([
+    'printf harmless > "/tmp/example"',
+    'env sh -c "printf harmless"',
+    'find . -exec sh -c "printf harmless" \\;',
+    'git branch new-branch',
+  ])('默认只读时不得下发绕过命令：%s', async (command) => {
+    const bridge = makeBridge()
+    const turn = makeTurn({ allowWrite: false })
+    const tool = createBoundTerminalTools({ bridge, turn })[1]
+    const result = await tool.execute('production-test', { command }, undefined, undefined, {} as never)
+    expect(bridge._writeCommand).not.toHaveBeenCalled()
+    expect(result.details).toMatchObject({ blocked: true })
+    expect(turn.commandsUsed).toBe(1)
+    expect(turn.steps.at(-1)?.status).toBe('blocked')
+  })
+})
 
 /** 从 turn 收集 onStepComplete 快照(工具 recordStep 回调写入)。 */
 function turnStepSnapshots(turn: PiToolTurnState): StepRecord[][] {
@@ -284,7 +303,7 @@ describe('R01 运行中降权即时生效', () => {
   })
 
   it('blocked 命令也消耗预算', async () => {
-    const turn = makeTurn({ maxSteps: 1 })
+    const turn = makeTurn({ maxSteps: 1, allowWrite: false })
     const callbacks = makeCallbacks()
     const tools = createBoundTerminalTools(makeCtx(turn, makeBridge(), callbacks))
     const exec = findTool(tools, 'execute_bound_terminal')

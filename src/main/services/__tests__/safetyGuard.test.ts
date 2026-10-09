@@ -121,9 +121,9 @@ describe('safetyGuard 复合命令与绕过防护', () => {
     expect(checkCommand('ps aux --sort=-%cpu | head -20').safe).toBe(true)
   })
 
-  it('allows whitelisted command substitution', () => {
-    expect(checkCommand('echo $(pwd)').safe).toBe(true)
-    expect(checkCommand('ls `id`').safe).toBe(true)
+  it('rejects command substitution even when the inner command is a query', () => {
+    expect(checkCommand('echo $(pwd)').blocked).toBe(true)
+    expect(checkCommand('ls `id`').blocked).toBe(true)
   })
 })
 
@@ -148,7 +148,7 @@ describe('safetyGuard 误杀修复（引号内数据不参与匹配）', () => {
 
   it('quoting a dangerous word does not smuggle it past blocked patterns', () => {
     expect(checkCommand('echo "rm -rf" /data').safe).toBe(true)
-    expect(checkCommand('echo rm -rf /data').blocked).toBe(true)
+    expect(checkCommand('echo rm -rf /data').safe).toBe(true)
   })
 })
 
@@ -181,8 +181,8 @@ describe('safetyGuard 敏感文件读取（MVP：白名单直接执行，不再�
 })
 
 describe('safetyGuard 原确认项并入白名单（MVP）', () => {
-  it('plain kill executes directly in read mode', () => {
-    const result = checkCommand('kill 1234')
+  it('plain kill requires write mode', () => {
+    const result = checkCommand('kill 1234', true)
     expect(result.safe).toBe(true)
   })
 
@@ -193,8 +193,8 @@ describe('safetyGuard 原确认项并入白名单（MVP）', () => {
     expect(writeMode.isWrite).toBe(true)
   })
 
-  it('vgcreate / lvcreate execute without confirmation', () => {
-    expect(checkCommand('vgcreate vg_data /dev/sdb').safe).toBe(true)
-    expect(checkCommand('lvcreate -L 10G -n lv0 vg_data').safe).toBe(true)
+  it('volume creation is blocked in read mode', () => {
+    expect(checkCommand('vgcreate vg_data /dev/sdb').blocked).toBe(true)
+    expect(checkCommand('lvcreate -L 10G -n lv0 vg_data').blocked).toBe(true)
   })
 })

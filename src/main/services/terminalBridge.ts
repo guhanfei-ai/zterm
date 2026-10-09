@@ -24,13 +24,15 @@ export interface AgentCommandResult extends CommandResult {
   completion: 'verified' | 'timedOut' | 'aborted' | 'disconnected' | 'unsupported'
   /** 是否尝试将用户命令送入终端（探测失败时为 false）。 */
   commandSent: boolean
+  /** 已通过探测，但宿主在业务命令发送前撤销授权；确定没有业务副作用。 */
+  authorizationDenied?: boolean
 }
 
 const CAPTURE_LIMIT = 64_000
 const PROBE_TIMEOUT_MS = 3_000
 
 type BoundTerminalTarget =
-  | { source: 'jumpserver'; tabId: string; targetId: string }
+  | { source: 'jumpserver'; tabId: string; targetId: string; hostKeyAlgorithm: string; hostKeyFingerprint: string }
   | { source: 'local'; tabId: string }
   | {
       source: 'direct'
@@ -98,8 +100,10 @@ export class TerminalBridge {
     if (!this.isAgentReady()) return null
     const meta = this.session.sessionMeta
     if (meta?.source === 'jumpserver') {
-      return meta.targetId
-        ? serializeBoundTerminalTarget({ source: 'jumpserver', tabId: this.session.tabId, targetId: meta.targetId })
+      const hostKey = (this.session as TerminalSession).verifiedHostKey
+      return meta.targetId && hostKey
+        ? serializeBoundTerminalTarget({ source: 'jumpserver', tabId: this.session.tabId, targetId: meta.targetId,
+          hostKeyAlgorithm: hostKey.algorithm, hostKeyFingerprint: hostKey.fingerprint })
         : null
     }
     if (meta?.source === 'local') {
@@ -196,7 +200,7 @@ export class TerminalBridge {
    * Windows 或非 POSIX 终端在探测失败时不会收到用户命令。
    * 上层必须持有真实 session 锁，并在未验证结束时隔离整个 session。
    */
-  async executeAgentCommand(command: string, timeout = 30_000, signal?: AbortSignal): Promise<AgentCommandResult> {
+  async executeAgentCommand(command: string, timeout = 30_000, signal?: AbortSignal, authorizeBeforeSend?: () => boolean): Promise<AgentCommandResult> {
     const startedAt = Date.now()
     const result = (completion: AgentCommandResult['completion'], output: string, commandSent: boolean, exitCode?: number): AgentCommandResult => ({
       command,
@@ -226,6 +230,11 @@ export class TerminalBridge {
     }
     if (handshake.exitCode !== 37) {
       return result('unsupported', '交互 Shell 未通过退出码探测，业务命令未下发', false)
+    }
+
+    // 探测是异步的；这段等待期间用户可能已切回只读或撤销绑定。
+    if (authorizeBeforeSend && !authorizeBeforeSend()) {
+      return { ...result('aborted', '执行授权已撤销，业务命令未下发', false), authorizationDenied: true }
     }
 
     const nonce = randomBytes(16).toString('hex')

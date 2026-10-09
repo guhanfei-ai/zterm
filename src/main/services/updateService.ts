@@ -1,10 +1,14 @@
 import { app } from 'electron'
-import { createWriteStream, existsSync, readdirSync, rmSync, mkdirSync, writeFileSync, openSync, closeSync, writeSync, realpathSync, readFileSync } from 'fs'
+import { createWriteStream, mkdtempSync, lstatSync, readSync, existsSync, readdirSync, rmSync, mkdirSync, writeFileSync, openSync, closeSync, writeSync, realpathSync, readFileSync } from 'fs'
 import { join, dirname, basename, extname } from 'path'
 import { get as httpsGet } from 'https'
 import type { IncomingMessage } from 'http'
 import { createHash } from 'crypto'
 import { execFileSync, spawn } from 'child_process'
+
+declare const __ZTERM_WINDOWS_UPDATE_PUBLISHER__: string
+const WINDOWS_UPDATE_PUBLISHER = typeof __ZTERM_WINDOWS_UPDATE_PUBLISHER__ === 'string'
+  ? __ZTERM_WINDOWS_UPDATE_PUBLISHER__ : process.env.ZTERM_UPDATE_WIN_PUBLISHER ?? ''
 
 const UPDATE_BASE_URL = process.env.ZTERM_UPDATE_BASE_URL?.trim() || ''
 
@@ -27,7 +31,8 @@ const UPDATE_ALLOWED_HOST = (() => {
 export function isAllowedUpdateDownloadUrl(url: string): boolean {
   try {
     const parsed = new URL(url)
-    return Boolean(UPDATE_ALLOWED_HOST) && parsed.protocol === 'https:' && parsed.hostname === UPDATE_ALLOWED_HOST
+    const origin = UPDATE_BASE_URL ? new URL(UPDATE_BASE_URL).origin : ''
+    return Boolean(UPDATE_ALLOWED_HOST) && parsed.protocol === 'https:' && parsed.origin === origin && !parsed.username && !parsed.password
   } catch {
     return false
   }
@@ -35,16 +40,48 @@ export function isAllowedUpdateDownloadUrl(url: string): boolean {
 
 /**
  * 信任边界：允许安装的更新包路径必须位于系统临时目录、且文件名符合
- * 本进程 downloadUpdate 的命名模式（zterm-update-<ts>.<ext>），
+ * 本进程 downloadUpdate 的私有随机目录，且存在内存校验记录，
  * 拒绝 renderer 传入的任意路径（installUpdate 会以管理员权限执行安装）。
  */
+const verifiedDownloads = new Map<string, string>()
+let trustedManifest: UpdateManifest | null = null
+const MAX_UPDATE_BYTES = 512 * 1024 * 1024
+
+function isOwnedUpdatePath(filePath: string): boolean {
+  const dir = dirname(filePath)
+  return dirname(dir) === app.getPath('temp') && /^zterm-update-[A-Za-z0-9]+$/.test(basename(dir)) &&
+    /^installer\.(dmg|exe|bin)$/.test(basename(filePath))
+}
+
 export function isAllowedInstallerPath(filePath: string): boolean {
+  if (!isOwnedUpdatePath(filePath) || !verifiedDownloads.has(filePath)) return false
   try {
-    if (dirname(filePath) !== app.getPath('temp')) return false
-    return /^zterm-update-\d+\.(dmg|exe|bin)$/.test(basename(filePath))
-  } catch {
-    return false
-  }
+    return !lstatSync(dirname(filePath)).isSymbolicLink() && lstatSync(filePath).isFile() &&
+      !lstatSync(filePath).isSymbolicLink() && lstatSync(filePath).size <= MAX_UPDATE_BYTES
+  } catch { return false }
+}
+
+/** 不把整份安装包读入内存；安装前重新验证下载时确认过的哈希。 */
+function installerHash(filePath: string): string {
+  const fd = openSync(filePath, 'r')
+  const hash = createHash('sha256')
+  const chunk = Buffer.alloc(64 * 1024)
+  try {
+    let length: number
+    while ((length = readSync(fd, chunk, 0, chunk.length, null)) > 0) hash.update(chunk.subarray(0, length))
+    return hash.digest('hex')
+  } finally { closeSync(fd) }
+}
+
+export function parseUpdateManifest(value: unknown): UpdateManifest | null {
+  if (!value || typeof value !== 'object') return null
+  const m = value as Record<string, unknown>
+  if (typeof m.version !== 'string' || !/^v?\d+\.\d+\.\d+$/.test(m.version) ||
+      typeof m.notes !== 'string' || m.notes.length > 60_000 ||
+      typeof m.published_at !== 'string' || !Number.isFinite(Date.parse(m.published_at)) ||
+      typeof m.url !== 'string' || !isAllowedUpdateDownloadUrl(m.url) ||
+      typeof m.sha256 !== 'string' || !/^[a-fA-F0-9]{64}$/.test(m.sha256)) return null
+  return { version: m.version, notes: m.notes, published_at: m.published_at, url: m.url, sha256: m.sha256.toLowerCase() }
 }
 
 interface UpdateManifest {
@@ -114,7 +151,7 @@ export function restoreOnBoot(): void {
   }
   try {
     const parsed: UpdatePersistState = JSON.parse(raw)
-    if (parsed.filePath && existsSync(parsed.filePath)) {
+    if (parsed.filePath && isOwnedUpdatePath(parsed.filePath) && existsSync(parsed.filePath) && !lstatSync(dirname(parsed.filePath)).isSymbolicLink()) {
       // 上次下载未完成，文件可能不完整：直接清理
       try { rmSync(parsed.filePath, { force: true }) } catch { /* ignore */ }
     }
@@ -191,6 +228,7 @@ const MAX_REDIRECTS = 5
 
 function fetchManifest(url: string, redirectCount = 0): Promise<UpdateManifest> {
   return new Promise((resolve, reject) => {
+    if (!isAllowedUpdateDownloadUrl(url)) { reject(new Error('非受信任更新来源')); return }
     if (redirectCount > MAX_REDIRECTS) {
       reject(new Error('Too many redirects'))
       return
@@ -202,7 +240,7 @@ function fetchManifest(url: string, redirectCount = 0): Promise<UpdateManifest> 
         // 无监听的 emit('error') 仍会抛 uncaughtException（req.on 覆盖不到响应阶段）
         res.on('error', reject)
         res.resume()
-        fetchManifest(res.headers.location, redirectCount + 1).then(resolve).catch(reject)
+        fetchManifest(new URL(res.headers.location, url).href, redirectCount + 1).then(resolve).catch(reject)
         return
       }
       if (res.statusCode !== 200) {
@@ -210,10 +248,15 @@ function fetchManifest(url: string, redirectCount = 0): Promise<UpdateManifest> 
         return
       }
       let data = ''
-      res.on('data', (chunk: Buffer) => { data += chunk.toString() })
+      res.on('data', (chunk: Buffer) => {
+        data += chunk.toString()
+        if (data.length > 64_000) { res.destroy(); reject(new Error('更新清单过大')) }
+      })
       res.on('end', () => {
         try {
-          resolve(JSON.parse(data))
+          const manifest = parseUpdateManifest(JSON.parse(data))
+          if (!manifest) throw new Error('更新清单无效')
+          resolve(manifest)
         } catch {
           reject(new Error('Manifest JSON parse failed'))
         }
@@ -229,6 +272,7 @@ function fetchManifest(url: string, redirectCount = 0): Promise<UpdateManifest> 
 // ==================== 检查更新 ====================
 
 export async function checkForUpdate(): Promise<UpdateCheckResult> {
+  trustedManifest = null
   const currentVersion = normalizeVersion(readLocalVersion())
 
   const emptyResult: UpdateCheckResult = {
@@ -263,6 +307,7 @@ export async function checkForUpdate(): Promise<UpdateCheckResult> {
     }
   }
 
+  trustedManifest = manifest
   return {
     hasUpdate: true,
     latestVersion: manifestVersion,
@@ -279,6 +324,9 @@ export async function downloadUpdate(
   expectedSha256: string,
   onProgress?: (downloaded: number, total: number) => void
 ): Promise<DownloadResult> {
+  if (!trustedManifest || downloadUrl !== trustedManifest.url || expectedSha256.toLowerCase() !== trustedManifest.sha256) {
+    return { success: false, filePath: '', error: '请先检查更新，下载参数必须与主进程确认的清单一致' }
+  }
   if (downloading) {
     return { success: false, filePath: '', error: 'Already downloading' }
   }
@@ -286,16 +334,15 @@ export async function downloadUpdate(
   lastDownloadedFile = null
 
   try {
-    const tmpDir = app.getPath('temp')
-  const fileName = `zterm-update-${Date.now()}${getUpdateFileExt()}`
-    const filePath = join(tmpDir, fileName)
+    const tmpDir = mkdtempSync(join(app.getPath('temp'), 'zterm-update-'))
+    const filePath = join(tmpDir, `installer${getUpdateFileExt()}`)
     lastDownloadedFile = filePath
     // 落盘：进程被强杀时也能在下次启动时识别出残留文件
     persistState({ downloading: true, filePath, updatedAt: new Date().toISOString() })
 
     const { stream, total } = await downloadFile(downloadUrl)
 
-    const file = createWriteStream(filePath)
+    const file = createWriteStream(filePath, { flags: 'wx', mode: 0o600 })
     const hasher = createHash('sha256')
     let downloaded = 0
     let lastReport = 0
@@ -321,6 +368,9 @@ export async function downloadUpdate(
         hasher.update(chunk)
         const canContinue = file.write(chunk)
         downloaded += chunk.length
+        if (downloaded > MAX_UPDATE_BYTES) {
+          stream.destroy(); cleanupFailedDownload('更新包超过大小上限'); return
+        }
         const now = Date.now()
         if (now - lastReport > 200 || downloaded === total) {
           lastReport = now
@@ -346,6 +396,7 @@ export async function downloadUpdate(
             })
             return
           }
+          verifiedDownloads.set(filePath, actualHash)
           finish({ success: true, filePath })
         })
       })
@@ -372,6 +423,7 @@ export async function downloadUpdate(
 
 function downloadFile(url: string, redirectCount = 0): Promise<{ stream: IncomingMessage; total: number }> {
   return new Promise((resolve, reject) => {
+    if (!isAllowedUpdateDownloadUrl(url)) { reject(new Error('非受信任更新来源')); return }
     if (redirectCount > MAX_REDIRECTS) {
       reject(new Error('Too many redirects'))
       return
@@ -381,7 +433,7 @@ function downloadFile(url: string, redirectCount = 0): Promise<{ stream: Incomin
         // 丢弃旧响应体并释放连接，再跟随重定向（error 监听理由同 fetchManifest）
         res.on('error', reject)
         res.resume()
-        downloadFile(res.headers.location, redirectCount + 1).then(resolve).catch(reject)
+        downloadFile(new URL(res.headers.location, url).href, redirectCount + 1).then(resolve).catch(reject)
         return
       }
       if (res.statusCode !== 200) {
@@ -399,9 +451,13 @@ function downloadFile(url: string, redirectCount = 0): Promise<{ stream: Incomin
 // ==================== 安装更新（Dispatcher） ====================
 
 export function installUpdate(filePath: string): InstallResult {
-  if (!existsSync(filePath)) {
-    return { success: false, message: `安装包不存在: ${filePath}` }
-  }
+  if (!isAllowedInstallerPath(filePath)) return { success: false, message: '安装包未经过本进程验证' }
+  try {
+    if (installerHash(filePath) !== verifiedDownloads.get(filePath)) {
+      verifiedDownloads.delete(filePath)
+      return { success: false, message: '安装包已发生变化，请重新下载' }
+    }
+  } catch { return { success: false, message: '无法验证安装包完整性' } }
 
   switch (process.platform) {
     case 'darwin':
@@ -417,7 +473,7 @@ export function installUpdate(filePath: string): InstallResult {
 
 function installMacUpdate(dmgPath: string): InstallResult {
   const pid = process.pid
-  const mountDir = join(app.getPath('temp'), `zterm-update-mount-${pid}`)
+  const mountDir = join(dirname(dmgPath), 'mount')
 
   if (existsSync(mountDir)) {
     try { rmSync(mountDir, { recursive: true, force: true }) } catch { /* ignore */ }
@@ -467,8 +523,20 @@ function installMacUpdate(dmgPath: string): InstallResult {
     return { success: false, message: 'DMG 中未找到 .app bundle' }
   }
 
-  const appName = appBundles[0]
+  const appName = 'zTerm.app'
+  if (!appBundles.includes(appName)) {
+    detachDmg(mountPoint); cleanupMount(mountDir)
+    return { success: false, message: '安装包未包含正式 zTerm 应用' }
+  }
   const srcApp = join(mountPoint, appName)
+  try {
+    // 固定本项目现有 Developer ID 团队；任意合法签名不代表官方更新。
+    execFileSync('codesign', ['--verify', '--deep', '--strict', '--test-requirement', '=anchor apple generic and certificate leaf[subject.OU] = \"5MWQ45Z9F7\" and identifier \"com.zterm.app\"', srcApp], { timeout: 30_000, stdio: 'pipe' })
+    execFileSync('spctl', ['--assess', '--type', 'execute', srcApp], { timeout: 30_000, stdio: 'pipe' })
+  } catch {
+    detachDmg(mountPoint); cleanupMount(mountDir)
+    return { success: false, message: '更新应用未通过官方签名或 Gatekeeper 校验' }
+  }
 
   const installParent = resolveInstallParentDir()
   const relaunchTarget = join(installParent, appName)
@@ -476,13 +544,13 @@ function installMacUpdate(dmgPath: string): InstallResult {
   const stagingName = `.${appName}.updating.${pid}`
   const stagingPath = join(installParent, stagingName)
 
-  const updaterLog = join(app.getPath('temp'), 'zterm-update-install.log')
-  const updaterScript = join(app.getPath('temp'), `zterm-update-${pid}.sh`)
+  const updaterLog = join(dirname(dmgPath), 'install.log')
+  const updaterScript = join(dirname(dmgPath), 'install.sh')
 
   const script = buildMacUpdateScript(pid, srcApp, installParent, relaunchTarget, stagingPath, mountPoint)
 
   try {
-    writeFileSync(updaterScript, script, { encoding: 'utf8' })
+    writeFileSync(updaterScript, script, { encoding: 'utf8', mode: 0o700 })
   } catch (e: any) {
     appendLog(`写入安装脚本失败: ${e.message}`)
     detachDmg(mountPoint)
@@ -538,10 +606,14 @@ done
 mkdir -p "$PARENT"
 rm -rf "$STAGING"
 ditto "$SRC" "$STAGING"
-xattr -dr com.apple.quarantine "$STAGING" 2>/dev/null || true
-rm -rf "$DEST"
-mv "$STAGING" "$DEST"
-xattr -dr com.apple.quarantine "$DEST" 2>/dev/null || true
+BACKUP="$DEST.previous.$PID"
+if [ -e "$DEST" ]; then mv "$DEST" "$BACKUP"; fi
+if mv "$STAGING" "$DEST"; then
+  rm -rf "$BACKUP"
+else
+  if [ -e "$BACKUP" ]; then mv "$BACKUP" "$DEST"; fi
+  exit 1
+fi
 # P2-4：DMG 卸载失败不再吞错。失败时输出 stderr 到主进程日志，
 # 提示用户手动执行 hdiutil detach MOUNT -force 清理，下次安装才不会因挂载点 busy 失败。
 hdiutil detach "$MOUNT" >/dev/null 2>&1 || {
@@ -631,20 +703,26 @@ function parseHdiutilMountPoint(plist: string): string {
 // ==================== Windows 安装实现 ====================
 
 function installWindowsUpdate(exePath: string): InstallResult {
+  const publisher = WINDOWS_UPDATE_PUBLISHER.trim()
+  if (!publisher) return { success: false, message: '未配置受信任 Windows 发布者，已拒绝自动安装' }
+  try {
+    const script = `$s = Get-AuthenticodeSignature -LiteralPath ${psSingleQuote(exePath)}; if ($s.Status -ne 'Valid' -or $s.SignerCertificate.Subject -ne ${psSingleQuote(publisher)}) { exit 1 }`
+    execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { timeout: 30_000, stdio: 'pipe' })
+  } catch { return { success: false, message: '更新包未通过受信任发布者签名校验' } }
   const pid = process.pid
   const relaunchTarget = process.execPath
-  const updaterLog = join(app.getPath('temp'), 'zterm-update-install.log')
-  const updaterScript = join(app.getPath('temp'), `zterm-update-${pid}.ps1`)
-  const vbsScript = join(app.getPath('temp'), `zterm-update-${pid}.vbs`)
+  const updaterLog = join(dirname(exePath), 'install.log')
+  const updaterScript = join(dirname(exePath), 'install.ps1')
+  const vbsScript = join(dirname(exePath), 'install.vbs')
 
   appendLog(`Preparing Windows background install, installer: ${exePath}`)
   appendLog(`Old PID: ${pid}`)
   appendLog(`Relaunch target: ${relaunchTarget}`)
 
-  const script = buildWindowsUpdateScript(pid, exePath, relaunchTarget, updaterLog)
+  const script = buildWindowsUpdateScript(pid, exePath, relaunchTarget, updaterLog, publisher, verifiedDownloads.get(exePath)!)
 
   try {
-    writeFileSync(updaterScript, script, { encoding: 'utf8' })
+    writeFileSync(updaterScript, script, { encoding: 'utf8', mode: 0o700 })
   } catch (e: any) {
     appendLog(`Failed to write PowerShell script: ${e.message}`)
     return { success: false, message: `Failed to write install script: ${e.message}` }
@@ -697,7 +775,9 @@ function buildWindowsUpdateScript(
   pid: number,
   installerPath: string,
   relaunchTarget: string,
-  logPath: string
+  logPath: string,
+  publisher: string,
+  expectedHash: string
 ): string {
   // PowerShell script: wait for old process -> silent install (with retry) -> launch new version
   const log = psSingleQuote(logPath)
@@ -729,6 +809,11 @@ try {
     # Extra wait to ensure file locks are fully released
     Start-Sleep -Seconds 2
     Write-Log "Old process has exited."
+
+    # 在应用退出后再次核对文件，避免后台等待期间被替换。
+    $signature = Get-AuthenticodeSignature -LiteralPath ${installer}
+    if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -ne ${psSingleQuote(publisher)}) { throw 'Installer signature changed' }
+    if ((Get-FileHash -LiteralPath ${installer} -Algorithm SHA256).Hash.ToLower() -ne ${psSingleQuote(expectedHash)}) { throw 'Installer hash changed' }
 
     # Run NSIS installer silently (with retry)
     Write-Log "Running installer silently..."
@@ -788,7 +873,7 @@ function escapeAppleScriptText(value: string): string {
 }
 
 function appendLog(message: string): void {
-  const logPath = join(app.getPath('temp'), 'zterm-update-install.log')
+  const logPath = join(app.getPath('userData'), 'update-install.log')
   const timestamp = new Date().toISOString()
   const line = `[${timestamp}] ${message}\n`
   try {

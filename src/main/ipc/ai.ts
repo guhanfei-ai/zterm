@@ -1,4 +1,5 @@
-import { ipcMain } from 'electron'
+import { registerIpcHandler } from '../services/ipcSecurity'
+import { confirmSecretDisclosure } from '../services/ipcSecurity'
 import { ProviderSettingsApplication } from '../application/ai/providerSettingsApplication'
 import { ChatApplication, type ChatMessage } from '../application/chat/chatApplication'
 import { readRecentTerminalOutput } from '../data/terminal/terminalContextRepository'
@@ -15,24 +16,27 @@ const chatApplication = new ChatApplication(
 
 /** Electron 传输适配：参数转发、事件转发与生命周期入口。 */
 export function registerAiIpc(): void {
-  providerSettingsApplication.initialize()
+  try { providerSettingsApplication.initialize() }
+  catch { console.warn('[ai] 凭据暂不可用，模型请求需重新配置或解锁系统钥匙串') }
 
-  ipcMain.handle('ai:getProviderConfig', () => providerSettingsApplication.getProviderConfig())
+  registerIpcHandler('ai:getProviderConfig', () => providerSettingsApplication.getPublicProviderConfig())
+  registerIpcHandler('ai:revealApiKey', async (event) =>
+    await confirmSecretDisclosure(event, '模型 API Key') ? providerSettingsApplication.revealApiKey() : null)
 
-  ipcMain.handle(
+  registerIpcHandler(
     'ai:saveProviderConfig',
     (_event, config: Omit<ProviderConfig, 'providerType'>): { success: boolean; error?: string } =>
       providerSettingsApplication.saveProviderConfig(config)
   )
 
-  ipcMain.handle('ai:setModel', (_event, model: string) => providerSettingsApplication.setModel(model))
+  registerIpcHandler('ai:setModel', (_event, model: string) => providerSettingsApplication.setModel(model))
 
-  ipcMain.handle(
+  registerIpcHandler(
     'ai:validateProviderConfig',
     async (_event, config: ProviderConfig) => providerSettingsApplication.validateProviderConfig(config)
   )
 
-  ipcMain.handle(
+  registerIpcHandler(
     'ai:chatStream',
     async (
       event,
@@ -63,7 +67,7 @@ export function registerAiIpc(): void {
     }
   )
 
-  ipcMain.handle('ai:abort', (_event, data?: { chatTabId?: string }) => {
+  registerIpcHandler('ai:abort', (_event, data?: { chatTabId?: string }) => {
     chatApplication.abort(data?.chatTabId || '__default__')
     return { success: true }
   })

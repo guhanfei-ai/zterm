@@ -52,7 +52,21 @@ export class AiClient {
         baseURL: config.baseUrl,
         apiKey: config.apiKey
       })
-      await client.models.list({ timeout: 5000 })
+      const completion = await client.chat.completions.create({
+        model: config.model,
+        messages: [{ role: 'user', content: 'Call zterm_capability_check with an empty object.' }],
+        tools: [{ type: 'function', function: { name: 'zterm_capability_check', description: 'Verify tool-call protocol support. No side effects.', parameters: { type: 'object', properties: {}, additionalProperties: false } } }],
+        tool_choice: { type: 'function', function: { name: 'zterm_capability_check' } },
+      }, { timeout: 10_000, maxRetries: 0 })
+      if (!completion.choices[0]?.message.tool_calls?.some((call) => {
+        if (call.function.name !== 'zterm_capability_check') return false
+        try {
+          const args = JSON.parse(call.function.arguments)
+          return args && typeof args === 'object' && !Array.isArray(args) && Object.keys(args).length === 0
+        } catch { return false }
+      })) {
+        return { valid: false, error: '选定模型未返回原生工具调用，无法用于 Agent；请检查模型和服务端协议支持' }
+      }
       return { valid: true }
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : '未知错误'

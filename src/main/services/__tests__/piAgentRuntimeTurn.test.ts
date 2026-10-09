@@ -69,6 +69,7 @@ function makeStubSession(): StubSession & AgentSession {
     },
   }
   const session = {
+    setActiveToolsByName: vi.fn(),
     // 可变状态经 getter/setter 代理到 stub:测试改 session.* 即改闭包读取的同一状态
     get prompts() { return stub.prompts },
     get rejectNext() { return stub.rejectNext },

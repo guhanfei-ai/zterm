@@ -6,6 +6,8 @@ export interface ProviderConfig {
   model: string
   enableStreaming: boolean
   reasoningMode: 'auto'
+  contextWindow?: number
+  maxOutputTokens?: number
 }
 
 /** 传给具体模型协议适配器的通用消息。 */

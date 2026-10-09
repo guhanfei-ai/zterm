@@ -1,7 +1,7 @@
-import { ipcMain } from 'electron'
+import { registerIpcHandler } from '../services/ipcSecurity'
 import { getStore } from '../services/store'
 import { storeSecret, getSecret, deleteSecret } from '../services/secretVault'
-import { v4 as uuidv4 } from 'uuid'
+import { randomUUID } from 'node:crypto'
 import { testJumpserverConnection, fetchJumpserverAssets, fetchJumpserverNodes, fetchJumpserverNodeAssets, fetchJumpserverAccounts, createJumpserverConnectionToken, type JumpserverTestResult, type JumpserverAssetsResult, type JumpserverNodesResult, type JumpserverAccountsResult, type JumpserverSessionParamsResult } from '../services/jumpserverClient'
 
 export interface JumpserverConfig {
@@ -288,7 +288,7 @@ function migrateLegacySingleConfig(): boolean {
   }
 
   const legacyConfig = legacy as JumpserverConfig
-  const newId = legacyConfig.id || uuidv4()
+  const newId = legacyConfig.id || randomUUID()
   const newConfig: JumpserverConfig = { ...legacyConfig, id: newId }
 
   const map: Record<string, JumpserverConfig> = { [newId]: newConfig }
@@ -397,7 +397,7 @@ function saveConfigInternal(
     }
   }
 
-  const newId = existing?.id || uuidv4()
+  const newId = existing?.id || randomUUID()
   const config: JumpserverConfig = {
     id: newId,
     name: data.name,
@@ -482,21 +482,21 @@ export function registerJumpserverIpc(): void {
 
   // ===== 多实例配置 API（P14）=====
 
-  ipcMain.handle('jumpserver:getConfig', () => {
+  registerIpcHandler('jumpserver:getConfig', () => {
     const config = getActiveConfig()
     if (!config) return null
     return toSafeConfig(config)
   })
 
-  ipcMain.handle('jumpserver:getConfigs', () => {
+  registerIpcHandler('jumpserver:getConfigs', () => {
     return getAllConfigs().map(toSafeConfig)
   })
 
-  ipcMain.handle('jumpserver:getActiveConfigId', () => {
+  registerIpcHandler('jumpserver:getActiveConfigId', () => {
     return getActiveConfigId()
   })
 
-  ipcMain.handle(
+  registerIpcHandler(
     'jumpserver:saveConfig',
     (_event, data: JumpserverSaveData, configId?: string | null) => {
       try {
@@ -508,7 +508,7 @@ export function registerJumpserverIpc(): void {
     }
   )
 
-  ipcMain.handle('jumpserver:setActiveConfig', (_event, configId: string): JumpserverConfig | null => {
+  registerIpcHandler('jumpserver:setActiveConfig', (_event, configId: string): JumpserverConfig | null => {
     const map = getConfigMap()
     if (!map[configId]) return null
     setActiveConfigId(configId)
@@ -519,7 +519,7 @@ export function registerJumpserverIpc(): void {
    * 兼容旧调用：不传参时删除当前活跃实例；
    * 传参时删除指定实例（用于切换器中明确删除非活跃实例）。
    */
-  ipcMain.handle('jumpserver:deleteConfig', (_event, configId?: string | null): boolean => {
+  registerIpcHandler('jumpserver:deleteConfig', (_event, configId?: string | null): boolean => {
     const targetId = configId || getActiveConfigId()
     if (!targetId) return false
     const existed = !!getConfigById(targetId)
@@ -527,7 +527,7 @@ export function registerJumpserverIpc(): void {
     return existed
   })
 
-  ipcMain.handle('jumpserver:testConfig', async (_event, configId?: string): Promise<JumpserverTestResult> => {
+  registerIpcHandler('jumpserver:testConfig', async (_event, configId?: string): Promise<JumpserverTestResult> => {
     const config = configId ? getConfigById(configId) : getActiveConfig()
     if (!config) return { success: false, error: '未找到 Jumpserver 配置' }
     const { credential, accessKeySecret, error } = resolveCredentials(config)
@@ -548,13 +548,13 @@ export function registerJumpserverIpc(): void {
    * 获取 Access Key Secret（用于 UI 显示/隐藏切换）
    * 返回明文，由前端控制是否显示
    */
-  ipcMain.handle('jumpserver:getSecret', (_event, configId: string): string | null => {
+  registerIpcHandler('jumpserver:getSecret', (_event, configId: string): string | null => {
     const config = getConfigById(configId)
     if (!config || config.authMode !== 'access_key') return null
     return getAccessKeySecret(configId)
   })
 
-  ipcMain.handle('jumpserver:listAssets', async (_event, query?: { keyword?: string; limit?: number; offset?: number }): Promise<JumpserverAssetsResult> => {
+  registerIpcHandler('jumpserver:listAssets', async (_event, query?: { keyword?: string; limit?: number; offset?: number }): Promise<JumpserverAssetsResult> => {
     const config = getActiveConfig()
     if (!config) {
       return { success: false, assets: [], total: 0, offset: 0, limit: 0, hasMore: false, error: '未找到 Jumpserver 配置' }
@@ -573,7 +573,7 @@ export function registerJumpserverIpc(): void {
     }, query)
   })
 
-  ipcMain.handle('jumpserver:listAccounts', async (_event, assetId: string): Promise<JumpserverAccountsResult> => {
+  registerIpcHandler('jumpserver:listAccounts', async (_event, assetId: string): Promise<JumpserverAccountsResult> => {
     const config = getActiveConfig()
     if (!config) return { success: false, accounts: [], error: '未找到 Jumpserver 配置' }
     const { credential, accessKeySecret, error } = resolveCredentials(config)
@@ -590,7 +590,7 @@ export function registerJumpserverIpc(): void {
     }, assetId)
   })
 
-  ipcMain.handle('jumpserver:createToken', async (_event, assetId: string, accountId: string): Promise<JumpserverSessionParamsResult> => {
+  registerIpcHandler('jumpserver:createToken', async (_event, assetId: string, accountId: string): Promise<JumpserverSessionParamsResult> => {
     const config = getActiveConfig()
     if (!config) return { success: false, error: '未找到 Jumpserver 配置' }
     const { credential, accessKeySecret, error } = resolveCredentials(config)
@@ -629,7 +629,7 @@ export function registerJumpserverIpc(): void {
     return result
   })
 
-  ipcMain.handle('jumpserver:listNodes', async (_event, parentKey?: string): Promise<JumpserverNodesResult> => {
+  registerIpcHandler('jumpserver:listNodes', async (_event, parentKey?: string): Promise<JumpserverNodesResult> => {
     const config = getActiveConfig()
     if (!config) return { success: false, nodes: [], error: '未找到 Jumpserver 配置' }
     const { credential, accessKeySecret, error } = resolveCredentials(config)
@@ -646,7 +646,7 @@ export function registerJumpserverIpc(): void {
     }, parentKey)
   })
 
-  ipcMain.handle('jumpserver:listNodeAssets', async (_event, nodeId: string, query?: { keyword?: string; limit?: number; offset?: number }): Promise<JumpserverAssetsResult> => {
+  registerIpcHandler('jumpserver:listNodeAssets', async (_event, nodeId: string, query?: { keyword?: string; limit?: number; offset?: number }): Promise<JumpserverAssetsResult> => {
     const config = getActiveConfig()
     if (!config) {
       return { success: false, assets: [], total: 0, offset: 0, limit: 0, hasMore: false, error: '未找到 Jumpserver 配置' }
@@ -668,13 +668,13 @@ export function registerJumpserverIpc(): void {
   // ===== 本地快捷入口（收藏 / 最近使用）=====
   // 数据按当前 Jumpserver 配置隔离，不依赖远端 API，不保存凭据。
 
-  ipcMain.handle('jumpserver:getQuickAccess', (): { favorites: JumpserverQuickAccessItem[]; recent: JumpserverQuickAccessItem[] } => {
+  registerIpcHandler('jumpserver:getQuickAccess', (): { favorites: JumpserverQuickAccessItem[]; recent: JumpserverQuickAccessItem[] } => {
     const config = getActiveConfig()
     if (!config) return { favorites: [], recent: [] }
     return getQuickAccess(config.id)
   })
 
-  ipcMain.handle('jumpserver:toggleFavorite', (_event, asset: { assetId: string; name: string; address: string; platform: string; comment: string }): { favorites: JumpserverQuickAccessItem[]; recent: JumpserverQuickAccessItem[] } => {
+  registerIpcHandler('jumpserver:toggleFavorite', (_event, asset: { assetId: string; name: string; address: string; platform: string; comment: string }): { favorites: JumpserverQuickAccessItem[]; recent: JumpserverQuickAccessItem[] } => {
     const config = getActiveConfig()
     if (!config) return { favorites: [], recent: [] }
 
@@ -700,7 +700,7 @@ export function registerJumpserverIpc(): void {
     return data
   })
 
-  ipcMain.handle('jumpserver:recordRecent', (_event, asset: { assetId: string; name: string; address: string; platform: string; comment: string }): { favorites: JumpserverQuickAccessItem[]; recent: JumpserverQuickAccessItem[] } => {
+  registerIpcHandler('jumpserver:recordRecent', (_event, asset: { assetId: string; name: string; address: string; platform: string; comment: string }): { favorites: JumpserverQuickAccessItem[]; recent: JumpserverQuickAccessItem[] } => {
     const config = getActiveConfig()
     if (!config) return { favorites: [], recent: [] }
 
@@ -728,13 +728,13 @@ export function registerJumpserverIpc(): void {
 
   // ===== 账号偏好（P12）=====
 
-  ipcMain.handle('jumpserver:getAccountPreferences', (): Record<string, JumpserverAccountPreference> => {
+  registerIpcHandler('jumpserver:getAccountPreferences', (): Record<string, JumpserverAccountPreference> => {
     const config = getActiveConfig()
     if (!config) return {}
     return getAccountPreferences(config.id)
   })
 
-  ipcMain.handle(
+  registerIpcHandler(
     'jumpserver:saveAccountPreference',
     (_event, assetId: string, accountId: string, accountName: string): Record<string, JumpserverAccountPreference> => {
       const config = getActiveConfig()
