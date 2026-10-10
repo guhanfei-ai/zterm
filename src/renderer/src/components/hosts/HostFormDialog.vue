@@ -82,7 +82,7 @@
             </div>
             <div class="inline-form-actions">
               <button type="button" class="btn btn-cancel" @click="cancelKeyForm">取消</button>
-              <button type="button" class="btn btn-save" :disabled="!keyFormValid" @click="createKeyInline">添加</button>
+              <button type="button" class="btn btn-save" :disabled="!keyFormValid || keySaving" @click="createKeyInline">添加</button>
             </div>
             <span v-if="keyFormError" class="error-msg">{{ keyFormError }}</span>
           </div>
@@ -125,8 +125,8 @@
       <div class="dialog-footer">
         <span v-if="saveError" class="error-msg">{{ saveError }}</span>
         <button class="btn btn-cancel" @click="$emit('close')">取消</button>
-        <button class="btn btn-save" :disabled="!valid" @click="onSave">
-          {{ isEdit ? '更新' : '创建' }}
+        <button class="btn btn-save" :disabled="!valid || saving" @click="onSave">
+          {{ saving ? '保存中…' : isEdit ? '更新' : '创建' }}
         </button>
       </div>
     </div>
@@ -153,6 +153,8 @@ const keysStore = useKeysStore()
 const isEdit = computed(() => !!props.host?.id)
 const originalAuthType = props.host?.authType as HostRecord['authType'] | undefined
 const saveError = ref('')
+const saving = ref(false)
+const keySaving = ref(false)
 const showPassword = ref(false)
 const showKeyPassphrase = ref(false)
 const showPrivateKeyPassphrase = ref(false)
@@ -308,7 +310,8 @@ function cancelKeyForm(): void {
 }
 
 async function createKeyInline(): Promise<void> {
-  if (!keyFormValid.value) return
+  if (!keyFormValid.value || keySaving.value) return
+  keySaving.value = true
   keyFormError.value = ''
   try {
     const newKey = await keysStore.createKey({
@@ -320,6 +323,8 @@ async function createKeyInline(): Promise<void> {
     cancelKeyForm()
   } catch (err) {
     keyFormError.value = err instanceof Error ? err.message : '创建秘钥失败'
+  } finally {
+    keySaving.value = false
   }
 }
 
@@ -363,10 +368,12 @@ const validationError = computed(() => {
 const valid = computed(() => validationError.value === null)
 
 async function onSave(): Promise<void> {
+  if (saving.value) return
   if (!valid.value) {
     saveError.value = validationError.value || '请填写所有必填项'
     return
   }
+  saving.value = true
   saveError.value = ''
 
   const data: {
@@ -411,6 +418,8 @@ async function onSave(): Promise<void> {
     emit('close')
   } catch (err: unknown) {
     saveError.value = err instanceof Error ? err.message : '保存失败'
+  } finally {
+    saving.value = false
   }
 }
 </script>

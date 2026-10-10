@@ -16,6 +16,10 @@
       <button class="btn btn-update-check ghost" @click="onCheckUpdate">重新检查</button>
     </div>
 
+    <div v-else-if="updateStore.state === 'manual'" class="update-info">
+      <span class="update-status">此版本采用手动更新，请到官方发布页确认最新版本并下载安装。</span>
+    </div>
+
     <div v-else-if="updateStore.state === 'available'" class="update-info">
       <div class="update-available">发现新版本：v{{ updateStore.latestVersion }}</div>
       <div v-if="updateStore.notes" class="update-notes">{{ updateStore.notes }}</div>
@@ -40,6 +44,7 @@
     </div>
 
     <div v-if="updateStore.error" class="update-error">{{ updateStore.error }}</div>
+    <a class="update-status" href="https://github.com/guhanfei-ai/zterm/releases/latest" target="_blank" rel="noopener noreferrer">打开官方下载页</a>
   </div>
 </template>
 

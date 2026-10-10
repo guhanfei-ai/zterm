@@ -4,7 +4,10 @@ import vue from '@vitejs/plugin-vue'
 
 export default defineConfig({
   main: {
-    define: { __ZTERM_WINDOWS_UPDATE_PUBLISHER__: JSON.stringify(process.env.ZTERM_UPDATE_WIN_PUBLISHER ?? '') },
+    define: {
+      __ZTERM_WINDOWS_UPDATE_PUBLISHER__: JSON.stringify(process.env.ZTERM_UPDATE_WIN_PUBLISHER ?? ''),
+      __ZTERM_UPDATE_BASE_URL__: JSON.stringify(process.env.ZTERM_UPDATE_BASE_URL ?? '')
+    },
     plugins: [externalizeDepsPlugin()]
   },
   preload: {

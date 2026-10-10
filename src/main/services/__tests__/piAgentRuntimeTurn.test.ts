@@ -133,6 +133,7 @@ import type { ChatTurn, StepRecord } from '../agentGraphState'
 
 function makeBridge(): TerminalBridge {
   return {
+    getBoundTargetId: () => 'runtime-test-target',
     isConnected: () => true,
     isDisposed: () => false,
     getTerminalLockKey: () => ({ fakeSession: true }),
@@ -147,7 +148,7 @@ function makeBridge(): TerminalBridge {
 interface RecordedCallbacks {
   messages: Array<{ type: string; content: string; details?: Record<string, unknown>; stepNumber?: number }>
   states: string[]
-  stepCompletions: Array<{ steps: StepRecord[]; stopReason?: string | null; conclusion?: string }>
+  stepCompletions: Array<{ steps: StepRecord[]; stopReason?: string | null; conclusion?: string; turnCompleted?: boolean }>
 }
 
 function makeCallbacks(): AgentGraphCallbacks & RecordedCallbacks {
@@ -166,6 +167,7 @@ function makeCallbacks(): AgentGraphCallbacks & RecordedCallbacks {
         steps: data.steps,
         stopReason: data.stopReason,
         conclusion: data.conclusion,
+        turnCompleted: data.turnCompleted,
       })
     },
   } as AgentGraphCallbacks & RecordedCallbacks
@@ -360,9 +362,10 @@ describe('R06 事件映射', () => {
     expect(replies.length).toBe(1)
     expect(replies[0].content).toBe('最终回复')
 
-    // 纯聊天收尾:idle + 无 stopReason(不写 COMPLETED)
+    // 纯聊天自然结束有独立标记；不冒充执行成功，也不成为待恢复任务。
     expect(callbacks.states).toContain('idle')
     expect(callbacks.stepCompletions[0].stopReason).toBeUndefined()
+    expect(callbacks.stepCompletions[0].turnCompleted).toBe(true)
   })
 
   it('assistant stopReason=error(prompt 正常 resolve)→ 显式 failed,不 COMPLETED', async () => {

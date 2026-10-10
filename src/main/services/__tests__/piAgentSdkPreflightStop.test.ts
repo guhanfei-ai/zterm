@@ -101,6 +101,7 @@ it('real SDK input gate: stop-only rejects old send before transport; new turn r
   // SDK receives only custom terminal tools; this bridge must never be called.
   const writeCommand = vi.fn(() => { throw new Error('M01 test forbids terminal execution') })
   const bridge = {
+    getBoundTargetId: () => 'preflight-test-target',
     isConnected: () => true,
     isDisposed: () => false,
     getTerminalLockKey: () => bridge,

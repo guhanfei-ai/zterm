@@ -33,6 +33,7 @@ import {
 import type { Credential, CredentialInfo, CredentialStore } from '@earendil-works/pi-ai'
 import type { Model } from '@earendil-works/pi-ai'
 import type { ProviderConfig } from './aiClient'
+import { withPiModelDeadline } from './piModelDeadline'
 
 /** zTerm 专用 provider id:避免与内置 'openai'(Responses API)冲突。 */
 export const ZTERM_PROVIDER_ID = 'zterm-openai-completions'
@@ -182,7 +183,9 @@ export async function buildPiModelSetup(
       if (auth.allowedUid == null || currentUid == null || currentUid !== auth.allowedUid) {
         throw new Error('[zterm] 会话已结束,旧轮模型请求被拒绝(发送前)')
       }
-      return api.streamSimple(m, context, opts)
+      return withPiModelDeadline(model, signal => api.streamSimple(m, context, {
+        ...opts, timeoutMs: 30_000, maxRetries: 0, signal,
+      }), opts?.signal)
     },
   })
 
@@ -194,6 +197,7 @@ export async function buildPiModelSetup(
   const settingsManager = options?.settingsManager ?? SettingsManager.inMemory()
   // 宿主未授权后台保温请求；模型发送只能由当前人类启动的轮次发起。
   settingsManager.setCacheWarmingMode('off')
+  settingsManager.setRetryEnabled(false)
 
   // 会话上下文内存维护(历史导入见 piAgentRuntime 的 buildHistoryEntries)
   const sessionManager = SessionManager.inMemory()

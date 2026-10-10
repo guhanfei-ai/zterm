@@ -26,6 +26,7 @@ import { isIP } from 'node:net'
 import { normalizeReconnectTarget } from '../model/workspace'
 import type { SshHostTrustResponse } from '../model/sshHostTrust'
 import { resetSshHostTrustRecord } from '../services/sshHostTrust'
+import { isAgentTerminalBusy, noteManualTerminalInput, setAgentTerminalBusyListener } from '../services/agentTerminalCoordinator'
 
 const hostPrivateKeyFilePassphraseSecretKey = (id: string): string => `host_pkf_pp_${id}`
 
@@ -381,6 +382,16 @@ async function connectJumpserverTerminal(data: {
 }
 
 export function registerTerminalIpc(): void {
+  setAgentTerminalBusyListener((key, busy) => {
+    const session = key as TerminalSession | LocalPtySession
+    if (typeof session.tabId !== 'string') return
+    if (terminalSessionManager.getSession(session.tabId) !== session && getLocalSession(session.tabId) !== session) return
+    forwardToRenderer('terminal:onAgentBusy', { tabId: session.tabId, generation: session.generation, busy })
+  })
+  registerIpcHandler('terminal:isAgentBusy', (_event, tabId: string) => {
+    const session = terminalSessionManager.getSession(tabId) ?? getLocalSession(tabId)
+    return { busy: session ? isAgentTerminalBusy(session) : false, generation: session?.generation ?? 0 }
+  })
   registerIpcHandler(
     'terminal:connect',
     async (
@@ -535,18 +546,15 @@ export function registerTerminalIpc(): void {
   // 异常路径显式返回 error 字符串，让 renderer 可以感知。
   registerIpcHandler('terminal:write', (_event, data: { tabId: string; data: string }) => {
     try {
-      // 优先查 SSH 会话，再查本地会话
-      const sshSession = terminalSessionManager.getSession(data.tabId)
-      if (sshSession) {
-        sshSession.write(data.data)
-        return { success: true }
+      if (typeof data?.tabId !== 'string' || typeof data.data !== 'string') return { success: false, error: '终端输入无效' }
+      const session = terminalSessionManager.getSession(data.tabId) ?? getLocalSession(data.tabId)
+      if (!session?.connected) return { success: false, error: '终端未连接，本次输入未发送' }
+      if (session && isAgentTerminalBusy(session)) {
+        return { success: false, code: 'AGENT_BUSY', error: 'AI 正在使用此终端；请等待完成或停止 AI 后再输入。本次输入未发送。' }
       }
-      const localSession = getLocalSession(data.tabId)
-      if (localSession) {
-        localSession.write(data.data)
-        return { success: true }
-      }
-      return { success: false, error: 'no session' }
+      session.write(data.data)
+      noteManualTerminalInput(session, data.data)
+      return { success: true }
     } catch (err: unknown) {
       return { success: false, error: err instanceof Error ? err.message : String(err) }
     }

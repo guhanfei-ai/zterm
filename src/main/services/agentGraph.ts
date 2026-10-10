@@ -72,6 +72,8 @@ export interface AgentGraphCallbacks {
     currentStep: number
     conclusion?: string
     stopReason?: StopReason
+    /** 对话轮次已自然结束；不代表执行任务成功。 */
+    turnCompleted?: boolean
     systemInfo?: SystemInfo
     systemDetected?: boolean
   }) => void

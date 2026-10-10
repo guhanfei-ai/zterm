@@ -346,6 +346,10 @@ export class TerminalSession extends EventEmitter {
     return this.outputBuffer.recent(lines)
   }
 
+  beginAgentOutput(): void { this.outputBuffer.beginAgentOutput() }
+  endAgentOutput(): void { this.outputBuffer.endAgentOutput() }
+  getRecentOutputForAgent(lines: number): string { return this.outputBuffer.recent(lines, false) }
+
   disconnect(): void {
     this.settlePendingHostTrust(false, 'unconfirmed')
     if (!this.connected) {

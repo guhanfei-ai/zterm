@@ -5,6 +5,7 @@ export type UpdateState =
   | 'idle'
   | 'checking'
   | 'no-update'
+  | 'manual'
   | 'available'
   | 'downloading'
   | 'downloaded'
@@ -69,6 +70,10 @@ export const useUpdateStore = defineStore('update', () => {
         state.value = 'idle'
         return
       }
+      if (result.data.status === 'unconfigured' || result.data.status === 'unsupported') {
+        state.value = 'manual'
+        return
+      }
       if (result.data.hasUpdate) {
         latestVersion.value = result.data.latestVersion
         notes.value = result.data.notes
@@ -100,6 +105,15 @@ export const useUpdateStore = defineStore('update', () => {
       if (!result.success) {
         error.value = result.error || '检查更新失败'
         state.value = 'idle'
+        return
+      }
+      if (!result.data) {
+        error.value = '检查更新失败：未收到有效响应，请重试。'
+        state.value = 'idle'
+        return
+      }
+      if (result.data.status === 'unconfigured' || result.data.status === 'unsupported') {
+        state.value = 'manual'
         return
       }
       if (result.data?.hasUpdate) {

@@ -30,6 +30,7 @@ export interface ChatTab {
   id: string
   title: string
   mode: PanelMode
+  draft: string
   messages: ChatMessage[]
   isStreaming: boolean
   error: string | null
@@ -59,6 +60,7 @@ function createChatTab(override?: Partial<ChatTab>): ChatTab {
     id: crypto.randomUUID(),
     title: '对话',
     mode: 'agent',
+    draft: '',
     messages: [],
     isStreaming: false,
     error: null,
@@ -318,7 +320,7 @@ export const useChatStore = defineStore('chat', () => {
       return createChatTab({
         id: snapshot.id,
         title: snapshot.title,
-        mode: snapshot.mode,
+        mode: 'agent',
         includeTerminalContext: snapshot.includeTerminalContext,
         linkedTerminalTabId,
         linkedTerminalUnavailable: !!snapshot.linkedTerminalTabId && !linkedTerminalTabId

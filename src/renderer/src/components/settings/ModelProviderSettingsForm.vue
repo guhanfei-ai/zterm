@@ -59,7 +59,7 @@
         <input
           v-model="form.model"
           class="field-input"
-          placeholder="deepseek-flash"
+          placeholder="填写服务支持的模型名称"
         />
       </div>
 
@@ -92,10 +92,11 @@
     </div>
 
     <div class="card-footer">
+      <span v-if="loading || validationHint" class="field-hint">{{ loading ? '正在读取已保存配置…' : validationHint }}</span>
       <div class="footer-actions">
         <button
           class="btn btn-secondary"
-          :disabled="testing"
+          :disabled="loading || !valid || testing || saving"
           @click="onTest"
         >
           <svg v-if="testing" class="btn-spinner" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10" stroke-dasharray="32" stroke-dashoffset="32"><animate attributeName="stroke-dashoffset" values="32;0" dur="1s" repeatCount="indefinite"/></circle></svg>
@@ -104,7 +105,7 @@
         </button>
         <button
           class="btn btn-primary"
-          :disabled="!valid || saving"
+          :disabled="loading || !valid || saving || testing"
           @click="onSave"
         >
           <svg v-if="saving" class="btn-spinner" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10" stroke-dasharray="32" stroke-dashoffset="32"><animate attributeName="stroke-dashoffset" values="32;0" dur="1s" repeatCount="indefinite"/></circle></svg>
@@ -131,6 +132,7 @@
 import { ref, reactive, computed, onMounted } from 'vue'
 
 const showKey = ref(false)
+const loading = ref(true)
 const hasExistingKey = ref(false)
 const testing = ref(false)
 const testResult = ref('')
@@ -143,30 +145,45 @@ const form = reactive({
   label: 'DeepSeek',
   baseUrl: 'https://api.deepseek.com/v1',
   apiKey: '',
-  model: 'deepseek-flash',
+  model: '',
   enableStreaming: true,
   contextWindow: 32768,
   maxOutputTokens: 4096,
 })
 
-const valid = computed(
-  () => form.label.trim() && form.baseUrl.trim() && form.model.trim() && (hasExistingKey.value || form.apiKey.trim())
-)
+const validationHint = computed(() => {
+  const missing = []
+  if (!form.label.trim()) missing.push('名称')
+  if (!form.baseUrl.trim()) missing.push('接口地址')
+  if (!form.model.trim()) missing.push('模型名称')
+  if (!hasExistingKey.value && !form.apiKey.trim()) missing.push('API 密钥')
+  if (missing.length) return `请填写：${missing.join('、')}。`
+  try {
+    if (!['https:', 'http:'].includes(new URL(form.baseUrl.trim()).protocol)) throw new Error()
+  } catch { return '接口地址须为 http 或 https 的完整地址。' }
+  if (!Number.isSafeInteger(form.contextWindow) || form.contextWindow < 8192 || form.contextWindow > 2_000_000) return '上下文窗口须为 8192～2000000 的整数。'
+  if (!Number.isSafeInteger(form.maxOutputTokens) || form.maxOutputTokens < 256 || form.maxOutputTokens > form.contextWindow / 2) return '输出上限须为 256～上下文窗口一半的整数。'
+  return ''
+})
+const valid = computed(() => !validationHint.value)
 
 onMounted(async () => {
-  const config = await window.electronAPI.ai.getProviderConfig()
-  if (config) {
-    form.label = config.label
-    form.baseUrl = config.baseUrl
-    form.model = config.model
-    form.enableStreaming = config.enableStreaming
-    form.contextWindow = config.contextWindow ?? 32768
-    form.maxOutputTokens = config.maxOutputTokens ?? 4096
-    // 已保存密钥默认不回填，避免打开设置页时直接明文暴露。
-    if (config.hasApiKey) {
-      hasExistingKey.value = true
+  try {
+    const config = await window.electronAPI.ai.getProviderConfig()
+    if (config) {
+      form.label = config.label
+      form.baseUrl = config.baseUrl
+      form.model = config.model
+      form.enableStreaming = config.enableStreaming
+      form.contextWindow = config.contextWindow ?? 32768
+      form.maxOutputTokens = config.maxOutputTokens ?? 4096
+      // 已保存密钥默认不回填，避免打开设置页时直接明文暴露。
+      if (config.hasApiKey) hasExistingKey.value = true
     }
-  }
+  } catch {
+    saveResult.value = '读取已保存配置失败，请重新打开设置或填写配置后保存。'
+    saveResultClass.value = 'error'
+  } finally { loading.value = false }
 })
 
 async function toggleKeyVisibility(): Promise<void> {
@@ -191,7 +208,7 @@ async function toggleKeyVisibility(): Promise<void> {
 }
 
 async function onTest(): Promise<void> {
-  if (!valid.value) return
+  if (loading.value || !valid.value || testing.value || saving.value) return
   testing.value = true
   testResult.value = ''
   testResultClass.value = ''
@@ -223,7 +240,7 @@ async function onTest(): Promise<void> {
 }
 
 async function onSave(): Promise<void> {
-  if (!valid.value) return
+  if (loading.value || !valid.value || saving.value || testing.value) return
 
   saving.value = true
   saveResult.value = ''
@@ -240,6 +257,7 @@ async function onSave(): Promise<void> {
       contextWindow: form.contextWindow, maxOutputTokens: form.maxOutputTokens
     })
     if (result.success) {
+      window.dispatchEvent(new Event('zterm:provider-config-changed'))
       saveResult.value = '配置已保存'
       saveResultClass.value = 'success'
       hasExistingKey.value = true

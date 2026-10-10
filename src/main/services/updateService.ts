@@ -10,7 +10,9 @@ declare const __ZTERM_WINDOWS_UPDATE_PUBLISHER__: string
 const WINDOWS_UPDATE_PUBLISHER = typeof __ZTERM_WINDOWS_UPDATE_PUBLISHER__ === 'string'
   ? __ZTERM_WINDOWS_UPDATE_PUBLISHER__ : process.env.ZTERM_UPDATE_WIN_PUBLISHER ?? ''
 
-const UPDATE_BASE_URL = process.env.ZTERM_UPDATE_BASE_URL?.trim() || ''
+declare const __ZTERM_UPDATE_BASE_URL__: string
+const UPDATE_BASE_URL = (typeof __ZTERM_UPDATE_BASE_URL__ === 'string'
+  ? __ZTERM_UPDATE_BASE_URL__ : process.env.ZTERM_UPDATE_BASE_URL ?? '').trim()
 
 /** 配置的更新源 hostname，用于限制更新包下载来源 */
 const UPDATE_ALLOWED_HOST = (() => {
@@ -93,6 +95,7 @@ interface UpdateManifest {
 }
 
 interface UpdateCheckResult {
+  status: 'available' | 'up-to-date' | 'unconfigured' | 'unsupported'
   hasUpdate: boolean
   latestVersion: string
   notes: string
@@ -196,7 +199,8 @@ function getUpdateFileExt(): string {
 }
 
 function isSupportedPlatform(): boolean {
-  return process.platform === 'darwin' || process.platform === 'win32'
+  return (process.platform === 'darwin' && process.arch === 'arm64') ||
+    (process.platform === 'win32' && process.arch === 'x64')
 }
 
 // ==================== 版本工具 ====================
@@ -276,6 +280,7 @@ export async function checkForUpdate(): Promise<UpdateCheckResult> {
   const currentVersion = normalizeVersion(readLocalVersion())
 
   const emptyResult: UpdateCheckResult = {
+    status: 'unconfigured',
     hasUpdate: false,
     latestVersion: currentVersion,
     notes: '',
@@ -284,14 +289,16 @@ export async function checkForUpdate(): Promise<UpdateCheckResult> {
   }
 
   if (!isSupportedPlatform()) {
-    return emptyResult
+    return { ...emptyResult, status: 'unsupported' }
   }
+  if (!UPDATE_BASE_URL) return emptyResult
+  if (!UPDATE_ALLOWED_HOST) throw new Error('更新源配置无效，请使用官方下载页更新')
 
   let manifest: UpdateManifest
   try {
     manifest = await fetchManifest(getManifestUrl())
-  } catch {
-    return emptyResult
+  } catch (error) {
+    throw new Error(`检查更新失败：${error instanceof Error ? error.message : '无法读取更新清单'}。可以重试或前往官方下载页。`)
   }
 
   const manifestVersion = normalizeVersion(manifest.version)
@@ -299,6 +306,7 @@ export async function checkForUpdate(): Promise<UpdateCheckResult> {
 
   if (cmp <= 0) {
     return {
+      status: 'up-to-date',
       hasUpdate: false,
       latestVersion: manifestVersion,
       notes: manifest.notes,
@@ -309,6 +317,7 @@ export async function checkForUpdate(): Promise<UpdateCheckResult> {
 
   trustedManifest = manifest
   return {
+    status: 'available',
     hasUpdate: true,
     latestVersion: manifestVersion,
     notes: manifest.notes,

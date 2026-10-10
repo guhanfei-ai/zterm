@@ -11,7 +11,7 @@
         <button
           class="btn-action"
           :disabled="!canBind"
-          :title="canBind ? '' : '请先停止当前 Agent 任务再重新绑定终端'"
+          :title="canBind ? '绑定前请结束正在运行的程序，回到空闲 Shell 提示符' : '请先停止当前 Agent 任务再重新绑定终端'"
           @click="$emit('bind')"
         >
           {{ boundHost ? '重新绑定' : '绑定终端' }}
@@ -60,7 +60,7 @@
       </button>
       <span v-if="!allowWrite" class="toolbar-hint">
         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-        使用内置工具读取信息，不修改文件或系统配置
+        使用内置工具读取信息；绑定前请回到空闲 Shell
       </span>
       <span v-else class="toolbar-hint">
         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
@@ -102,7 +102,8 @@ const isTerminal = computed(() =>
 const bracketLabel = computed(() => {
   const stateMap: Record<string, string> = {
     idle: '',
-    planning: '·规划中',
+    starting: '·正在回复',
+    planning: '·正在回复',
     executing: '·执行中',
     observing: '·观察中',
     summarizing: '·总结中',
@@ -113,8 +114,9 @@ const bracketLabel = computed(() => {
   }
   const statePart = stateMap[props.agentState] || ''
   // 单轮预算：人类每次介入（发消息 / 续跑）计数从零重记，x 始终是"本轮"进度
-  const steps = `本轮${props.elapsedSteps ?? 0}/${props.maxSteps ?? 25}步`
-  return `Agent模式${statePart}：${steps}`
+  const count = props.elapsedSteps ?? 0
+  const steps = count > 0 ? `：本轮工具 ${count}/${props.maxSteps ?? 25}` : ''
+  return `对话${statePart}${steps}`
 })
 </script>
 

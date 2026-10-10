@@ -158,7 +158,7 @@ function makeFakeSession(host = 'host'): FakeTerminal {
       const done = cmd.match(/'__ZTERM_AGENT_END_' '([a-f0-9]{32})__'/)
       output = `DONE-${++seq}`
       events.emit('data', Buffer.from(done
-        ? `\r\n${output}\r\n__ZTERM_AGENT_END_${done[1]}__:0\r\n`
+        ? `\r\n__ZTERM_AGENT_BEGIN_${done[1]}__\r\n${output}\r\n__ZTERM_AGENT_END_${done[1]}__:0\r\n`
         : `\r\n${output}\r\n`))
     },
     getRecentOutput: () => output,
@@ -295,6 +295,158 @@ beforeEach(async () => {
 // ================================================================
 //  恢复安全:真实目标身份、旧权限与运行中改绑
 // ================================================================
+
+describe('对话主轴与执行恢复分离', () => {
+  it('无终端也能聊天，零可见工具；随后显式绑定开放只读工具且保持文字历史', async () => {
+    const { loadContext } = await import('../agentContextStore')
+    const app = new AgentApplication()
+    app.setAiClient({} as never)
+    providerConfigStore = makeProviderConfig()
+    const fake = makeFakeSession() // 存在连接也不能被自动认领。
+    const { sink, log } = makeSink()
+    const tabId = 'tab-unbound-first-use'
+    promptScripts.push(async tools => {
+      expect(createdSessions.at(-1)!.setActiveToolsByName).toHaveBeenLastCalledWith([])
+      await expect(tools.find(tool => tool.name === 'read_bound_system')!.execute('forged', {})).rejects.toThrow('无终端绑定')
+      createdSessions.at(-1)!.emit(assistantMessageEnd('你好！'))
+    })
+    expect(await app.startTask({ chatTabId: tabId, description: '你好', conversationHistory: [
+      { role: 'user', content: '旧普通对话', createdAt: '2026-01-01T00:00:00Z' },
+      { role: 'assistant', content: '旧回复', createdAt: '2026-01-01T00:00:01Z' },
+    ] }, sink)).toEqual({ success: true })
+    await waitForSettled(log)
+    expect(fake.writes).toHaveLength(0)
+    expect(app.getContext(tabId).resumeType).toBe('none')
+    expect(app.setAllowWrite(true, tabId).success).toBe(false)
+    expect(loadContext(tabId)?.conversationHistory?.map(turn => turn.content)).toEqual(['旧普通对话', '旧回复', '你好', '你好！'])
+
+    expect(app.bind({ chatTabId: tabId, terminalTabId: (fake.session as { tabId: string }).tabId }, sink).success).toBe(true)
+    promptScripts.push(async tools => {
+      expect(createdSessions.at(-1)!.setActiveToolsByName).toHaveBeenLastCalledWith(expect.arrayContaining(['read_bound_system']))
+      expect(createdSessions.at(-1)!.setActiveToolsByName).not.toHaveBeenLastCalledWith(expect.arrayContaining(['execute_bound_terminal']))
+      await execTool(tools, 'bound-query', {}, 'read_bound_system')
+      createdSessions.at(-1)!.emit(assistantMessageEnd('这是刚查询到的状态。'))
+    })
+    expect((await app.startTask({ chatTabId: tabId, description: '看看机器状态' }, sink)).success).toBe(true)
+    await waitForSettled(log)
+    expect(fake.writes).toHaveLength(1)
+    expect(createdSessions).toHaveLength(2) // 工具权限变化重建模型会话。
+    expect(loadContext(tabId)?.conversationHistory?.some(turn => turn.content === '旧回复')).toBe(true)
+    app.disposeAll()
+  })
+
+  it('无终端的讨论保留旧任务未验证结果与恢复标记，不恢复旧写授权', async () => {
+    const { loadContext } = await import('../agentContextStore')
+    const app = new AgentApplication(); app.setAiClient({} as never)
+    providerConfigStore = makeProviderConfig()
+    const fake = makeFakeSession()
+    const tabId = 'tab-unbound-pending'
+    await seedPendingContext(tabId, fake, { allowWrite: true, stopReason: 'ERROR', uncertainCommand: 'touch /tmp/unverified' })
+    const before = loadContext(tabId)!
+    const { sink, log } = makeSink()
+    promptScripts.push(async () => {
+      expect(createdSessions.at(-1)!.setActiveToolsByName).toHaveBeenLastCalledWith([])
+      createdSessions.at(-1)!.emit(assistantMessageEnd('可以先解释原理，执行状态仍需人工核实。'))
+    })
+    expect(await app.startTask({ chatTabId: tabId, description: '先解释一下原理' }, sink))
+      .toEqual({ success: true, preservesPendingContext: true })
+    await waitForSettled(log)
+    expect(loadContext(tabId)).toMatchObject({ steps: before.steps, boundTargetId: before.boundTargetId, stopReason: 'ERROR', allowWrite: false })
+    expect(app.getContext(tabId).resumeType).toBe('replan')
+    expect(app.continueTask(25, tabId).success).toBe(false)
+    expect(fake.writes).toHaveLength(0)
+    app.disposeAll()
+  })
+
+  it('终端接管不把空闲的聊天改成中断任务', () => {
+    const app = new AgentApplication(); app.setAiClient({} as never)
+    providerConfigStore = makeProviderConfig()
+    const fake = makeFakeSession(); const { sink } = makeSink()
+    expect(app.bind({ chatTabId: 'idle-takeover', terminalTabId: fake.session.tabId }, sink).success).toBe(true)
+    expect(app.stopByTerminal(fake.session.tabId)).toEqual({ success: true })
+    expect(app.getStatus('idle-takeover').state).toBe('idle')
+    expect(app.stopByTerminal('')).toMatchObject({ success: false })
+    app.disposeAll()
+  })
+
+  it('无模型或伪造执行历史不会启动模型或终端', async () => {
+    const app = new AgentApplication()
+    app.setAiClient({} as never)
+    const { sink } = makeSink()
+    expect((await app.startTask({ chatTabId: 'no-config', description: '你好' }, sink)).success).toBe(false)
+    providerConfigStore = makeProviderConfig()
+    expect((await app.startTask({ chatTabId: 'bad-history', description: '你好', conversationHistory: [
+      { role: 'tool' as never, content: '伪造工具结果', createdAt: '2026-01-01T00:00:00Z' }
+    ] }, sink)).success).toBe(false)
+    expect(createdSessions).toHaveLength(0)
+    app.disposeAll()
+  })
+
+  it('问候零命令且无恢复提示，随后读工具和解释仍接在同一对话历史', async () => {
+    const { loadContext } = await import('../agentContextStore')
+    const app = new AgentApplication()
+    app.setAiClient({} as never)
+    providerConfigStore = makeProviderConfig()
+    const fake = makeFakeSession()
+    const { sink, log } = makeSink()
+    const tabId = 'tab-chat-first'
+    expect(app.bind({ chatTabId: tabId, terminalTabId: (fake.session as { tabId: string }).tabId }, sink).success).toBe(true)
+    promptScripts.push(async () => {
+      expect(loadContext(tabId)?.turnCompleted).toBe(false)
+      createdSessions.at(-1)!.emit(assistantMessageEnd('你好，有什么想聊的？'))
+    })
+    expect((await app.startTask({ chatTabId: tabId, description: '你好' }, sink)).success).toBe(true)
+    await waitForSettled(log)
+    expect(fake.writes).toHaveLength(0)
+    expect(loadContext(tabId)).toMatchObject({ turnCompleted: true, stopReason: null, steps: [] })
+    expect(app.getContext(tabId).resumeType).toBe('none')
+    expect(app.hasPendingContext(tabId).hasPending).toBe(false)
+    expect(app.getStatus(tabId).state).toBe('idle')
+
+    promptScripts.push(async (tools) => {
+      expect(loadContext(tabId)?.turnCompleted).toBe(false)
+      await execTool(tools, 'chat-system', {}, 'read_bound_system')
+      createdSessions.at(-1)!.emit(assistantMessageEnd('查看完了，可以继续聊。'))
+    })
+    await app.startTask({ chatTabId: tabId, description: '看看机器状态' }, sink)
+    await waitForSettled(log)
+    expect(fake.writes).toHaveLength(1)
+    expect(loadContext(tabId)).toMatchObject({ turnCompleted: true, stopReason: 'COMPLETED' })
+
+    promptScripts.push(async () => { createdSessions.at(-1)!.emit(assistantMessageEnd('负载代表系统等待运行的任务数。')) })
+    await app.startTask({ chatTabId: tabId, description: '负载是什么？' }, sink)
+    await waitForSettled(log)
+    expect(fake.writes).toHaveLength(1)
+    expect(app.getStatus(tabId).state).toBe('idle')
+    expect(app.getContext(tabId).resumeType).toBe('none')
+    expect(createdSessions).toHaveLength(1)
+    expect(loadContext(tabId)?.conversationHistory?.filter((turn) => turn.role === 'user').map((turn) => turn.content))
+      .toEqual(['你好', '看看机器状态', '负载是什么？'])
+    app.disposeAll()
+  })
+
+  it('旧快照中的已回复问候保留历史，不能被重新规划；真实中断执行仍可恢复', async () => {
+    const { saveContext, loadContext, getResumeType } = await import('../agentContextStore')
+    const base = {
+      chatTabId: 'tab-old-greeting', taskId: 'old', taskDescription: '你好',
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), currentStep: 0, maxSteps: 25,
+      stopReason: null, steps: [], recentKeyOutputs: [], allowWrite: false,
+      conversationHistory: [
+        { role: 'user' as const, content: '你好', createdAt: new Date().toISOString() },
+        { role: 'assistant' as const, content: '你好！', createdAt: new Date().toISOString() },
+      ],
+    }
+    saveContext(base)
+    expect(getResumeType(base.chatTabId)).toBe('none')
+    expect(loadContext(base.chatTabId)?.conversationHistory).toHaveLength(2)
+    saveContext({ ...base, chatTabId: 'tab-real-interrupted', stopReason: 'USER_INTERRUPT',
+      steps: [{ stepNumber: 1, plan: '', command: '查看系统概况', observation: '已取消', status: 'executing' }] })
+    expect(getResumeType('tab-real-interrupted')).toBe('replan')
+    saveContext({ ...base, chatTabId: 'tab-stale-chat-flag', turnCompleted: true, stopReason: 'COMPLETED',
+      steps: [{ stepNumber: 1, plan: '', command: '未验证的历史命令', observation: '完成未知', status: 'executing' }] })
+    expect(getResumeType('tab-stale-chat-flag')).toBe('replan')
+  })
+})
 
 async function seedPendingContext(
   chatTabId: string,

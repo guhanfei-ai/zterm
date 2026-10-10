@@ -7,6 +7,8 @@ const MANIFEST_URLS = manifestBase ? {
   windows: `${manifestBase}/update-manifest-windows-x64.json`
 } : { macos: '', windows: '' };
 
+const OFFICIAL_RELEASE_URL = 'https://github.com/guhanfei-ai/zterm/releases/latest';
+
 const COPY = {
   loading: '读取中',
   unavailable: '暂未就绪',
@@ -65,24 +67,26 @@ function applyManifest(platform, m) {
   setText(`${platform}-date`, formatDate(m.published_at));
   setText(`${platform}-sha`, shortSha(m.sha256));
   // 下载按钮直接对接到 manifest.url 的真实安装包地址
-  if (m.url) {
+  if (typeof m.url === 'string' && new URL(m.url).protocol === 'https:' && /^v?\d+\.\d+\.\d+$/.test(m.version) && /^[a-f0-9]{64}$/i.test(m.sha256)) {
     setHref(`${platform}-link`, m.url);
   } else {
-    disableLink(`${platform}-link`);
+    throw new Error('发布清单无效');
   }
   setHref(`${platform}-manifest`, MANIFEST_URLS[platform]);
   setBadge(platform, '最新版', true);
 }
 
 function applyUnavailable(platform) {
-  setText(`${platform}-version`, COPY.unavailable);
+  setText(`${platform}-version`, '官方发布页');
   setText(`${platform}-date`, COPY.unknownDate);
   setText(`${platform}-sha`, COPY.noSha);
-  disableLink(`${platform}-link`);
-  disableLink(`${platform}-manifest`);
-  setBadge(platform, '暂未发布', false);
+  setHref(`${platform}-link`, OFFICIAL_RELEASE_URL);
+  setHref(`${platform}-manifest`, OFFICIAL_RELEASE_URL);
+  const manifestLink = document.querySelector(`[data-field="${platform}-manifest"]`);
+  if (manifestLink) manifestLink.textContent = '查看版本与安装包';
+  setBadge(platform, '前往发布页选择安装包', false);
   const card = document.querySelector(`[data-platform-card="${platform}"]`);
-  if (card) card.classList.add('is-unavailable');
+  if (card) card.classList.remove('is-unavailable');
 }
 
 function detectPlatform() {
@@ -97,7 +101,7 @@ function applyRecommendedPlatform() {
   if (!platform) return;
   const card = document.querySelector(`[data-platform-card="${platform}"]`);
   if (card) card.classList.add('highlight');
-  setBadge(platform, '与你的设备匹配', true);
+  setBadge(platform, platform === 'macos' ? 'macOS · 请确认是 M 系列芯片' : 'Windows · 请选择 x64 安装包', true);
 }
 
 async function loadManifest(platform) {
@@ -106,7 +110,7 @@ async function loadManifest(platform) {
     return false;
   }
   try {
-    const res = await fetch(MANIFEST_URLS[platform], { cache: 'no-store' });
+    const res = await fetch(MANIFEST_URLS[platform], { cache: 'no-store', signal: AbortSignal.timeout(10_000) });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const m = await res.json();
     applyManifest(platform, m);

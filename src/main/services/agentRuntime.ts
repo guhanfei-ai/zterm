@@ -66,7 +66,7 @@ export interface AgentRuntime {
     chatTabId: string,
     taskDescription: string,
     maxSteps: number,
-    bridge: TerminalBridge,
+    bridge: TerminalBridge | null,
     callbacks: AgentGraphCallbacks,
     options?: AgentRuntimeStartOptions
   ): Promise<void>

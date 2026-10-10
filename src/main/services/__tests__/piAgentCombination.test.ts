@@ -129,7 +129,7 @@ function makeFakeSession(): FakeTerminal {
       output = `DONE-${++seq}`
       const done = cmd.match(/'__ZTERM_AGENT_END_' '([a-f0-9]{32})__'/)
       events.emit('data', Buffer.from(done
-        ? `\r\n${output}\r\n__ZTERM_AGENT_END_${done[1]}__:0\r\n`
+        ? `\r\n__ZTERM_AGENT_BEGIN_${done[1]}__\r\n${output}\r\n__ZTERM_AGENT_END_${done[1]}__:0\r\n`
         : `\r\n${output}\r\n`))
     },
     getRecentOutput: () => output,

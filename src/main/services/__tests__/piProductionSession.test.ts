@@ -15,6 +15,7 @@ describe('实际 Pi SDK 的生产工具集合', () => {
       const loader = await (runtime as unknown as { ensureLoader(): Promise<ResourceLoader> }).ensureLoader()
       const setup = await buildPiModelSetup(config)
       expect(setup.settingsManager.getCacheWarmingMode()).toBe('off')
+      expect(setup.settingsManager.getRetrySettings().enabled).toBe(false)
       const { session, extensionsResult } = await createAgentSession({
         ...setup, cwd: TEST_SANDBOX.piAgentDir, agentDir: TEST_SANDBOX.piAgentDir,
         resourceLoader: loader, noTools: 'builtin',
@@ -27,6 +28,9 @@ describe('实际 Pi SDK 的生产工具集合', () => {
         expect(session.getActiveToolNames().sort()).toEqual(activeTerminalToolNames(false).sort())
         expect(session.getCallableToolNames()).not.toContain('execute_bound_terminal')
         expect(extensionsResult.extensions).toHaveLength(0)
+        session.setActiveToolsByName([])
+        expect(session.getActiveToolNames()).toEqual([])
+        expect(session.getCallableToolNames()).toEqual([])
         expect(network).not.toHaveBeenCalled()
       } finally { session.dispose() }
     } finally { network.mockRestore() }

@@ -133,7 +133,7 @@ export class AgentGraphRuntime implements AgentRuntime {
     chatTabId: string,
     taskDescription: string,
     maxSteps: number,
-    bridge: TerminalBridge,
+    bridge: TerminalBridge | null,
     callbacks: AgentGraphCallbacks,
     options?: {
       allowWrite?: boolean
@@ -157,6 +157,7 @@ export class AgentGraphRuntime implements AgentRuntime {
       }
     }
   ): Promise<void> {
+    if (!bridge) throw new Error('旧执行内核需要已绑定的终端')
     // Reinitialize for a fresh task
     this.reinitTab(chatTabId, bridge, callbacks)
     const tab = this.tabs.get(chatTabId)!

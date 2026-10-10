@@ -22,11 +22,11 @@
     </div>
 
     <!-- Agent 自然聊天：用户气泡 / 助手气泡（用 markdown 渲染，走正式对话视觉） -->
-    <div v-else-if="msg.isAgentUserTurn" class="bubble bubble-user">
+    <div v-else-if="msg.isAgentUserTurn || (!msg.isAgentCard && msg.role === 'user')" class="bubble bubble-user">
       <div class="bubble-role">你</div>
       <div class="bubble-text">{{ msg.text }}</div>
     </div>
-    <div v-else-if="msg.isAgentNaturalReply" class="bubble bubble-assistant">
+    <div v-else-if="msg.isAgentNaturalReply || (!msg.isAgentCard && msg.role === 'assistant')" class="bubble bubble-assistant">
       <div class="bubble-role">AI</div>
       <MarkdownContent class="bubble-text" :text="msg.text" />
     </div>
@@ -102,6 +102,9 @@
         <div class="block-content status-text">{{ msg.text }}</div>
       </div>
     </template>
+    <div v-else class="block block-status">
+      <div class="block-content status-text">{{ msg.text }}</div>
+    </div>
   </div>
 </template>
 

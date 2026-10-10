@@ -57,6 +57,8 @@ export interface AgentContextSnapshot {
   maxSteps: number
   // 停止原因（null 表示任务进行中或无停止）
   stopReason: StopReason
+  /** 自然回复已收尾，与命令是否执行成功分开记录。旧快照可缺省。 */
+  turnCompleted?: boolean
   stoppedAt?: string
   // 已完成 / 阻塞 / 跳过的步骤精简快照
   steps: ContextStepSnapshot[]
@@ -266,7 +268,7 @@ export function adoptOrphanedContext(newChatTabId: string): AgentContextSnapshot
   const all = safeReadAll()
   const ctx = all[lastActiveId]
   if (!ctx || !ctx.taskDescription) return null
-  if (ctx.stopReason === 'COMPLETED') return null
+  if (contextResumeType(ctx) === 'none') return null
 
   // 归属明确：重新映射到当前新 chatTabId
   delete all[lastActiveId]
@@ -292,10 +294,20 @@ export function loadAllContexts(): Record<string, AgentContextSnapshot> {
  * - 'none': 不可恢复 (COMPLETED 或无上下文)
  */
 export function getResumeType(chatTabId: string): ResumeType {
-  const ctx = loadContext(chatTabId)
+  return contextResumeType(loadContext(chatTabId))
+}
+
+/** 同一判断供恢复入口与界面使用，普通对话历史仍保留供追问。 */
+export function contextResumeType(ctx: AgentContextSnapshot | null): ResumeType {
   if (!ctx || !ctx.taskDescription) return 'none'
+  // 未验证的下发证据优先于任何旧的收尾标记，不能被普通聊天隐藏。
+  if (ctx.steps.some((step) => step.command && step.status === 'executing')) return 'replan'
   if (ctx.stopReason === 'COMPLETED') return 'none'
   if (ctx.stopReason === 'ROUND_LIMIT') return 'continue'
+  if (ctx.turnCompleted && ctx.stopReason === null) return 'none'
+  // 兼容旧 Pi 快照：无执行记录且已收到最终回复的聊天不是崩溃任务。
+  if (ctx.turnCompleted === undefined && ctx.stopReason === null && !ctx.steps.some((step) => step.command)
+    && ctx.conversationHistory?.at(-1)?.role === 'assistant') return 'none'
   // USER_INTERRUPT, ERROR, null (crashed) → 基于历史重规划
   return 'replan'
 }

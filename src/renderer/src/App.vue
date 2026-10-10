@@ -10,7 +10,7 @@
     />
 
     <!-- Workspace View -->
-    <div v-if="currentView === 'workspace'" class="app-container" :class="{ 'is-compact': compactWorkspace }">
+    <div v-show="currentView === 'workspace'" class="app-container" :class="{ 'is-compact': compactWorkspace }">
       <!-- Nav Rail -->
       <NavRail
         :active-mode="hostsStore.activeMode"
@@ -78,9 +78,10 @@
 
       <!-- Right Panel: Chat -->
       <PanelRight
-        v-if="rightPanelVisible"
+        v-show="rightPanelVisible"
         :width="rightPanelWidth"
         @close-chat-tab="tabSync.onCloseChatTab"
+        @open-model-settings="openSettings"
       />
 
       <!-- Dialogs -->
@@ -94,7 +95,7 @@
 
     <!-- Settings View -->
     <SettingsPage
-      v-else-if="currentView === 'settings'"
+      v-if="currentView === 'settings'"
       :initial-section="settingsSection"
       @back="closeSettings"
     />
@@ -215,6 +216,7 @@ function openAbout(): void {
 
 function closeSettings(): void {
   currentView.value = 'workspace'
+  window.dispatchEvent(new Event('zterm:provider-config-changed'))
 }
 
 // ===== Dialogs =====

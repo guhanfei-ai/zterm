@@ -64,9 +64,7 @@ export class ProviderSettingsApplication {
     const config = this.getProviderConfig()
     if (!config) return { success: false, error: '模型未配置' }
 
-    const updated = { ...config, model, providerType: 'openai-compatible' as const }
-    getStore().set(PROVIDER_KEY, { ...updated, apiKey: '' })
-    this.aiClient.configure(updated)
+    if (model !== config.model) return { success: false, error: '请在模型设置中填写并测试该服务支持的模型，再保存配置' }
     return { success: true }
   }
 

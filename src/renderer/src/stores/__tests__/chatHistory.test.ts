@@ -7,6 +7,23 @@ describe('chat history serialization model', () => {
     setActivePinia(createPinia())
   })
 
+  it('切换标签保留各自草稿，旧模式恢复为连续对话，草稿不落盘', () => {
+    const store = useChatStore()
+    const firstId = store.activeTabId
+    store.activeTab.draft = '第一份未发送内容'
+    const secondId = store.addTab()
+    expect(store.activeTab.draft).toBe('')
+    store.activeTab.draft = '第二份未发送内容'
+    store.switchTab(firstId)
+    expect(store.activeTab.draft).toBe('第一份未发送内容')
+    store.switchTab(secondId)
+    expect(store.activeTab.draft).toBe('第二份未发送内容')
+    expect(JSON.stringify(store.serializeWorkspaceTabs())).not.toContain('未发送内容')
+    expect(JSON.stringify(store.serializeChatHistory())).not.toContain('未发送内容')
+    store.hydrateWorkspaceTabs([{ id: 'legacy', title: '旧对话', mode: 'chat', includeTerminalContext: false, linkedTerminalTabId: null }], new Set(), 'legacy')
+    expect(store.activeTab.mode).toBe('agent')
+  })
+
   it('serializes messages while dropping runtime and sensitive fields', () => {
     const chatStore = useChatStore()
     const tab = chatStore.activeTab

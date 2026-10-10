@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto'
+import { stripVTControlCharacters } from 'node:util'
 import { TerminalSession } from './terminalSessionManager'
 import { LocalPtySession } from './localPtySession'
 
@@ -10,7 +11,11 @@ export interface TerminalContext {
   hostDetails: string
   source: 'direct' | 'jumpserver' | 'local'
   recentOutput: string
+  /** 排除宿主 Agent 发送区间后清洗的历史；原始终端缓冲仍用于界面。 */
+  agentRecentOutput?: string
   isConnected: boolean
+  /** 同一真实终端最近的已验证 Agent 查询，独立于交互终端的滚动缓冲。 */
+  recentAgentResults?: Array<{ output: string; exitCode: number; observedAt: string; truncated?: boolean }>
 }
 
 export interface CommandResult {
@@ -26,10 +31,15 @@ export interface AgentCommandResult extends CommandResult {
   commandSent: boolean
   /** 已通过探测，但宿主在业务命令发送前撤销授权；确定没有业务副作用。 */
   authorizationDenied?: boolean
+  captureTruncated?: boolean
 }
 
 const CAPTURE_LIMIT = 64_000
 const PROBE_TIMEOUT_MS = 3_000
+const recentAgentResults = new WeakMap<AnyTerminalSession, {
+  targetId: string | null
+  results: NonNullable<TerminalContext['recentAgentResults']>
+}>()
 
 type BoundTerminalTarget =
   | { source: 'jumpserver'; tabId: string; targetId: string; hostKeyAlgorithm: string; hostKeyFingerprint: string }
@@ -50,7 +60,19 @@ function serializeBoundTerminalTarget(target: BoundTerminalTarget): string {
 
 /** POSIX 单引号转义：用户命令始终是 sh -c 的一个参数，不参与外层协议解析。 */
 function quoteForSh(text: string): string {
-  return `'${text.replace(/'/g, `'\\''`)}'`
+  const chunks: string[] = []
+  let chunk = ''
+  let bytes = 0
+  // 在单引号字符串之间用反斜杠续行，shell 会拼回同一个参数。
+  // 不往命令/路径中插入换行，也不改 stty；避免窄 PTY 的规范输入行上限。
+  for (const character of text) {
+    const atom = character === "'" ? "'\\''" : character
+    const size = Buffer.byteLength(atom)
+    if (bytes + size > 1024) { chunks.push("'" + chunk + "'"); chunk = ''; bytes = 0 }
+    chunk += atom; bytes += size
+  }
+  chunks.push("'" + chunk + "'")
+  return chunks.join('\\\n')
 }
 
 export class TerminalBridge {
@@ -184,12 +206,16 @@ export class TerminalBridge {
 
   getTerminalContext(lines = 200): TerminalContext {
     const identity = this.getDisplayIdentity()
+    const journal = recentAgentResults.get(this.session)
     return {
       hostName: identity?.displayName || '未连接',
       hostDetails: identity?.displayDetail || '',
       source: (identity?.source as 'direct' | 'jumpserver' | 'local') || 'direct',
       recentOutput: this.session.getRecentOutput(lines),
-      isConnected: this.session.connected
+      agentRecentOutput: stripVTControlCharacters(this.session.getRecentOutputForAgent?.(lines) ?? this.session.getRecentOutput(lines))
+        .replace(/\r\n/g, '\n').replace(/\r/g, '\n'),
+      isConnected: this.session.connected,
+      recentAgentResults: journal?.targetId === this.getBoundTargetId() ? journal.results : []
     }
   }
 
@@ -200,13 +226,15 @@ export class TerminalBridge {
    * Windows 或非 POSIX 终端在探测失败时不会收到用户命令。
    * 上层必须持有真实 session 锁，并在未验证结束时隔离整个 session。
    */
-  async executeAgentCommand(command: string, timeout = 30_000, signal?: AbortSignal, authorizeBeforeSend?: () => boolean): Promise<AgentCommandResult> {
+  async executeAgentCommand(command: string, timeout = 30_000, signal?: AbortSignal, authorizeBeforeSend?: () => boolean,
+    summarizeOutput?: (output: string) => { text: string; truncated: boolean }): Promise<AgentCommandResult> {
     const startedAt = Date.now()
-    const result = (completion: AgentCommandResult['completion'], output: string, commandSent: boolean, exitCode?: number): AgentCommandResult => ({
+    const result = (completion: AgentCommandResult['completion'], output: string, commandSent: boolean, exitCode?: number, captureTruncated = false): AgentCommandResult => ({
       command,
       output,
       completion,
       commandSent,
+      captureTruncated,
       ...(exitCode === undefined ? {} : { exitCode }),
       duration: Date.now() - startedAt
     })
@@ -216,6 +244,7 @@ export class TerminalBridge {
     if (process.platform === 'win32' && this.session.sessionMeta?.source === 'local') {
       return result('unsupported', '本地 Windows cmd/PowerShell 尚未实现可信完成协议', false)
     }
+    const targetId = this.getBoundTargetId()
 
     const probeNonce = randomBytes(16).toString('hex')
     const probeMarker = `__ZTERM_AGENT_READY_${probeNonce}__`
@@ -239,14 +268,29 @@ export class TerminalBridge {
 
     const nonce = randomBytes(16).toString('hex')
     const marker = `__ZTERM_AGENT_END_${nonce}__`
+    const startMarker = `__ZTERM_AGENT_BEGIN_${nonce}__`
     // 用户命令被完整引用为 sh -c 的一个参数，不能提前结束外层完成协议。
     // wait 只等待该子 shell 自身的后台任务；显式脱离该 shell 的守护进程
     // 不属于同步命令结果，不能据此推断外部异步副作用已结束。
     const script = `${command}\n__zterm_agent_ec=$?\nwait\nexit "$__zterm_agent_ec"`
     // 命令可能没有输出末尾换行（如 printf foo）；标记必须自起一行。
-    const wrapped = `command sh -c ${quoteForSh(script)}; __zterm_agent_ec=$?; printf '\\n%s%s:%d\\n' '__ZTERM_AGENT_END_' '${nonce}__' "$__zterm_agent_ec"\n`
-    const execution = await this.captureAgentMarker(marker, wrapped, timeout, signal, true)
-    return result(execution.completion, execution.output, execution.sent, execution.exitCode)
+    // 开始/结束标记都分段拼接，回显中的引号与空格无法冒充边界。
+    // 不修改 stty/窗口尺寸；窄终端的回显和提示符在开始标记前整体丢弃。
+    const wrapped = `printf '\\n%s%s\\n' '__ZTERM_AGENT_BEGIN_' '${nonce}__'; command sh -c ${quoteForSh(script)}; __zterm_agent_ec=$?; printf '\\n%s%s:%d\\n' '__ZTERM_AGENT_END_' '${nonce}__' "$__zterm_agent_ec"\n`
+    const execution = await this.captureAgentMarker(marker, wrapped, timeout, signal, true, startMarker)
+    if (execution.completion === 'verified' && execution.exitCode !== undefined) {
+      const journal = recentAgentResults.get(this.session)
+      // 查询元数据供工具解析；历史与界面保留对应的可读结果，不暴露内部文件帧。
+      let summary = { text: execution.output, truncated: false }
+      try { summary = summarizeOutput?.(execution.output) ?? summary }
+      catch { summary = { text: '查询已结束，历史摘要不可用。', truncated: true } }
+      recentAgentResults.set(this.session, { targetId, results: [
+        ...(journal?.targetId === targetId ? journal.results : []),
+        { output: summary.text.slice(0, 8000), exitCode: execution.exitCode, observedAt: new Date().toISOString(),
+          truncated: summary.truncated || summary.text.length > 8000 || execution.truncated },
+      ].slice(-6) })
+    }
+    return result(execution.completion, execution.output, execution.sent, execution.exitCode, execution.truncated)
   }
 
   private captureAgentMarker(
@@ -254,15 +298,21 @@ export class TerminalBridge {
     input: string,
     timeout: number,
     signal?: AbortSignal,
-    withExitCode = false
-  ): Promise<{ completion: AgentCommandResult['completion']; output: string; sent: boolean; exitCode?: number }> {
-    if (!this.isAgentReady()) return Promise.resolve({ completion: 'disconnected', output: '终端 Shell 未就绪或已断开', sent: false })
-    if (signal?.aborted) return Promise.resolve({ completion: 'aborted', output: '执行前已取消', sent: false })
+    withExitCode = false,
+    startMarker?: string,
+  ): Promise<{ completion: AgentCommandResult['completion']; output: string; sent: boolean; truncated: boolean; exitCode?: number }> {
+    if (!this.isAgentReady()) return Promise.resolve({ completion: 'disconnected', output: '终端 Shell 未就绪或已断开', sent: false, truncated: false })
+    if (signal?.aborted) return Promise.resolve({ completion: 'aborted', output: '执行前已取消', sent: false, truncated: false })
     return new Promise((resolve) => {
       const decoder = new TextDecoder()
+      // 只允许边界标记内部的折行，不对业务结果拼行或解析命令回显。
+      const foldedMarker = (value: string): string => value.split('').join('[\\r\\n]*')
       const pattern = withExitCode
-        ? new RegExp(`(?:^|\\r?\\n)${marker}:(\\d{1,3})(?=\\r?\\n|$)`)
-        : new RegExp(`(?:^|\\r?\\n)${marker}(?=\\r?\\n|$)`)
+        ? new RegExp(`(?:^|\\r?\\n)${foldedMarker(marker)}[\\r\\n]*:([0-9](?:[\\r\\n]*[0-9]){0,2})(?=\\r?\\n)`)
+        : new RegExp(`(?:^|\\r?\\n)${foldedMarker(marker)}(?=\\r?\\n)`)
+      const startPattern = startMarker
+        ? new RegExp(`(?:^|\\r?\\n)${foldedMarker(startMarker)}\\r?\\n`) : undefined
+      let started = !startPattern
       let capture = ''
       let truncated = false
       let settled = false
@@ -277,22 +327,35 @@ export class TerminalBridge {
         this.session.removeListener('shell-closed', onDisconnect)
         this.session.removeListener('error', onDisconnect)
         signal?.removeEventListener('abort', onAbort)
-        const output = markerIndex === undefined ? capture : capture.slice(0, markerIndex)
+        // 未验证完成的区间继续隔离，防止迟到回显进入模型历史；新会话重置缓冲。
+        if (sent && completion === 'verified') this.session.endAgentOutput?.()
+        const clean = stripVTControlCharacters(capture)
+        const output = !started ? '' : markerIndex === undefined ? clean : clean.slice(0, markerIndex)
         resolve({
           completion,
-          output: `${truncated ? '[前段输出已截断]\n' : ''}${output}`.trim() || '(无输出)',
+          output: `${truncated ? '[前段输出已截断]\n' : ''}${output.replace(/\r\n/g, '\n')}`,
           sent,
+          truncated,
           ...(exitCode === undefined ? {} : { exitCode })
         })
       }
       const onData = (raw: Buffer | string): void => {
         capture += typeof raw === 'string' ? raw : decoder.decode(raw, { stream: true })
+        if (!started && startPattern) {
+          const clean = stripVTControlCharacters(capture)
+          const start = startPattern.exec(clean)
+          if (start) {
+            capture = clean.slice(start.index + start[0].length)
+            started = true
+          }
+        }
         if (capture.length > CAPTURE_LIMIT) {
           capture = capture.slice(-CAPTURE_LIMIT)
-          truncated = true
+          truncated ||= started
         }
-        const match = pattern.exec(capture)
-        if (match) finish('verified', withExitCode ? Number(match[1]) : undefined, match.index)
+        if (!started) return
+        const match = pattern.exec(stripVTControlCharacters(capture))
+        if (match) finish('verified', withExitCode ? Number(match[1].replace(/[\r\n]/g, '')) : undefined, match.index)
       }
       const onDisconnect = (): void => finish('disconnected')
       const onAbort = (): void => finish('aborted')
@@ -308,6 +371,7 @@ export class TerminalBridge {
       }
       try {
         sent = true
+        this.session.beginAgentOutput?.()
         this.session.write(input)
       } catch {
         finish('disconnected')

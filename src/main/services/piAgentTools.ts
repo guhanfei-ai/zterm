@@ -20,7 +20,8 @@ import type { AgentCommandResult, TerminalBridge } from './terminalBridge'
 import type { SafetyCheck } from './safetyGuard'
 import type { AgentGraphCallbacks } from './agentGraph'
 import type { StepRecord } from './agentGraphState'
-import { createBuiltinReadTools, type PreparedRead, type ReadExecutionDetails } from './agentReadTools'
+import { createBuiltinReadTools, readResultText, ReadParameterError, type PreparedRead, type ReadExecutionDetails, type ReadTruncationReason } from './agentReadTools'
+import { stripVTControlCharacters } from 'node:util'
 import {
   getAgentTerminalKey,
   isAgentTerminalUncertain,
@@ -42,6 +43,7 @@ interface ReadToolDetails {
   error?: string
   lines?: number
   host?: string | undefined
+  displayOutput?: string
 }
 
 /** execute_bound_terminal 的 details 字段。 */
@@ -203,7 +205,7 @@ export function createBoundTerminalTools(
     name: 'read_bound_terminal_context',
     label: '读取终端上下文',
     description:
-      '读取已绑定终端的最近输出。不执行任何命令。用于了解当前终端状态、检查命令输出。每次调用前会校验终端绑定和连接是否仍然有效。本工具有每轮总调用上限,耗尽后需人类介入重置。',
+      '读取绑定终端的有界历史：terminalOutput 清除 ANSI/回车并排除宿主 Agent 发送区间（命令回显、协议与查询输出）；recentAgentResults 另附同一终端最近六次已验证结果。手动操作与 Agent 并发时的输出可能被该区间排除。结果未验证的区间持续隔离。不是完整历史或实时状态。不执行命令。',
     parameters: ReadContextParams,
     executionMode: 'sequential',
     async execute(
@@ -213,47 +215,49 @@ export function createBoundTerminalTools(
       ..._rest: ToolExecuteRest
     ): Promise<AgentToolResult<ReadToolDetails>> {
       const { turn, bridge, isConnectionValid } = bindCallContext(ctx)
+      const reply = (message: string, details: ReadToolDetails, terminate?: boolean): AgentToolResult<ReadToolDetails> => ({
+        content: [{ type: 'text', text: readResultText('read_bound_terminal_context', '绑定终端的有界历史缓冲',
+          { format: 'text', text: message }, { status: 'error', error: {
+            code: details.error ?? details.reason ?? 'context_unavailable', phase: 'context', message } }) }],
+        details: { ...details, displayOutput: message }, ...(terminate ? { terminate: true } : {}),
+      })
       // 防相同 toolCallId 重放(Pi 自动重试)
       if (turn.executedToolCallIds.has(toolCallId)) {
-        return {
-          content: [{ type: 'text', text: '[重复调用已跳过]' }],
-          details: { skipped: true, reason: 'duplicate_tool_call_id' },
-        }
+        return reply('[重复调用已跳过]', { skipped: true, reason: 'duplicate_tool_call_id' })
       }
       turn.executedToolCallIds.add(toolCallId)
 
       // 停止/断线后拒绝(总纲 6.4:停止禁止后续工具下发)
       if (turn.stopped || !isConnectionValid()) {
-        return {
-          content: [{ type: 'text', text: '[终端未绑定、已断开或任务已停止,无法读取上下文]' }],
-          details: { error: 'no_bound_terminal' },
-          terminate: true,
-        }
+        return reply('[终端未绑定、已断开或任务已停止,无法读取上下文]', { error: 'no_bound_terminal' }, true)
       }
 
       // R07:读取工具本轮总上限
       if (turn.readCallsUsed >= READ_CALLS_LIMIT || turn.readLimitExhausted) {
         turn.readLimitExhausted = true
-        return {
-          content: [{ type: 'text', text: '[本轮读取调用已达上限,请总结当前发现或请用户介入]' }],
-          details: { error: 'read_limit_exhausted' },
-          terminate: true,
-        }
+        return reply('[本轮读取调用已达上限,请总结当前发现或请用户介入]', { error: 'read_limit_exhausted' }, true)
       }
       turn.readCallsUsed++
 
       const lines = Math.min(Math.max(params.lines ?? 200, 1), 2000)
       const context = bridge.getTerminalContext(lines)
       if (!context) {
-        return {
-          content: [{ type: 'text', text: '[终端无可用输出]' }],
-          details: { error: 'no_output' },
-        }
+        return reply('[终端无可用输出]', { error: 'no_output' })
       }
 
+      const queries = context.recentAgentResults ?? []
+      const terminalOutput = stripVTControlCharacters(context.agentRecentOutput ?? context.recentOutput)
+        .replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+      // 分配总返回预算，不能截断序列化后的 JSON。独立查询历史优先于原始回显。
+      const queryLimit = Math.floor(2400 / Math.max(queries.length, 1))
       return {
-        content: [{ type: 'text', text: truncateToolOutput(context.recentOutput || '[终端当前无输出]') }],
-        details: { lines, host: turn.boundHost },
+        content: [{ type: 'text', text: readResultText('read_bound_terminal_context', '绑定终端的有界历史缓冲',
+          { format: 'terminal_context', terminalOutput: terminalOutput.slice(-1000),
+            recentAgentResults: queries.map((item) => ({ ...item, output: item.output.slice(0, queryLimit),
+              truncated: item.truncated || item.output.length > queryLimit })) },
+          { status: 'ok', truncationReasons: terminalOutput.length > 1000 || queries.some((item) => item.truncated || item.output.length > queryLimit) ? ['history_limit'] : [],
+            warnings: ['历史缓冲与查询记录均有上限；不是实时机器状态，也不是完整历史'] }) }],
+        details: { lines, host: turn.boundHost, displayOutput: truncateToolOutput(terminalOutput || '[终端当前无可用历史输出]') },
       }
     },
   })
@@ -384,7 +388,7 @@ export function createBoundTerminalTools(
             attempted = true
             try {
               const result = await bridge.executeAgentCommand(command, STEP_TIMEOUT_MS, signal,
-                () => isConnectionValid() && (!!preparedRead || turn.allowWrite && !checkCommand(command, turn.allowWrite).blocked))
+                () => isConnectionValid() && (!!preparedRead || turn.allowWrite && !checkCommand(command, turn.allowWrite).blocked), preparedRead?.summarizeOutput)
               if (result.authorizationDenied) return { kind: 'blocked', safetyCheck: {
                 ...checkCommand(command, turn.allowWrite), safe: false, blocked: true,
                 reason: '执行授权已撤销，业务命令未下发', category: '权限控制',
@@ -471,7 +475,11 @@ export function createBoundTerminalTools(
         else turn.lastCommandExitCode = result.exitCode
 
         const output = result.output || (preparedRead ? '' : '(无输出)')
-        const truncated = output.length > MAX_TOOL_OUTPUT_CHARS
+        const displayOutput = preparedRead?.summarizeOutput?.(output).text ?? output
+        const truncationReasons: ReadTruncationReason[] = []
+        if (result.captureTruncated) truncationReasons.push('capture_buffer')
+        if (output.length > MAX_TOOL_OUTPUT_CHARS) truncationReasons.push('output_chars')
+        const truncated = truncationReasons.length > 0
 
         if (isWrite && fidelity !== 'verified') turn.unknownWriteCommands.add(command)
 
@@ -480,7 +488,7 @@ export function createBoundTerminalTools(
           : result.commandSent ? 'executing' : 'skipped'
         const observationText =
           fidelity === 'verified'
-            ? truncateToolOutput(output)
+            ? truncateToolOutput(displayOutput)
             : fidelity === 'timedOut'
               ? `在 ${STEP_TIMEOUT_MS / 1000}s 内未收到可信完成标记，无法确认命令是否结束`
               : fidelity === 'aborted'
@@ -493,7 +501,7 @@ export function createBoundTerminalTools(
           stepNumber,
           plan: plan || '',
           command,
-          commandOutput: output,
+          commandOutput: displayOutput,
           exitCode: fidelity === 'verified' ? result.exitCode : undefined,
           observation:
             observationText.length <= 400 ? observationText : observationText.slice(0, 400) + '…[已截断]',
@@ -535,6 +543,7 @@ export function createBoundTerminalTools(
             exitCode: result.exitCode,
             fidelity,
             truncated,
+            truncationReasons,
             ...(preparedRead ? { output: truncateToolOutput(output) } : {}),
           },
         }
@@ -607,7 +616,8 @@ export function createBoundTerminalTools(
       turn.executedToolCallIds.add(toolCallId)
       const reason = error instanceof Error ? error.message : '读取参数无效'
       return { content: [{ type: 'text', text: '读取未执行：' + reason }],
-        details: { blocked: true, error: 'invalid_read_parameters', reason } }
+        details: { blocked: true, error: 'invalid_read_parameters',
+          readErrorCode: error instanceof ReadParameterError ? error.code : 'invalid_read_parameters', reason } }
     }
     return executeCommand(toolCallId, { command: prepared.command, plan: prepared.label }, signal, prepared)
   })

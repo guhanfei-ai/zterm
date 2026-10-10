@@ -38,6 +38,9 @@ export function disposeAllAgentTabs(): void {
 
 /** Electron 传输适配：参数转发、事件转发与系统保存对话框。 */
 export function registerAgentIpc(): void {
+  registerIpcHandler('agent:stopByTerminal', (_event, terminalTabId: string) =>
+    agentApplication.stopByTerminal(terminalTabId)
+  )
   registerIpcHandler('agent:startTask', (event, data: StartAgentTaskCommand) =>
     agentApplication.startTask(data, createEventSink(event.sender))
   )

@@ -113,8 +113,9 @@ const api = {
   },
 
   agent: {
-    startTask: (data: { chatTabId: string; description: string; maxSteps?: number; isNewTask?: boolean }): Promise<{ success: boolean; error?: string }> =>
+    startTask: (data: { chatTabId: string; description: string; maxSteps?: number; isNewTask?: boolean; conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string; createdAt: string }> }): Promise<{ success: boolean; preservesPendingContext?: boolean; error?: string }> =>
       ipcRenderer.invoke('agent:startTask', data),
+    stopByTerminal: (terminalTabId: string): Promise<{ success: boolean; error?: string }> => ipcRenderer.invoke('agent:stopByTerminal', terminalTabId),
     stop: (data?: { chatTabId?: string }): Promise<{ success: boolean }> =>
       ipcRenderer.invoke('agent:stop', data),
     getStatus: (data?: { chatTabId?: string }): Promise<AgentStatus> => ipcRenderer.invoke('agent:getStatus', data),
@@ -150,7 +151,7 @@ const api = {
         ipcRenderer.removeListener('agent:bindingCleared', handler)
       }
     },
-    getContext: (data: { chatTabId: string }): Promise<{ success: boolean; hasContext?: boolean; context?: AgentContextSnapshot | null; error?: string }> =>
+    getContext: (data: { chatTabId: string }): Promise<{ success: boolean; hasContext?: boolean; context?: AgentContextSnapshot | null; resumeType?: 'continue' | 'replan' | 'none'; error?: string }> =>
       ipcRenderer.invoke('agent:getContext', data),
     hasPendingContext: (data: { chatTabId: string }): Promise<{ success: boolean; hasPending: boolean; resumeType?: 'continue' | 'replan' | 'none'; error?: string }> =>
       ipcRenderer.invoke('agent:hasPendingContext', data),
@@ -168,7 +169,13 @@ const api = {
       rows: number
     ): Promise<{ success: boolean; generation?: number; error?: string }> =>
       ipcRenderer.invoke('terminal:connect', { tabId, hostId, cols, rows }),
-    write: (tabId: string, data: string): Promise<{ success: boolean; error?: string }> => ipcRenderer.invoke('terminal:write', { tabId, data }),
+    write: (tabId: string, data: string): Promise<{ success: boolean; code?: string; error?: string }> => ipcRenderer.invoke('terminal:write', { tabId, data }),
+    isAgentBusy: (tabId: string): Promise<{ busy: boolean; generation: number }> => ipcRenderer.invoke('terminal:isAgentBusy', tabId),
+    onAgentBusy: (callback: (data: { tabId: string; generation: number; busy: boolean }) => void): (() => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, data: { tabId: string; generation: number; busy: boolean }): void => callback(data)
+      ipcRenderer.on('terminal:onAgentBusy', handler)
+      return () => ipcRenderer.removeListener('terminal:onAgentBusy', handler)
+    },
     resize: (tabId: string, cols: number, rows: number): Promise<void> =>
       ipcRenderer.invoke('terminal:resize', tabId, cols, rows),
     disconnect: (tabId: string): Promise<{ success: boolean }> => ipcRenderer.invoke('terminal:disconnect', tabId),
@@ -348,7 +355,7 @@ const api = {
   update: {
     check: (): Promise<{
       success: boolean
-      data?: { hasUpdate: boolean; latestVersion: string; notes: string; downloadUrl: string; sha256: string }
+      data?: { status: 'available' | 'up-to-date' | 'unconfigured' | 'unsupported'; hasUpdate: boolean; latestVersion: string; notes: string; downloadUrl: string; sha256: string }
       error?: string
     }> => ipcRenderer.invoke('update:check'),
     download: (

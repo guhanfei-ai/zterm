@@ -1,6 +1,10 @@
 <template>
   <div class="xterm-container" ref="containerRef" :style="{ background: themeStore.currentTheme.xterm.background }">
     <div class="xterm-wrapper" ref="wrapperRef" :class="{ 'xterm-hidden': !isConnected }"></div>
+    <div v-if="agentBusy" class="agent-occupancy" role="status">
+      <span>AI 正在使用此终端，输入暂时停用；未发送的按键不会补发。</span>
+      <button type="button" :disabled="takingOver" @click="stopAgentAndTakeOver">{{ takingOver ? '正在停止…' : '停止 AI 后接管' }}</button>
+    </div>
     <!-- 终端内搜索栏（Cmd/Ctrl+F） -->
     <div v-if="searchVisible" class="terminal-search-bar">
       <button
@@ -93,6 +97,19 @@ const fallbackTabData = {
 const tabData = computed(() =>
   terminalStore.getTabById(props.tabId) || fallbackTabData
 )
+
+const agentBusy = ref(false)
+const takingOver = ref(false)
+async function stopAgentAndTakeOver(): Promise<void> {
+  if (takingOver.value) return
+  takingOver.value = true
+  try {
+    const result = await window.electronAPI.agent.stopByTerminal(props.tabId)
+    if (!result.success) toastError(result.error || '停止 AI 失败，请重试。')
+    else toastInfo('已停止 AI。接管后请先确认已下发的远端命令是否结束。')
+  } catch { toastError('停止 AI 失败，请重试。') }
+  finally { takingOver.value = false }
+}
 
 const isConnected = computed(() => tabData.value.status === 'connected')
 const reconnectHint = computed(() => {
@@ -233,24 +250,11 @@ async function exportOutput(): Promise<void> {
 // 暴露给父组件（PanelCenter 工具栏）调用
 defineExpose({ openSearch, exportOutput })
 
-// ---- Input ring buffer for offline buffering ----
-const MAX_BUFFER_SIZE = 64 * 1024 // 64KB character limit
-let _inputBuffer: string[] = []
-let _bufferSize: number = 0
-
-/** Flush all buffered input data to the terminal in one write call */
-function flushInputBuffer(): void {
-  if (_inputBuffer.length === 0) return
-  const merged = _inputBuffer.join('')
-  _inputBuffer = []
-  _bufferSize = 0
-  window.electronAPI.terminal.write(props.tabId, merged)
-}
-
 function scheduleFit(delay = 0): void {
   if (fitTimer) clearTimeout(fitTimer)
   fitTimer = setTimeout(() => {
-    if (fitAddon) {
+    // 设置页或隐藏标签仍保留终端实例；不可把隐藏容器拟合成极窄的远端 PTY。
+    if (fitAddon && wrapperRef.value?.clientWidth && wrapperRef.value?.clientHeight) {
       try {
         fitAddon.fit()
       } catch {
@@ -263,6 +267,7 @@ function scheduleFit(delay = 0): void {
 
 /** Cmd/Ctrl+F 打开终端搜索（仅本标签为当前活动标签时生效） */
 function handleGlobalFindKey(event: KeyboardEvent): void {
+  if (!containerRef.value?.getClientRects().length) return
   const isFindKey = (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey &&
     event.key.toLowerCase() === 'f'
   if (!isFindKey) return
@@ -304,26 +309,32 @@ onMounted(() => {
 
   scheduleFit(100)
 
-  // Handle user input — buffer when disconnected, write when connected
+  // 未连接或被 AI 占用时不缓存按键，避免稍后自动补发命令。
   term.onData((data) => {
-    if (tabData.value.status === 'connected') {
-      // Connected: flush any buffered data first, then write live data
-      flushInputBuffer()
-      window.electronAPI.terminal.write(props.tabId, data)
-    } else {
-      // Not connected: buffer data (drop oldest if over capacity)
-      const dataLen = data.length
-      while (_bufferSize + dataLen > MAX_BUFFER_SIZE && _inputBuffer.length > 0) {
-        const dropped = _inputBuffer.shift()!
-        _bufferSize -= dropped.length
-      }
-      if (_bufferSize + dataLen <= MAX_BUFFER_SIZE) {
-        _inputBuffer.push(data)
-        _bufferSize += dataLen
-      }
-      // If data alone exceeds MAX_BUFFER_SIZE, it's simply dropped
-    }
+    if (tabData.value.status !== 'connected' || agentBusy.value) return
+    void window.electronAPI.terminal.write(props.tabId, data).then(result => {
+      if (!result.success) toastError(result.error || '终端输入未发送，请重试。')
+    }).catch(() => toastError('终端输入未发送，请检查连接。'))
   })
+
+  let busyRevision = 0
+  const setBusy = (busy: boolean): void => {
+    agentBusy.value = busy
+    if (term) term.options.disableStdin = busy
+  }
+  const unsubscribeBusy = window.electronAPI.terminal.onAgentBusy(payload => {
+    if (payload.tabId !== props.tabId || payload.generation !== tabData.value.generation) return
+    busyRevision++
+    setBusy(payload.busy)
+  })
+  const refreshBusy = async (): Promise<void> => {
+    const revision = busyRevision
+    try {
+      const result = await window.electronAPI.terminal.isAgentBusy(props.tabId)
+      if (revision === busyRevision && result.generation === tabData.value.generation) setBusy(result.busy)
+    } catch { /* 主进程仍负责拒绝冲突输入。 */ }
+  }
+  void refreshBusy()
 
   // Handle resize — send with tabId
   term.onResize(({ cols, rows }) => {
@@ -377,13 +388,16 @@ onMounted(() => {
       term.options.cursorStyle = prefsStore.prefs.cursorStyle
       term.options.cursorBlink = prefsStore.prefs.cursorBlink
       if (status === 'connected') {
-        // Flush any buffered input that accumulated while disconnected
-        flushInputBuffer()
+        void refreshBusy()
         scheduleFit(50)
         scheduleFit(200)
       } else if (status === 'connecting') {
+        busyRevision++
+        setBusy(false)
         term.clear()
       } else if (status === 'disconnected') {
+        busyRevision++
+        setBusy(false)
         term.writeln('\r\n\x1b[33m--- 连接已断开 ---\x1b[0m\r\n')
       }
     }
@@ -422,6 +436,7 @@ onMounted(() => {
   }
 
   xtermCleanup = () => {
+    unsubscribeBusy()
     stopWatch()
     stopActiveWatch()
     stopThemeWatch()
@@ -476,6 +491,9 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+.agent-occupancy { position: absolute; top: 0; right: 0; left: 0; z-index: 5; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px; background: var(--surface-alt); border-bottom: 1px solid var(--divider); font-size: 12px; color: var(--text-secondary); }
+.agent-occupancy button { flex-shrink: 0; cursor: pointer; padding: 4px 8px; border: 1px solid var(--divider); color: var(--accent); background: var(--surface); border-radius: 4px; }
+
 .xterm-container {
   width: 100%;
   height: 100%;

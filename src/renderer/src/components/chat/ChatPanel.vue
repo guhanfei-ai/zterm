@@ -31,7 +31,7 @@
         >
           <div class="resume-prompt-header">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 11 22 2 13 21 11 13 3 11"/></svg>
-            <span class="resume-prompt-title">检测到上次未完成的任务</span>
+            <span class="resume-prompt-title">上次执行需要继续处理</span>
           </div>
           <div class="resume-prompt-body">
             <div class="resume-row">
@@ -105,9 +105,9 @@
               <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
             </svg>
           </div>
-          <div class="empty-title">Agent模式</div>
-          <div class="empty-desc">输入任务，Agent 将自动分析、规划、执行并输出结论</div>
-          <div class="empty-hint">例如："帮我看看 nginx 为什么起不来"</div>
+          <div class="empty-title">聊聊吧</div>
+          <div class="empty-desc">直接提问或讨论，需要查看机器时再调用工具</div>
+          <div class="empty-hint">例如："端口是什么？"，或 "看看 8080 被谁占用"</div>
         </div>
         <!-- 第四轮收口：Agent 时间线只读 tab.messages（单数据源），
              由 AgentTimelineItem 内部按 msg 类型分发渲染 -->
@@ -123,6 +123,10 @@
 
     <!-- Unified Input Area (shared by both modes) -->
     <div class="input-container">
+      <div v-if="!providerReady && !providerLoading" class="provider-setup">
+        <span>{{ providerError || '配置模型后即可聊天；终端可以独立使用。' }}</span>
+        <button type="button" @click="emit('open-model-settings')">配置模型</button>
+      </div>
       <div v-if="chatStore.error" class="chat-error">{{ chatStore.error }}</div>
       <div class="input-meta">
         <label v-if="chatStore.mode === 'chat'" class="context-toggle" title="将当前终端最近输出附带为对话上下文">
@@ -132,7 +136,7 @@
         </label>
         <span v-else class="input-context-label" :class="{ bound: !!boundHostDisplay }">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="18" rx="2"/><path d="m7 8 3 3-3 3M12 14h5"/></svg>
-          {{ boundHostDisplay ? `已关联终端 · ${boundHostDisplay}` : '请先关联终端' }}
+          {{ boundHostDisplay ? `已关联终端 · ${boundHostDisplay}` : '可以直接聊天 · 查看机器时再绑定终端' }}
         </span>
         <button v-if="chatStore.mode === 'chat' && chatStore.messages.length > 0" class="clear-chat" type="button" title="清空对话" @click="chatStore.clearMessages()">
           清空
@@ -151,25 +155,8 @@
         ></textarea>
         <div class="input-toolbar">
           <div class="toolbar-left">
-            <div class="toolbar-select-wrap toolbar-mode-select">
-              <select class="toolbar-select" aria-label="对话模式" :value="chatStore.mode" @change="onModeChange">
-                <option value="chat">Chat模式</option>
-                <option value="agent">Agent模式</option>
-              </select>
-              <svg class="select-arrow" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
-            </div>
-            <div class="toolbar-select-wrap toolbar-model-select" :title="currentBusy ? '输出期间无法切换模型' : selectedModel">
-              <select
-                class="toolbar-select"
-                aria-label="AI 模型"
-                :value="selectedModel"
-                :disabled="currentBusy"
-                @change="onModelChange"
-              >
-                <option v-for="m in availableModels" :key="m" :value="m">{{ m }}</option>
-              </select>
-              <svg class="select-arrow" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
-            </div>
+            <span class="configured-model" :title="selectedModel">{{ providerLoading ? '读取模型配置…' : selectedModel || '尚未配置模型' }}</span>
+            <button class="clear-chat" type="button" :disabled="currentBusy" @click="emit('open-model-settings')">模型设置</button>
           </div>
           <div class="toolbar-right">
             <button
@@ -178,7 +165,7 @@
               type="button"
               title="发送"
               aria-label="发送"
-              :disabled="!currentInput.trim() || currentDisabled"
+              :disabled="!providerReady || providerLoading || !currentInput.trim() || currentDisabled"
               @click="onSend"
             >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -209,6 +196,10 @@ import AgentMessageBlock from '@/components/agent/AgentMessageBlock.vue'
 
 const chatStore = useChatStore()
 const terminalStore = useTerminalStore()
+const emit = defineEmits<{ 'open-model-settings': [] }>()
+const providerReady = ref(false)
+const providerLoading = ref(true)
+const providerError = ref('')
 
 const chatMessagesInChatMode = computed(() =>
   // 排除 Agent 收尾结论 + Agent 自然聊天助手侧 + Agent 自然聊天用户侧 + 全部执行卡片
@@ -219,16 +210,8 @@ const chatMessagesInChatMode = computed(() =>
 // 第四轮收口：Agent 时间线 = tab.messages 中"属于 Agent"的所有消息，
 // 由 AgentTimelineItem 内部按 isAgentConclusion / isAgentUserTurn /
 // isAgentNaturalReply / isAgentCard 分发渲染。tab.messages 是唯一 source of truth。
-const agentTimelineMessages = computed(() => {
-  const msgs = chatStore.messages.filter(
-    (m) => m.isAgentConclusion || m.isAgentNaturalReply || m.isAgentUserTurn || m.isAgentCard
-  )
-  // 消息本身已按时间顺序入队，无需额外排序
-  return msgs
-})
+const agentTimelineMessages = computed(() => chatStore.messages)
 
-const chatInput = ref('')
-const agentInput = ref('')
 const selectedModel = ref('')
 const availableModels = ref<string[]>([])
 const inputRef = ref<HTMLTextAreaElement | null>(null)
@@ -239,13 +222,18 @@ let agentStarting = false
 const TEXTAREA_MIN_HEIGHT = 56
 const TEXTAREA_MAX_HEIGHT = 160
 
-const currentInput = computed({
-  get: () => chatStore.mode === 'chat' ? chatInput.value : agentInput.value,
-  set: (val: string) => {
-    if (chatStore.mode === 'chat') chatInput.value = val
-    else agentInput.value = val
-  }
+watch(() => chatStore.activeTabId, () => {
+  chatStore.setMode('agent')
+  nextTick(autoResize)
 })
+
+const currentInput = computed({
+  get: () => chatStore.activeTab?.draft ?? '',
+  set: (val: string) => { if (chatStore.activeTab) chatStore.activeTab.draft = val }
+})
+// 旧普通对话实现保留，产品入口统一使用同一份标签草稿与对话时间线。
+const chatInput = currentInput
+const agentInput = currentInput
 
 const pendingUnverifiedCommand = computed(() =>
   chatStore.pendingContext?.steps.find((step) => step.status === 'executing' && step.command)?.command ?? ''
@@ -258,15 +246,15 @@ const currentPlaceholder = computed(() => {
   if (chatStore.pendingContext && !chatStore.contextResolved) {
     return pendingUnverifiedCommand.value
       ? '上次有命令结果未验证，请人工核实后选择「开启新任务」'
-      : '上次任务未完成，直接输入将基于历史继续，也可在上方选择「开启新任务」'
+      : '可以继续聊，也可在上方继续上次执行'
   }
   switch (chatStore.agentState) {
-    case 'idle': return '输入任务，按 Enter 启动...'
-    case 'completed': return '任务已完成，输入新任务重新开始...'
-    case 'failed': return '任务失败，输入新任务重新开始...'
-    case 'stopped': return '任务已停止，输入新任务重新开始...'
-    case 'stepLimitReached': return '已达步数上限，点击"继续执行"或输入新任务...'
-    default: return 'Agent 工作中...'
+    case 'idle':
+    case 'completed': return '输入消息... (Shift+Enter 换行)'
+    case 'failed': return '本轮出现问题，可以继续聊或补充信息...'
+    case 'stopped': return '已停止，可以继续聊...'
+    case 'stepLimitReached': return '本轮工具调用已达上限，可以补充信息或点击继续...'
+    default: return '正在回复或调用工具...'
   }
 })
 
@@ -328,22 +316,25 @@ async function onModelChange(e: Event): Promise<void> {
   }
 }
 
+let providerLoadVersion = 0
 async function loadAvailableModels(): Promise<void> {
-  const builtin = ['deepseek-v4-pro', 'deepseek-v4-flash', 'deepseek-flash']
-  availableModels.value = builtin
+  const version = ++providerLoadVersion
+  providerLoading.value = true
+  providerError.value = ''
   try {
     const config = await window.electronAPI.ai.getProviderConfig()
-    if (config) {
-      selectedModel.value = config.model
-      if (!builtin.includes(config.model)) {
-        availableModels.value = [...builtin, config.model]
-      }
-    } else {
-      // 首次安装无已保存配置时，默认选中 deepseek-flash
-      selectedModel.value = 'deepseek-flash'
-    }
+    if (version !== providerLoadVersion) return
+    providerReady.value = !!(config?.hasApiKey && config.baseUrl && config.model)
+    selectedModel.value = providerReady.value ? config!.model : ''
+    availableModels.value = providerReady.value ? [config!.model] : []
   } catch {
-    selectedModel.value = 'deepseek-flash'
+    if (version !== providerLoadVersion) return
+    providerReady.value = false
+    selectedModel.value = ''
+    availableModels.value = []
+    providerError.value = '读取模型配置失败，请打开模型设置重试。'
+  } finally {
+    if (version === providerLoadVersion) providerLoading.value = false
   }
 }
 
@@ -356,13 +347,13 @@ function onModeChange(e: Event): void {
   }
   if (mode === 'chat') cleanupAgentListeners(chatStore.activeTabId)
   chatStore.setMode(mode)
-  // 保留两侧输入草稿：chatInput / agentInput 各自独立，
-  // 切换模式不应静默丢弃用户未发送的内容
+  // 旧模式入口保留；草稿由当前对话标签持有。
   chatStore.setError(null)
   resetInputHeight()
 }
 
 function onSend(): void {
+  if (!providerReady.value || providerLoading.value || currentBusy.value) return
   if (chatStore.mode === 'chat') onSendChat()
   else onStartAgent()
 }
@@ -567,7 +558,9 @@ async function onStopChat(): Promise<void> {
 }
 
 // ---- Agent Mode ----
+let agentBinding = false
 async function onAgentBind(): Promise<void> {
+  if (agentBinding) return
   if (terminalStore.status !== 'connected') {
     chatStore.setError('请先连接到一台主机再绑定')
     return
@@ -575,14 +568,20 @@ async function onAgentBind(): Promise<void> {
   const chatTabId = chatStore.activeTabId
   const terminalTabId = terminalStore.activeTabId
 
-  const result = await window.electronAPI.agent.bind({ chatTabId, terminalTabId })
-  if (result.success && result.boundHost) {
-    chatStore.setError(null)
-    chatStore.setBoundHost(result.boundHost)
-    await refreshAgentStatus()
-  } else {
-    chatStore.setError(result.error || '绑定失败：无法获取当前终端主机信息')
-  }
+  agentBinding = true
+  try {
+    const result = await window.electronAPI.agent.bind({ chatTabId, terminalTabId })
+    if (result.success && result.boundHost) {
+      chatStore.setErrorByTabId(chatTabId, null)
+      const tab = chatStore.tabs.find(tab => tab.id === chatTabId)
+      if (tab) tab.boundHost = result.boundHost
+      await refreshAgentStatusByTabId(chatTabId)
+    } else {
+      chatStore.setErrorByTabId(chatTabId, result.error || '绑定失败：无法获取当前终端主机信息')
+    }
+  } catch {
+    chatStore.setErrorByTabId(chatTabId, '绑定失败，请检查连接后重试。')
+  } finally { agentBinding = false }
 }
 
 async function onStartAgent(): Promise<void> {
@@ -615,6 +614,8 @@ async function onStartAgent(): Promise<void> {
   const contextWasResolved = chatStore.contextResolved
   // 一次性消费模式；发起级失败时会恢复，避免“开启新任务”意图丢失。
   const isNewTask = chatStore.takeAgentMode() === 'new'
+  const conversationHistory = chatStore.messages.filter(m => !m.isAgentCard && !m.isAgentUserTurn && !m.isAgentNaturalReply && !m.isAgentConclusion && (m.role === 'user' || m.role === 'assistant') && m.text && m.status !== 'error')
+    .slice(-40).map(m => ({ role: m.role as 'user' | 'assistant', content: m.text.slice(-4000), createdAt: m.createdAt }))
   const userTurnId = `user-turn-${Date.now()}`
   chatStore.addAgentMessage({
     id: userTurnId,
@@ -638,10 +639,9 @@ async function onStartAgent(): Promise<void> {
     chatStore.setContextResolvedByTabId(chatTabId, contextWasResolved)
     chatStore.setAgentModeByTabId(chatTabId, isNewTask ? 'new' : 'followup')
     chatStore.setErrorByTabId(chatTabId, error)
-    if (chatStore.activeTabId === chatTabId) {
-      agentInput.value = text
-      nextTick(resetInputHeight)
-    }
+    const tab = chatStore.tabs.find(tab => tab.id === chatTabId)
+    if (tab && !tab.draft) tab.draft = text
+    nextTick(resetInputHeight)
     cleanupAgentListeners(chatTabId)
   }
 
@@ -650,6 +650,7 @@ async function onStartAgent(): Promise<void> {
       chatTabId,
       description: text,
       maxSteps: 25,
+      conversationHistory,
       isNewTask
     })
     if (!result.success) {
@@ -657,8 +658,18 @@ async function onStartAgent(): Promise<void> {
     } else {
       // 只有主进程通过目标/配置等发起级校验后，才消费恢复决策。
       chatStore.setAgentTaskByTabId(chatTabId, text)
-      chatStore.setPendingContextByTabId(chatTabId, null)
-      chatStore.setContextResolvedByTabId(chatTabId, true)
+      if (result.preservesPendingContext) {
+        try {
+          const restored = await window.electronAPI.agent.getContext({ chatTabId })
+          if (restored.success && restored.context) chatStore.setPendingContextByTabId(chatTabId, restored.context)
+        } catch {
+          chatStore.setErrorByTabId(chatTabId, '聊天已开始，但读取旧任务恢复信息失败；请稍后切回此标签重试。')
+        }
+        chatStore.setContextResolvedByTabId(chatTabId, false)
+      } else {
+        chatStore.setPendingContextByTabId(chatTabId, null)
+        chatStore.setContextResolvedByTabId(chatTabId, true)
+      }
     }
   } catch (err) {
     restoreRejectedStart(String(err))
@@ -756,8 +767,8 @@ async function refreshPendingContext(): Promise<void> {
     // 不能写入"当前激活标签"，否则旧标签的上下文会串到新标签
     if (result?.success && result.hasContext && result.context) {
       const ctx = result.context
-      // 只在 stopReason 非 COMPLETED 且 taskDescription 非空时显示决策条
-      if (ctx.stopReason !== 'COMPLETED' && ctx.taskDescription) {
+      // 恢复能力由主进程判断；保留普通聊天历史，不把它渲染成中断任务。
+      if (result.resumeType && result.resumeType !== 'none' && ctx.taskDescription) {
         chatStore.setPendingContextByTabId(chatTabId, ctx)
         return
       }
@@ -969,6 +980,8 @@ function unbindAgentScrollListener(): void {
 }
 
 onMounted(() => {
+  chatStore.setMode('agent')
+  window.addEventListener('zterm:provider-config-changed', loadAvailableModels)
   loadAvailableModels()
   refreshPendingContext()
   refreshAgentStatus()
@@ -980,6 +993,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  window.removeEventListener('zterm:provider-config-changed', loadAvailableModels)
   // Agent 消息区滚动监听清理
   unbindAgentScrollListener()
   window.removeEventListener('focus', refreshAgentStatus)
@@ -1009,6 +1023,10 @@ watch(() => chatStore.tabs.map(t => t.id), (newIds, oldIds) => {
 </script>
 
 <style scoped>
+.provider-setup { padding: 10px; font-size: 12px; color: var(--text-secondary); border: 1px solid var(--divider); border-radius: 6px; margin-bottom: 8px; }
+.provider-setup button { display: block; margin-top: 8px; padding: 6px 10px; background: var(--accent); color: var(--bg); border: 0; border-radius: 4px; cursor: pointer; }
+.configured-model { font-size: 11px; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); }
+
 .chat-panel {
   display: flex;
   flex-direction: column;

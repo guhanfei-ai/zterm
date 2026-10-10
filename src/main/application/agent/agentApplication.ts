@@ -35,6 +35,7 @@ export interface StartAgentTaskCommand {
   description: string
   maxSteps?: number
   isNewTask?: boolean
+  conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string; createdAt: string }>
 }
 
 export interface BindAgentCommand {
@@ -72,13 +73,20 @@ export class AgentApplication {
     this.tabs.clear()
   }
 
-  async startTask(command: StartAgentTaskCommand, sink: AgentEventSink): Promise<{ success: boolean; error?: string }> {
+  async startTask(command: StartAgentTaskCommand, sink: AgentEventSink): Promise<{ success: boolean; preservesPendingContext?: boolean; error?: string }> {
     try {
       if (typeof command?.chatTabId !== 'string' || typeof command.description !== 'string' || !command.chatTabId || !command.description.trim()) {
         return { success: false, error: '缺少对话标签或任务描述' }
       }
       if (command.maxSteps !== undefined && (!Number.isSafeInteger(command.maxSteps) || command.maxSteps < 1 || command.maxSteps > 1000)) {
         return { success: false, error: '命令预算必须是 1～1000 的整数' }
+      }
+      if (command.conversationHistory !== undefined && (!Array.isArray(command.conversationHistory) ||
+          command.conversationHistory.length > 500 || command.conversationHistory.some((turn) =>
+            !turn || !['user', 'assistant'].includes(turn.role) || typeof turn.content !== 'string' ||
+            turn.content.length > 100_000 || typeof turn.createdAt !== 'string' || !Number.isFinite(Date.parse(turn.createdAt))) ||
+          JSON.stringify(command.conversationHistory).length > 1_000_000)) {
+        return { success: false, error: '对话历史无效或超过大小限制' }
       }
       if (!this.aiClient) return { success: false, error: 'Agent 服务未初始化' }
 
@@ -94,12 +102,8 @@ export class AgentApplication {
       const releaseLock = (): void => { tab.startTaskLock = false }
 
       // 不凭 tabId 或展示名自动认领新连接：同一标签重连也须重新绑定。
-      if (!tab.terminalTabId || !tab.boundSession) {
-        releaseLock()
-        return { success: false, error: '请先绑定终端：点击“绑定当前终端”按钮，确认当前连接' }
-      }
-      const session = this.resolveAnySession(tab.terminalTabId)
-      if (!session?.connected || session !== tab.boundSession) {
+      const session = tab.terminalTabId ? this.resolveAnySession(tab.terminalTabId) : undefined
+      if (tab.boundSession && (!session?.connected || session !== tab.boundSession)) {
         this.handleTerminalUnavailable(command.chatTabId, '终端会话已更换或断开')
         releaseLock()
         return { success: false, error: '绑定的终端连接已更换，请重新绑定终端并确认权限' }
@@ -111,16 +115,17 @@ export class AgentApplication {
         return { success: false, error: 'Agent 正忙' }
       }
 
-      const bridge = new TerminalBridge(session)
+      // 聊天不需要终端；只有用户显式绑定的连接才会开放工具。
+      const bridge = session && tab.boundSession === session ? new TerminalBridge(session) : null
       const persisted = loadContext(command.chatTabId)
-      if (!command.isNewTask && persisted?.taskDescription && persisted.boundTargetId !== bridge.getBoundTargetId()) {
+      if (bridge && !command.isNewTask && persisted?.taskDescription && (persisted.boundTargetId || persisted.steps.length) && persisted.boundTargetId !== bridge.getBoundTargetId()) {
         releaseLock()
         return { success: false, error: persisted.boundTargetId
           ? '当前终端与历史任务的目标不一致，请重新绑定原终端或开启新任务'
           : '旧历史缺少可验证的终端身份，不能自动续跑；请开启新任务，历史记录仍可查看' }
       }
       this.bindControllerEvents(tab)
-      this.registerTerminalEventListeners(tab, session)
+      if (session && bridge) this.registerTerminalEventListeners(tab, session)
       tab.controller.init(this.aiClient, bridge, config)
       tab.controller.state = 'starting'
       // 立即通知渲染层进入 starting：
@@ -129,9 +134,12 @@ export class AgentApplication {
       this.send(tab, 'agent:stateChange', { state: 'starting', chatTabId: tab.chatTabId })
 
       // Controller 的发起级校验现在同步 throw；执行期错误仍由回调上报。
-      tab.controller.startTask(command.description, command.maxSteps || 25, { isNewTask: command.isNewTask === true })
+      tab.controller.startTask(command.description, command.maxSteps || 25, {
+        isNewTask: command.isNewTask === true, conversationHistory: command.conversationHistory
+      })
       releaseLock()
-      return { success: true }
+      return !bridge && !command.isNewTask && persisted && (persisted.boundTargetId || persisted.steps.length) && getResumeType(command.chatTabId) !== 'none'
+        ? { success: true, preservesPendingContext: true } : { success: true }
     } catch (err: unknown) {
       const tab = command?.chatTabId ? this.tabs.get(command.chatTabId) : undefined
       if (tab) {
@@ -147,6 +155,15 @@ export class AgentApplication {
 
   stop(chatTabId?: string): { success: true } {
     if (chatTabId) this.tabs.get(chatTabId)?.controller.stop()
+    return { success: true }
+  }
+
+  stopByTerminal(terminalTabId: string): { success: boolean; error?: string } {
+    if (typeof terminalTabId !== 'string' || !terminalTabId) return { success: false, error: '终端标识无效' }
+    for (const tab of this.tabs.values()) {
+      if (tab.terminalTabId === terminalTabId && (tab.startTaskLock || tab.controller.getRuntime()?.isRunning(tab.chatTabId) ||
+          ['starting', 'planning', 'executing', 'observing', 'summarizing'].includes(tab.controller.state))) tab.controller.stop()
+    }
     return { success: true }
   }
 
@@ -290,12 +307,13 @@ export class AgentApplication {
     return { success: true, boundHost: host }
   }
 
-  getContext(chatTabId: string): { success: boolean; hasContext?: boolean; context?: unknown; error?: string } {
+  getContext(chatTabId: string): { success: boolean; hasContext?: boolean; context?: unknown; resumeType?: ReturnType<typeof getResumeType>; error?: string } {
     if (!chatTabId) return { success: false, error: '缺少 chatTabId' }
     let context = loadContext(chatTabId)
-    if (context) return { success: true, hasContext: true, context }
+    if (context) return { success: true, hasContext: true, context, resumeType: getResumeType(chatTabId) }
     context = adoptOrphanedContext(chatTabId)
-    return context ? { success: true, hasContext: true, context } : { success: true, hasContext: false, context: null }
+    return context ? { success: true, hasContext: true, context, resumeType: getResumeType(chatTabId) }
+      : { success: true, hasContext: false, context: null, resumeType: 'none' }
   }
 
   hasPendingContext(chatTabId: string): { success: boolean; hasPending: boolean; resumeType: ReturnType<typeof getResumeType> } {

@@ -152,7 +152,7 @@ function makeFakeSession(hold?: (log: string[]) => { release: () => void } | und
       output = `DONE-${++seq}`
       const done = cmd.match(/'__ZTERM_AGENT_END_' '([a-f0-9]{32})__'/)
       events.emit('data', Buffer.from(done
-        ? `\r\n${output}\r\n__ZTERM_AGENT_END_${done[1]}__:0\r\n`
+        ? `\r\n__ZTERM_AGENT_BEGIN_${done[1]}__\r\n${output}\r\n__ZTERM_AGENT_END_${done[1]}__:0\r\n`
         : `\r\n${output}\r\n`))
     },
     getRecentOutput: () => output,
@@ -265,7 +265,7 @@ describe('G01 旧任务迟到结果不写入新任务', () => {
       on: oldEvents.on.bind(oldEvents),
       removeListener: oldEvents.removeListener.bind(oldEvents),
     } as unknown as AnyTerminalSession
-    const releaseOld = (): void => { oldEvents.emit('data', Buffer.from(`\r\n__ZTERM_AGENT_END_${oldNonce}__:0\r\n`)) }
+    const releaseOld = (): void => { oldEvents.emit('data', Buffer.from(`\r\n__ZTERM_AGENT_BEGIN_${oldNonce}__\r\n__ZTERM_AGENT_END_${oldNonce}__:0\r\n`)) }
 
     const oldBridge = new TerminalBridge(oldSession)
     const newFake = makeFakeSession()
@@ -508,6 +508,7 @@ describe('G03 系统提示文件不自动发现', () => {
     const sys = opts?.resourceLoader?.getSystemPrompt() ?? ''
     expect(sys).not.toContain('SENTINEL')
     expect(sys).toContain('zTerm')
-    expect(sys).toContain('SRE')
+    expect(sys).toContain('对话优先')
+    expect(sys).toContain('不是绑定终端的工作目录')
   })
 })

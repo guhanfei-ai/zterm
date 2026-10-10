@@ -201,8 +201,10 @@ export class AgentController extends EventEmitter {
   /** 当前引擎标识,持久化到快照 schemaVersion/engine(总纲 7.4) */
   private engine: AgentEngine = 'graph'
   private runtimeEngine: AgentEngine | null = null
+  /** 无终端时只追加聊天，不改写原执行任务的恢复事实。 */
+  private preserveExecutionContext = false
 
-  init(aiClient: AiClient, bridge: TerminalBridge, config: ProviderConfig): void {
+  init(aiClient: AiClient, bridge: TerminalBridge | null, config: ProviderConfig): void {
     // 产品的两种权限模式统一走 Pi 内置工具；旧 Graph 实现保留，
     // 但旧设置或环境变量不能重新开放“读模式拼命令”的入口。
     const selectedEngine: AgentEngine = 'pi'
@@ -282,7 +284,7 @@ export class AgentController extends EventEmitter {
   }
 
   // ---- Callbacks for graph → IPC event bridging ----
-  private createCallbacks(): AgentGraphCallbacks {
+  private createCallbacks(preserveExecutionContext = false): AgentGraphCallbacks {
     const self = this
     return {
       emitMessage(msg) {
@@ -349,6 +351,7 @@ export class AgentController extends EventEmitter {
           duration: s.duration
         }))
         self.currentStep = data.currentStep
+        if (preserveExecutionContext) return
 
         // Update stop reason if provided
         if (data.stopReason) {
@@ -391,6 +394,7 @@ export class AgentController extends EventEmitter {
             maxSteps: self.maxSteps,
             recentKeyOutputs: nextKeyOutputs.length > 0 ? nextKeyOutputs : existing?.recentKeyOutputs,
             stopReason: data.stopReason ?? self.stopReason,
+            turnCompleted: data.turnCompleted,
             systemInfo: nextSystemInfo,
             systemSummary: nextSystemSummary,
             lastConclusion: data.conclusion
@@ -402,7 +406,7 @@ export class AgentController extends EventEmitter {
 
   // ---- Public API ----
 
-  startTask(description: string, maxSteps = 25, options?: { isNewTask?: boolean }): void {
+  startTask(description: string, maxSteps = 25, options?: { isNewTask?: boolean; conversationHistory?: ContextChatTurn[] }): void {
     // 允许从任意合法终态启动新任务；运行中（planning/executing/observing/summarizing）仍然拒绝
     // 'starting' 是 IPC handler 预设的乐观锁状态，此处不应拦截
     const terminalStates: AgentState[] = ['starting', 'idle', 'completed', 'failed', 'stopped', 'stepLimitReached']
@@ -410,14 +414,14 @@ export class AgentController extends EventEmitter {
       throw new Error('Agent 正忙，请等待当前任务完成或停止')
     }
     if (!this.config) throw new Error('模型未配置')
-    if (!this.bridge || !this.bridge.isConnected()) throw new Error('终端未连接，请先连接到一台主机')
+    if (this.bridge && !this.bridge.isConnected()) throw new Error('终端未连接，请重新绑定终端')
     if (!this.chatTabId) throw new Error('未绑定对话标签')
     if (!this.runtime) throw new Error('Agent 服务未初始化')
-    const boundTargetId = this.bridge.getBoundTargetId()
-    if (!boundTargetId) throw new Error('无法验证终端目标身份，请重新绑定终端')
+    const boundTargetId = this.bridge?.getBoundTargetId() ?? undefined
+    if (this.bridge && !boundTargetId) throw new Error('无法验证终端目标身份，请重新绑定终端')
 
     // Auto-bind if needed
-    if (!this.boundHost) this.bind()
+    if (this.bridge && !this.boundHost) this.bind()
 
     // 第二轮补丁：区分"开启新任务"与"普通 follow-up turn"
     // - isNewTask=true：主人明确要重开，stale steps/conclusion/systemSummary 全部清空
@@ -425,14 +429,17 @@ export class AgentController extends EventEmitter {
     // 这样"执行后继续聊"不会因为 turn 重置而失忆。
     const isNewTask = options?.isNewTask === true
     const persisted = loadContext(this.chatTabId)
+    const preserveExecutionContext = !this.bridge && !isNewTask && !!persisted &&
+      (!!persisted.boundTargetId || persisted.steps.length > 0)
+    this.preserveExecutionContext = preserveExecutionContext
     const keepTask = !isNewTask && !!persisted?.taskDescription
     const engineChanged = keepTask && !!persisted?.engine && persisted.engine !== this.engine
-    if (keepTask && persisted?.boundTargetId !== boundTargetId) {
+    if (this.bridge && keepTask && (persisted?.boundTargetId || persisted?.steps.length) && persisted?.boundTargetId !== boundTargetId) {
       throw new Error(persisted?.boundTargetId
         ? '当前终端与历史任务的目标不一致，请重新绑定原终端或开启新任务'
         : '旧历史缺少可验证的终端身份，不能自动续跑；请开启新任务，历史记录仍可查看')
     }
-    const unverifiedCommand = keepTask ? unverifiedHistoricalCommand(persisted?.steps ?? []) : null
+    const unverifiedCommand = this.bridge && keepTask ? unverifiedHistoricalCommand(persisted?.steps ?? []) : null
     if (unverifiedCommand) throw unverifiedHistoryError(unverifiedCommand)
 
     if (isNewTask) {
@@ -448,7 +455,13 @@ export class AgentController extends EventEmitter {
     // 第一轮收口：保留持久化但不再把 description 作为 UI 上的"任务目标"卡片发射。
     // conversationHistory 从持久化恢复（重启后能找回上文）；首次为空数组。
     // 显式新任务的模型上下文必须从零开始：旧主机工具结果不得进入新主机推理。
-    const existingHistory = isNewTask ? [] : (persisted?.conversationHistory ?? [])
+    const savedHistory = persisted?.conversationHistory ?? []
+    const historyKeys = new Set(savedHistory.map(turn => JSON.stringify([turn.role, turn.createdAt, turn.content])))
+    // 兼容旧普通聊天的历史；仅导入文字，不导入终端绑定、权限或执行步骤。
+    const existingHistory = isNewTask ? [] : [
+      ...savedHistory,
+      ...(options?.conversationHistory ?? []).filter(turn => !historyKeys.has(JSON.stringify([turn.role, turn.createdAt, turn.content])))
+    ].sort((a, b) => a.createdAt.localeCompare(b.createdAt)).slice(-500)
     const taskCreatedAt = keepTask ? persisted!.createdAt : new Date().toISOString()
     const taskId = keepTask ? (persisted!.taskId || Date.now().toString()) : Date.now().toString()
     const taskDescription = keepTask ? persisted!.taskDescription : description
@@ -464,7 +477,9 @@ export class AgentController extends EventEmitter {
       ? (persisted!.steps ?? []).filter(s => s.stepNumber > 0).length
       : 0
 
-    if (isNewTask) {
+    if (preserveExecutionContext) {
+      saveContext({ ...persisted!, allowWrite: false, conversationHistory: existingHistory }, { throwOnFailure: true })
+    } else if (isNewTask) {
       saveContext({
         chatTabId: this.chatTabId,
         schemaVersion: 3,
@@ -476,6 +491,7 @@ export class AgentController extends EventEmitter {
         currentStep: 0,
         maxSteps: this.maxSteps,
         stopReason: null,
+        turnCompleted: false,
         steps: [],
         recentKeyOutputs: [],
         systemSummary: undefined,
@@ -499,6 +515,7 @@ export class AgentController extends EventEmitter {
         currentStep: effectiveStep,
         maxSteps: this.maxSteps,
         stopReason: null,
+        turnCompleted: false,
         steps: persisted?.steps ?? [],
         recentKeyOutputs: persisted?.recentKeyOutputs ?? [],
         // follow-up 透传持久化系统信息（结构化 + 摘要），保证 follow-up 不会丢环境上下文
@@ -555,7 +572,7 @@ export class AgentController extends EventEmitter {
       taskDescription,
       this.maxSteps,
       this.bridge,
-      this.createCallbacks(),
+      this.createCallbacks(preserveExecutionContext),
       {
         allowWrite: this.allowWrite,
         boundHost: this.boundHost,
@@ -567,6 +584,7 @@ export class AgentController extends EventEmitter {
         sessionPolicy: isNewTask || engineChanged ? 'rebuild' : 'reuse'
       }
     ).then(() => {
+      if (preserveExecutionContext) return
       // Sync local state from persisted context after completion
       this.syncStateFromContext()
       // 异步收尾的完成态映射：与 syncStateFromContext 共用同一套收敛规则，
@@ -575,7 +593,7 @@ export class AgentController extends EventEmitter {
     }).catch((err: Error) => {
       if (this.state === 'stopped') return
       this.stopReason = 'ERROR'
-      if (this.chatTabId) markStop(this.chatTabId, 'ERROR')
+      if (this.chatTabId && !preserveExecutionContext) markStop(this.chatTabId, 'ERROR')
       this.state = 'failed'
       this.emit('state-change', 'failed')
       this.emit('message', {
@@ -589,7 +607,7 @@ export class AgentController extends EventEmitter {
 
   stop(): void {
     this.stopReason = 'USER_INTERRUPT'
-    if (this.chatTabId) markStop(this.chatTabId, 'USER_INTERRUPT')
+    if (this.chatTabId && !this.preserveExecutionContext) markStop(this.chatTabId, 'USER_INTERRUPT')
     this.state = 'stopped'
     this.emit('state-change', 'stopped')
 
@@ -640,6 +658,7 @@ export class AgentController extends EventEmitter {
    * 与 startTask 的"点火即返回"对齐，避免 await 本调用的 UI 动作（如清决策条）被挂到任务终态。
    */
   continueTask(additionalSteps = 25): void {
+    this.preserveExecutionContext = false
     // 重启后是 idle；同进程 stop/failed 后恢复条也走同一持久化重规划入口。
     if (['idle', 'stopped', 'failed'].includes(this.state) && this.chatTabId) {
       const resumeType = getResumeType(this.chatTabId)
@@ -674,6 +693,7 @@ export class AgentController extends EventEmitter {
     // 基准同步重算（runtime.continueTask 会把同一基准写入 graph state）。
     this.maxSteps = additionalSteps
     this.turnStartStepCount = this.steps.filter(s => s.stepNumber > 0).length
+    updateContext(this.chatTabId, { turnCompleted: false, stopReason: null }, { throwOnFailure: true })
     this.stopReason = null
     this.state = 'planning'
     this.emit('state-change', 'planning')
@@ -747,7 +767,9 @@ export class AgentController extends EventEmitter {
       engine: this.engine,
       boundTargetId,
       boundHost: this.boundHost,
-      allowWrite: false
+      allowWrite: false,
+      turnCompleted: false,
+      stopReason: null
     })
 
     const isContinue = ctx.stopReason === 'ROUND_LIMIT'
@@ -878,6 +900,7 @@ export class AgentController extends EventEmitter {
   }
 
   bind(): string | null {
+    this.preserveExecutionContext = false
     const isConnected = this.bridge?.isConnected() ?? false
     if (isConnected) {
       const identity = this.bridge?.getDisplayIdentity()

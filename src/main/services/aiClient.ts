@@ -34,7 +34,9 @@ export class AiClient {
     this.currentConfig = config
     this.openai = new OpenAI({
       baseURL: config.baseUrl,
-      apiKey: config.apiKey
+      apiKey: config.apiKey,
+      timeout: 30_000,
+      maxRetries: 0
     })
   }
 
@@ -93,80 +95,61 @@ export class AiClient {
     const parser = new ThinkingParser()
     let text = ''
     let reasoning = ''
+    let timedOut = false
+    let deadlineTimer: ReturnType<typeof setTimeout> | undefined
+    const deadline = new Promise<never>((_, reject) => {
+      deadlineTimer = setTimeout(() => {
+        timedOut = true
+        reject(new Error('模型响应超过 180 秒，请重试或检查服务连接'))
+        session.abortController.abort()
+      }, STREAM_TOTAL_TIMEOUT_MS)
+    })
 
     try {
-      const stream = await this.openai.chat.completions.create(
+      const stream = await Promise.race([this.openai.chat.completions.create(
         {
           model: this.currentConfig.model,
           messages,
           stream: true
         },
-        { signal: session.abortController.signal }
-      )
+        { signal: session.abortController.signal, timeout: 30_000, maxRetries: 0 }
+      ), deadline])
 
-      const streamStartTime = Date.now()
       const iterator = stream[Symbol.asyncIterator]()
-      // 用 deadline 包住每次 read：服务端完全不发包时迭代永不返回，
-      // 挂死超过总超时即中止流并抛超时错误
+      // 同一截止时间覆盖等待响应头和整个流，不因收到响应头而重新计时。
       while (session.active) {
-        const elapsed = Date.now() - streamStartTime
-        if (elapsed > STREAM_TOTAL_TIMEOUT_MS) {
-          console.warn('[aiClient] stream total timeout, aborting session', session.sessionId)
-          session.abort()
-          throw new Error('流式响应总超时')
+        const result = await Promise.race([iterator.next(), deadline])
+        if (result.done) break
+        const chunk = result.value
+
+        const delta = chunk.choices?.[0]?.delta
+        if (!delta) continue
+
+        const event: ModelStreamChunk = { done: false }
+        const rawReasoning = (delta as Record<string, unknown>).reasoning_content
+        if (typeof rawReasoning === 'string' && rawReasoning) {
+          reasoning += rawReasoning
+          event.reasoning = rawReasoning
         }
 
-        let timeoutId: ReturnType<typeof setTimeout> | undefined
-        try {
-          const timeoutPromise = new Promise<never>((_, reject) => {
-            timeoutId = setTimeout(
-              () => reject(new Error('stream total timeout')),
-              STREAM_TOTAL_TIMEOUT_MS - elapsed
-            )
-          })
-          const result = await Promise.race([iterator.next(), timeoutPromise])
-          if (result.done) break
-          const chunk = result.value
-
-          const delta = chunk.choices?.[0]?.delta
-          if (!delta) continue
-
-          const event: ModelStreamChunk = { done: false }
-          const rawReasoning = (delta as Record<string, unknown>).reasoning_content
-          if (typeof rawReasoning === 'string' && rawReasoning) {
-            reasoning += rawReasoning
-            event.reasoning = rawReasoning
+        if (delta.content) {
+          const parsed = parser.feed(delta.content)
+          if (parsed.reasoning) {
+            reasoning += parsed.reasoning
+            event.reasoning = (event.reasoning || '') + parsed.reasoning
           }
-
-          if (delta.content) {
-            const parsed = parser.feed(delta.content)
-            if (parsed.reasoning) {
-              reasoning += parsed.reasoning
-              event.reasoning = (event.reasoning || '') + parsed.reasoning
-            }
-            if (parsed.text) {
-              text += parsed.text
-              event.text = parsed.text
-            }
+          if (parsed.text) {
+            text += parsed.text
+            event.text = parsed.text
           }
-
-          const finishReason = chunk.choices?.[0]?.finish_reason
-          if (finishReason === 'stop' || finishReason === 'length') {
-            event.done = true
-          }
-
-          onChunk(event)
-        } catch (err) {
-          // 读超时：中止流，把超时错误抛给外层统一处理
-          if (err instanceof Error && err.message === 'stream total timeout') {
-            console.warn('[aiClient] stream total timeout, aborting session', session.sessionId)
-            session.abort()
-            throw new Error('流式响应总超时')
-          }
-          throw err
-        } finally {
-          if (timeoutId) clearTimeout(timeoutId)
         }
+
+        const finishReason = chunk.choices?.[0]?.finish_reason
+        if (finishReason === 'stop' || finishReason === 'length') {
+          event.done = true
+        }
+
+        onChunk(event)
       }
 
       // 冲刷解析器残留缓冲（流结束时未闭合的部分标签），避免残余内容被丢弃
@@ -184,16 +167,17 @@ export class AiClient {
       if (session.active) onChunk({ done: true })
       return { text, reasoning }
     } catch (error: unknown) {
-      if (error instanceof Error && error.name === 'AbortError') {
+      if (!timedOut && error instanceof Error && error.name === 'AbortError') {
         return { text, reasoning }
       }
 
-      const message = translateError(error, 'ai', '流式传输错误')
+      const message = timedOut ? '模型响应超过 180 秒，请重试或检查服务连接' : translateError(error, 'ai', '流式传输错误')
       if (session.active) onChunk({ done: true, error: message })
       // 让上层 Agent 感知真实失败并进入 failed/retry 状态，避免把网络/API
       // 错误伪装成“模型未返回内容”后继续规划。
       throw new Error(message)
     } finally {
+      if (deadlineTimer) clearTimeout(deadlineTimer)
       parser.reset()
       session.active = false
     }

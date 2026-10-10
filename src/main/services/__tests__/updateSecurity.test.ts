@@ -28,19 +28,21 @@ vi.mock('https', async () => {
 
 let update: typeof import('../updateService')
 const platform = Object.getOwnPropertyDescriptor(process, 'platform')!
+const architecture = Object.getOwnPropertyDescriptor(process, 'arch')!
 const body = Buffer.from('synthetic installer; never executed')
 const hash = createHash('sha256').update(body).digest('hex')
 const manifest = { version: '0.4.2', notes: 'test', published_at: '2026-10-09T04:00:00Z', url: 'https://updates.example/installer.dmg', sha256: hash }
 
 beforeEach(async () => {
   Object.defineProperty(process, 'platform', { value: 'darwin' })
+  Object.defineProperty(process, 'arch', { value: 'arm64' })
   vi.stubEnv('ZTERM_UPDATE_BASE_URL', 'https://updates.example')
   vi.resetModules()
   transport.responses.length = 0; transport.calls.length = 0; transport.native.mockReset()
   transport.native.mockImplementation(() => { throw new Error('Native installers are forbidden in tests') })
   update = await import('../updateService')
 })
-afterEach(() => { Object.defineProperty(process, 'platform', platform); vi.unstubAllEnvs() })
+afterEach(() => { Object.defineProperty(process, 'platform', platform); Object.defineProperty(process, 'arch', architecture); vi.unstubAllEnvs() })
 
 async function download(): Promise<string> {
   transport.responses.push({ body: JSON.stringify(manifest) }, { body })
@@ -51,6 +53,23 @@ async function download(): Promise<string> {
 }
 
 describe('更新信任链（仅内存 HTTP 传输桩，无外部请求或安装）', () => {
+  it('未配置更新源和不支持的平台明确返回手动更新状态，不发送请求', async () => {
+    vi.stubEnv('ZTERM_UPDATE_BASE_URL', '')
+    vi.resetModules()
+    update = await import('../updateService')
+    expect(await update.checkForUpdate()).toMatchObject({ status: 'unconfigured', hasUpdate: false })
+    Object.defineProperty(process, 'platform', { value: 'linux' })
+    expect(await update.checkForUpdate()).toMatchObject({ status: 'unsupported', hasUpdate: false })
+    expect(transport.calls).toHaveLength(0)
+  })
+  it('404 和无效清单不能伪装成最新版，仅真实检查成功返回 up-to-date', async () => {
+    transport.responses.push({ status: 404, body: '' })
+    await expect(update.checkForUpdate()).rejects.toThrow('HTTP 404')
+    transport.responses.push({ body: '{}' })
+    await expect(update.checkForUpdate()).rejects.toThrow('检查更新失败')
+    transport.responses.push({ body: JSON.stringify({ ...manifest, version: '0.4.0' }) })
+    expect(await update.checkForUpdate()).toMatchObject({ status: 'up-to-date', hasUpdate: false })
+  })
   it('清单拒绝跨来源、不同端口、嵌入凭据和坏哈希', () => {
     expect(update.parseUpdateManifest(manifest)).toEqual(manifest)
     for (const url of ['https://attacker.invalid/payload', 'https://updates.example:8443/payload', 'https://user:pass@updates.example/payload', 'http://updates.example/payload']) {
@@ -68,7 +87,7 @@ describe('更新信任链（仅内存 HTTP 传输桩，无外部请求或安装�
   })
   it('逐跳拒绝跨来源清单和下载重定向', async () => {
     transport.responses.push({ status: 302, location: 'https://attacker.invalid/manifest', body: '' })
-    expect((await update.checkForUpdate()).hasUpdate).toBe(false)
+    await expect(update.checkForUpdate()).rejects.toThrow('非受信任')
     expect(transport.calls).toHaveLength(1)
     transport.calls.length = 0
     transport.responses.push({ body: JSON.stringify(manifest) })

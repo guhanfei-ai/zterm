@@ -125,14 +125,20 @@ const PI_AGENT_DIR = PI_SANDBOX_DIR
  * 保留 zTerm 的 SRE 行为指导与安全边界；按模式开放观察或执行工具。
  */
 const PI_HOST_SYSTEM_PROMPT = [
-  '你是 zTerm 的 SRE 运维助手,绑定到一台真实远程终端执行任务。',
+  '你是 zTerm 的对话助手，可以按用户需要通过工具查看或操作已绑定的终端。',
   '行为准则:',
   '- 对话优先:普通问候、解释、追问自然回答,不为了"像 Agent"执行无关命令。',
+  '- 未绑定终端时可以正常聊天；需要机器上的实际信息或操作时，请用户连接并点击绑定终端。没有工具权限时不得声称已经检查或执行。',
+  '- 问候只需简短自然回应，不主动列工具清单、权限说明或催用户提供任务。解释和讨论直接回答；用户需要机器现状或操作时再调用工具，并在同一对话中接续结果。',
+  '- SDK 提示中的 cwd 是本地模型运行目录，不是绑定终端的工作目录。所有工具路径属于绑定目标；不要把本地 cwd 传给远端工具。未知远端当前目录时，省略 read_bound_directory 的 path 获取目标当前目录。',
   '- 取证优先:需要机器现状证据时,用工具查看真实输出,不拿旧输出当本轮检查结果。',
   '- 默认读模式：只通过内置读工具获取文件、目录、文本、系统、进程和端口信息，不自行拼装终端命令。',
   '- 读写模式：用户开启后可以通过执行工具自动操作，无需逐条审批；危险命令和原有不支持的语法仍会被拦截。',
   '- 两种模式都优先用内置读工具取证。读工具缺少能力时如实说明范围；不安装远端组件、不提权、不通过其他接口绕过。',
   '- read_bound_terminal_context 只读取已有输出；需要当前机器状态时必须调用实际查询工具。',
+  '- 终端提示未提交输入或 Shell 未就绪时，说明需要用户先处理并结束本轮，不循环重试、不替用户清除输入。',
+  '- 读工具的 status 表示是否得到可用结果；失败时 exitCode 是真实非零命令退出码或 null，不能把 null 当作成功。内容、参数与协议错误查看 error.code/phase；失败的 truncated 固定为 false，窗口限制查看错误码与 data 中的范围信息。',
+  '- 文件总行数和末尾绝对行号可能未知，不得自行补全。按 truncationReasons 解释限制；只有 canContinue=true 时使用 nextStartLine 接续，不能把超出 64 KiB 窗口当成文件已经结束。',
   '- 只能操作已绑定的终端,不能选择其他主机或提升权限。',
   '- 结果不明(超时/取消/断线)的命令不会自动重试;写命令结果不明时先只读核实。',
   '- 命令预算有限;预算耗尽时总结当前进展,请用户决定是否继续。',
@@ -422,7 +428,7 @@ export class PiAgentRuntime implements AgentRuntime {
     chatTabId: string,
     taskDescription: string,
     maxSteps: number,
-    bridge: TerminalBridge,
+    bridge: TerminalBridge | null,
     callbacks: AgentGraphCallbacks,
     options?: AgentRuntimeStartOptions
   ): Promise<void> {
@@ -444,7 +450,7 @@ export class PiAgentRuntime implements AgentRuntime {
       if (this.turnCancelled(turn)) return
 
       // ---- R05/F04:会话复用或重建 ----
-      const cfgKey = piConfigKey(this.config)
+      const cfgKey = `${piConfigKey(this.config)}|${bridge?.getBoundTargetId() ?? 'unbound'}`
       const policy = options?.sessionPolicy ?? 'rebuild'
       let session: AgentSession
       // J01:stop 后的 reuse 前置条件 —— 旧 prompt 调用真正 settle
@@ -557,7 +563,7 @@ export class PiAgentRuntime implements AgentRuntime {
         return
       }
 
-      session.setActiveToolsByName(activeTerminalToolNames(turn.allowWrite))
+      session.setActiveToolsByName(bridge ? activeTerminalToolNames(turn.allowWrite) : [])
       // ---- 点火(R02:prompt 前最后检查;I01:本轮事件窗口已随登记打开) ----
       const userMessage = options?.userMessage ?? taskDescription
       callbacks.emitStateChange('planning')
@@ -620,7 +626,7 @@ export class PiAgentRuntime implements AgentRuntime {
     // G02:续跑同样是"人类介入开启下一轮"——与 startTask 同一配置决策:
     // 配置指纹变化(设置页改了 baseUrl/model/key 后点继续)→ 重建会话,
     // 下一请求用当前配置;配置未变 → 沿用会话(上下文保留)。
-    const cfgKey = piConfigKey(this.config)
+    const cfgKey = `${piConfigKey(this.config)}|${tab.bridge?.getBoundTargetId() ?? 'unbound'}`
     if (!tab.session || tab.sessionConfigKey !== cfgKey) {
       // H03:重建时从 Controller 持久化上下文带入真实历史(目标/对话/证据),
       // 不再传空数组 —— 新模型知道原任务、已做什么、已发现什么。
@@ -760,7 +766,7 @@ export class PiAgentRuntime implements AgentRuntime {
     const tab = this.tabs.get(chatTabId)
     const turn = tab?.turn
     if (turn) turn.allowWrite = allowWrite
-    tab?.session?.setActiveToolsByName(activeTerminalToolNames(allowWrite))
+    tab?.session?.setActiveToolsByName(tab.bridge ? activeTerminalToolNames(allowWrite) : [])
   }
 
   // ---- 内部 ----
@@ -828,7 +834,7 @@ export class PiAgentRuntime implements AgentRuntime {
   /**
    * 共享收尾(S02):startTask/continueTask 的正常与异常路径共用。
    * 终态优先级:cancelled/stopped > 模型错误 > 命令结束未验证
-   * > 预算耗尽(ROUND_LIMIT) > 本轮真实完成的命令(COMPLETED) > 纯聊天(idle)。
+   * > 预算耗尽(ROUND_LIMIT) > 本轮真实完成的命令(COMPLETED) > 自然聊天(idle)。
    */
   private finishTurn(chatTabId: string, turn: TurnState): void {
     void chatTabId
@@ -898,6 +904,7 @@ export class PiAgentRuntime implements AgentRuntime {
       currentStep: turn.steps.length,
       conclusion: turn.lastAssistantText || undefined,
       stopReason: hadVerifiedCommand ? 'COMPLETED' : undefined,
+      turnCompleted: true,
     })
     callbacks.emitStateChange(hadVerifiedCommand ? 'completed' : 'idle')
     if (missingProbe) callbacks.emitMessage({
@@ -1000,7 +1007,7 @@ export class PiAgentRuntime implements AgentRuntime {
             callbacks.emitMessage({
               type: 'assistant_reply',
               content: text,
-              details: { streaming: false },
+              details: { streaming: false, withCommands: turn.sawToolExecution || turn.commandsUsed > 0 },
             })
           }
         }
