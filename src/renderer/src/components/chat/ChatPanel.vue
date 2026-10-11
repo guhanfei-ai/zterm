@@ -115,7 +115,6 @@
           v-for="msg in agentTimelineMessages"
           :key="msg.id"
           :msg="msg"
-          @copy-conclusion="copyConclusionAsMarkdown"
           @save-conclusion="saveConclusionAsMarkdown"
         />
       </div>
@@ -155,8 +154,9 @@
         ></textarea>
         <div class="input-toolbar">
           <div class="toolbar-left">
+            <ChatModeMenu :mode="chatStore.mode" :disabled="chatStore.isStreaming || isAgentBusy(chatStore.agentState)"
+              @change="onModeChange" @open-model-settings="emit('open-model-settings')" />
             <span class="configured-model" :title="selectedModel">{{ providerLoading ? '读取模型配置…' : selectedModel || '尚未配置模型' }}</span>
-            <button class="clear-chat" type="button" :disabled="currentBusy" @click="emit('open-model-settings')">模型设置</button>
           </div>
           <div class="toolbar-right">
             <button
@@ -191,6 +191,7 @@ import { useChatStore, type PanelMode } from '@/stores/chat'
 import { useTerminalStore } from '@/stores/terminal'
 import { agentStatusGuard, setAgentMessageArrivedHook } from '@/composables/useAgentGlobalEvents'
 import ChatMessageList from './ChatMessageList.vue'
+import ChatModeMenu from './ChatModeMenu.vue'
 import AgentStatusBar from '@/components/agent/AgentStatusBar.vue'
 import AgentMessageBlock from '@/components/agent/AgentMessageBlock.vue'
 
@@ -213,7 +214,6 @@ const chatMessagesInChatMode = computed(() =>
 const agentTimelineMessages = computed(() => chatStore.messages)
 
 const selectedModel = ref('')
-const availableModels = ref<string[]>([])
 const inputRef = ref<HTMLTextAreaElement | null>(null)
 const agentAreaRef = ref<HTMLDivElement | null>(null)
 const agentScrollState = new Map<string, boolean>()
@@ -223,7 +223,6 @@ const TEXTAREA_MIN_HEIGHT = 56
 const TEXTAREA_MAX_HEIGHT = 160
 
 watch(() => chatStore.activeTabId, () => {
-  chatStore.setMode('agent')
   nextTick(autoResize)
 })
 
@@ -231,7 +230,7 @@ const currentInput = computed({
   get: () => chatStore.activeTab?.draft ?? '',
   set: (val: string) => { if (chatStore.activeTab) chatStore.activeTab.draft = val }
 })
-// 旧普通对话实现保留，产品入口统一使用同一份标签草稿与对话时间线。
+// 两种模式共用当前标签的草稿；切换不丢失未发送内容。
 const chatInput = currentInput
 const agentInput = currentInput
 
@@ -326,28 +325,21 @@ async function loadAvailableModels(): Promise<void> {
     if (version !== providerLoadVersion) return
     providerReady.value = !!(config?.hasApiKey && config.baseUrl && config.model)
     selectedModel.value = providerReady.value ? config!.model : ''
-    availableModels.value = providerReady.value ? [config!.model] : []
   } catch {
     if (version !== providerLoadVersion) return
     providerReady.value = false
     selectedModel.value = ''
-    availableModels.value = []
     providerError.value = '读取模型配置失败，请打开模型设置重试。'
   } finally {
     if (version === providerLoadVersion) providerLoading.value = false
   }
 }
 
-function onModeChange(e: Event): void {
-  const select = e.target as HTMLSelectElement
-  const mode = select.value as PanelMode
-  if (chatStore.isStreaming || isAgentBusy(chatStore.agentState)) {
-    select.value = chatStore.mode
-    return
-  }
+function onModeChange(mode: PanelMode): void {
+  if (chatStore.isStreaming || isAgentBusy(chatStore.agentState)) return
   if (mode === 'chat') cleanupAgentListeners(chatStore.activeTabId)
   chatStore.setMode(mode)
-  // 旧模式入口保留；草稿由当前对话标签持有。
+  // 模式按对话标签保留；草稿由当前对话标签持有。
   chatStore.setError(null)
   resetInputHeight()
 }
@@ -904,20 +896,6 @@ function buildConclusionMarkdown(msg: { text: string; agentDetails?: Record<stri
   return lines.join('\n')
 }
 
-async function copyConclusionAsMarkdown(msg: { text: string; agentDetails?: Record<string, unknown> }): Promise<void> {
-  const md = buildConclusionMarkdown(msg)
-  try {
-    await navigator.clipboard.writeText(md)
-  } catch {
-    const textarea = document.createElement('textarea')
-    textarea.value = md
-    document.body.appendChild(textarea)
-    textarea.select()
-    document.execCommand('copy')
-    document.body.removeChild(textarea)
-  }
-}
-
 async function saveConclusionAsMarkdown(msg: { text: string; agentDetails?: Record<string, unknown> }): Promise<void> {
   const md = buildConclusionMarkdown(msg)
   try {
@@ -979,7 +957,6 @@ function unbindAgentScrollListener(): void {
 }
 
 onMounted(() => {
-  chatStore.setMode('agent')
   window.addEventListener('zterm:provider-config-changed', loadAvailableModels)
   loadAvailableModels()
   refreshPendingContext()
@@ -1218,68 +1195,6 @@ watch(() => chatStore.tabs.map(t => t.id), (newIds, oldIds) => {
   gap: 6px;
   min-width: 0;
   flex: 1;
-}
-
-.toolbar-select-wrap {
-  position: relative;
-  display: flex;
-  align-items: center;
-  min-width: 0;
-}
-
-.toolbar-mode-select { flex: 0 0 auto; }
-.toolbar-model-select { flex: 1; max-width: 180px; }
-
-.toolbar-select {
-  width: 100%;
-  height: 32px;
-  min-width: 0;
-  max-width: 180px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  appearance: none;
-  background: var(--surface-alt);
-  border: 1px solid var(--divider-soft, var(--divider));
-  border-radius: var(--radius-input-internal);
-  color: var(--text-secondary);
-  font-size: 12px;
-  padding: 0 22px 0 10px;
-  outline: none;
-  cursor: pointer;
-  font-family: inherit;
-  transition: all 0.15s ease;
-}
-
-.toolbar-select:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-  pointer-events: none;
-}
-
-.toolbar-select:hover {
-  background: var(--hover-overlay);
-  color: var(--text-primary);
-  border-color: var(--divider);
-}
-
-.toolbar-select:focus {
-  border-color: var(--accent);
-}
-
-.toolbar-select option {
-  background: var(--surface-muted);
-  color: var(--text-primary);
-}
-
-.select-arrow {
-  position: absolute;
-  right: 6px;
-  top: 50%;
-  transform: translateY(-50%);
-  pointer-events: none;
-  color: var(--text-secondary);
-  opacity: 0.65;
 }
 
 .toolbar-right {

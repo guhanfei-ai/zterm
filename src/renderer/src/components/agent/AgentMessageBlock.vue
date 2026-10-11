@@ -7,10 +7,7 @@
           <svg class="conclusion-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 0 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
           总结
           <div class="conclusion-actions">
-            <button class="btn-md-action" @click="emit('copy-conclusion', msg)" title="复制为 Markdown">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-              复制为 Markdown
-            </button>
+            <CopyMarkdownButton :text="msg.text" />
             <button class="btn-md-action" @click="emit('save-conclusion', msg)" title="保存为 Markdown 文件">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
               保存为 Markdown 文件
@@ -27,7 +24,10 @@
       <div class="bubble-text">{{ msg.text }}</div>
     </div>
     <div v-else-if="msg.isAgentNaturalReply || (!msg.isAgentCard && msg.role === 'assistant')" class="bubble bubble-assistant">
-      <div class="bubble-role">AI</div>
+      <div class="bubble-header">
+        <div class="bubble-role">AI</div>
+        <CopyMarkdownButton :text="msg.text" />
+      </div>
       <MarkdownContent class="bubble-text" :text="msg.text" />
     </div>
 
@@ -112,14 +112,14 @@
 import { ref, computed } from 'vue'
 import type { ChatMessage } from '@/types/chat'
 import MarkdownContent from '../chat/MarkdownContent.vue'
+import CopyMarkdownButton from '../chat/CopyMarkdownButton.vue'
 
 const props = defineProps<{
   msg: ChatMessage
 }>()
 
-// 收尾结论操作通过 emit 交给父组件（需要 agentDetails 构造完整报告）
+// 保存报告交给父组件构造；复制按钮直接读取消息的 Markdown 原文。
 const emit = defineEmits<{
-  (e: 'copy-conclusion', msg: ChatMessage): void
   (e: 'save-conclusion', msg: ChatMessage): void
 }>()
 
@@ -187,6 +187,8 @@ function truncateOutput(text: string): string {
   letter-spacing: 0.3px;
 }
 .bubble-user .bubble-role { color: var(--accent); }
+.bubble-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+.bubble-header .bubble-role { margin-bottom: 0; }
 .bubble-text { font-size: 12px; }
 
 .bubble-text :deep(.code-block) {

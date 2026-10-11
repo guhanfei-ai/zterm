@@ -5,9 +5,15 @@
         <span class="left-panel-context-title">
           {{ hostsStore.activeMode === 'direct' ? '远程主机' : hostsStore.activeMode === 'jumpserver' ? 'JumpServer 资产' : '本地终端' }}
         </span>
-        <button v-if="hostsStore.activeMode === 'direct'" class="panel-add-btn" title="添加主机" @click="$emit('add-host')">
-          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-        </button>
+        <div v-if="hostsStore.activeMode === 'direct'" ref="addMenu" class="panel-add-menu-wrap" @keydown.esc.stop.prevent="addMenuOpen = false">
+          <button class="panel-add-btn" title="创建主机或文件夹" aria-label="创建主机或文件夹" aria-haspopup="menu" :aria-expanded="addMenuOpen" @click="addMenuOpen = !addMenuOpen">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          </button>
+          <div v-if="addMenuOpen" class="panel-add-menu" role="menu">
+            <button role="menuitem" @click="addMenuOpen = false; $emit('add-host')">创建主机</button>
+            <button role="menuitem" :disabled="!hostsStore.treeLoaded || hostsStore.loading || hostsStore.treeSaving" @click="addMenuOpen = false; showFolderDialog = true">创建文件夹</button>
+          </div>
+        </div>
       </div>
       <div v-if="hostsStore.activeMode === 'direct'" class="panel-actions">
         <button class="panel-action" title="导出主机为 OpenSSH 配置" @click="$emit('export-hosts')">
@@ -19,12 +25,15 @@
       </div>
     </div>
     <HostList @add-host="$emit('add-host')" />
+    <HostFolderDialog v-if="showFolderDialog" @close="showFolderDialog = false" />
   </div>
 </template>
 
 <script setup lang="ts">
+import { onMounted, onUnmounted, ref } from 'vue'
 import { useHostsStore } from '@/stores/hosts'
 import HostList from '@/components/hosts/HostList.vue'
+import HostFolderDialog from '@/components/hosts/HostFolderDialog.vue'
 
 defineProps<{
   width: number
@@ -37,6 +46,14 @@ defineEmits<{
 }>()
 
 const hostsStore = useHostsStore()
+const addMenuOpen = ref(false)
+const showFolderDialog = ref(false)
+const addMenu = ref<HTMLElement | null>(null)
+function closeAddMenu(event: PointerEvent): void {
+  if (!addMenu.value?.contains(event.target as Node)) addMenuOpen.value = false
+}
+onMounted(() => document.addEventListener('pointerdown', closeAddMenu))
+onUnmounted(() => document.removeEventListener('pointerdown', closeAddMenu))
 </script>
 
 <style scoped>
@@ -97,6 +114,12 @@ const hostsStore = useHostsStore()
   color: var(--text-primary);
   background: var(--surface-alt, transparent);
 }
+
+.panel-add-menu-wrap { position: relative; flex-shrink: 0; }
+.panel-add-menu { position: absolute; right: 0; top: 30px; z-index: 50; width: 140px; padding: 5px; border: 1px solid var(--divider); border-radius: var(--radius-control); background: var(--surface); box-shadow: var(--shadow-dialog); }
+.panel-add-menu button { display: block; width: 100%; padding: 9px 10px; border: 0; border-radius: var(--radius-sm); text-align: left; background: transparent; color: var(--text-primary); font: inherit; font-size: 12px; cursor: pointer; }
+.panel-add-menu button:hover { background: var(--surface-alt); }
+.panel-add-menu button:disabled { opacity: .5; cursor: default; }
 
 .panel-left .panel-actions {
   min-height: var(--tabbar-height);

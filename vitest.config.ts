@@ -1,4 +1,6 @@
 import { defineConfig } from 'vitest/config'
+import vue from '@vitejs/plugin-vue'
+import { fileURLToPath } from 'node:url'
 
 /**
  * I02:测试隔离闭环。
@@ -9,6 +11,8 @@ import { defineConfig } from 'vitest/config'
  * 测试拥有的唯一目录,测试不再触碰真实 home 或共享 /tmp。
  */
 export default defineConfig({
+  plugins: [vue()],
+  resolve: { alias: { '@': fileURLToPath(new URL('./src/renderer/src', import.meta.url)) } },
   test: {
     // 只收集当前仓库 src；工作区旁挂的只读 worktree/构建产物不能混入主项目验收。
     include: ['src/**/*.test.ts'],

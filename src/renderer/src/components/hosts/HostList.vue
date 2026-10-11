@@ -1,84 +1,8 @@
 <template>
   <div class="host-list">
-    <!-- 直连模式 -->
-    <template v-if="hostsStore.activeMode === 'direct'">
-      <label v-if="hostsStore.hosts.length" class="host-search">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="10.5" cy="10.5" r="7"/><path d="m16 16 4 4"/></svg>
-        <input v-model="hostFilter" type="search" aria-label="搜索主机、地址或用户" placeholder="搜索主机、地址或用户" />
-      </label>
-      <div v-if="hostsStore.loading" class="list-placeholder">加载中...</div>
-      <div v-else-if="!hostsStore.hosts.length" class="list-placeholder host-empty-state">
-        <div class="jumpserver-empty-icon"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 6.5h.01M7 17.5h.01"/></svg></div>
-        <div class="jumpserver-empty-title">暂无主机</div>
-        <div class="jumpserver-empty-desc">添加一台主机开始使用</div>
-        <div class="host-empty-actions">
-          <button class="host-empty-btn primary" @click="$emit('add-host')">添加主机</button>
-        </div>
-      </div>
-      <div
-        v-for="{ host, index } in visibleHosts"
-        :key="host.id"
-        class="host-item-wrapper"
-      >
-        <div
-          v-if="!hostFilter.trim()"
-          :data-drop-index="index"
-          class="drop-indicator-zone"
-          @dragover.prevent="onDragOverZone($event, index)"
-          @drop.prevent="onDropOnZone($event, index)"
-        />
-        <div
-          :data-host-id="host.id"
-          class="host-item"
-          :class="{ active: hostsStore.activeHostId === host.id }"
-          :draggable="!hostFilter.trim()"
-          role="button"
-          tabindex="0"
-          :aria-label="`连接 ${host.name}`"
-          @keydown.enter.self.prevent="onHostClick(host)"
-          @keydown.space.self.prevent="onHostClick(host)"
-          @click="onHostClick(host)"
-          @dragstart="onDragStart($event, host)"
-          @dragover.prevent="onDragOver($event, host)"
-          @drop.prevent="onDrop($event, host)"
-          @dragend="onDragEnd"
-          @contextmenu="showContextMenu($event, host)"
-        >
-          <div class="drag-handle" :title="hostFilter.trim() ? '清空搜索后可拖动排序' : '拖动排序'"><svg width="12" height="16" viewBox="0 0 12 16" fill="currentColor"><circle cx="4" cy="4" r="1"/><circle cx="8" cy="4" r="1"/><circle cx="4" cy="8" r="1"/><circle cx="8" cy="8" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="8" cy="12" r="1"/></svg></div>
-          <span class="host-connection-dot" :class="{ connected: connectedHostIds.has(host.id) }" :title="connectedHostIds.has(host.id) ? '已有连接' : '未连接'" />
-          <div class="host-item-info">
-            <div class="host-name">{{ host.name }}</div>
-            <div class="host-detail">{{ host.username }}@{{ host.host }}:{{ host.port }}</div>
-          </div>
-          <div class="host-item-actions">
-            <button
-              class="btn-icon tiny"
-              title="编辑主机"
-              @click.stop="onEdit(host)"
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m16 4 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z"/></svg>
-            </button>
-            <button
-              class="btn-icon tiny btn-danger"
-              title="删除主机"
-              @click.stop="onDelete(host)"
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 3h6l1 4H8zm-3 4 1 14h12l1-14M10 11v6m4-6v6"/></svg>
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <div
-        v-if="!hostFilter.trim()"
-        :data-drop-index="hostsStore.hosts.length"
-        class="drop-indicator-zone"
-        @dragover.prevent="onDragOverZone($event, hostsStore.hosts.length)"
-        @drop.prevent="onDropOnZone($event, hostsStore.hosts.length)"
-      />
-      <div v-if="hostsStore.hosts.length && !visibleHosts.length" class="list-placeholder">未找到匹配主机</div>
-      <div v-if="hostsStore.hosts.length" class="host-count">{{ hostFilter.trim() ? `${visibleHosts.length} / ${hostsStore.hosts.length}` : hostsStore.hosts.length }} 台主机</div>
-    </template>
+    <!-- 直连主机与文件夹共用持久化排序。 -->
+    <DirectHostTree v-if="hostsStore.activeMode === 'direct'" :connected-host-ids="connectedHostIds"
+      @add-host="$emit('add-host')" @connect="onHostClick" @edit="onEdit" @delete="onDelete" @context="showContextMenu" />
 
     <!-- 本地终端模式 -->
     <template v-else-if="hostsStore.activeMode === 'local'">
@@ -278,6 +202,7 @@ import { useConfirm } from '@/composables/useConfirm'
 import type { HostRecord } from '@/types/host'
 import type { JumpserverAsset } from '@/types/jumpserver'
 import HostFormDialog from './HostFormDialog.vue'
+import DirectHostTree from './DirectHostTree.vue'
 import JumpserverAccountDialog from './JumpserverAccountDialog.vue'
 import JumpserverNodeTree from './JumpserverNodeTree.vue'
 import JumpserverAssetItem from './JumpserverAssetItem.vue'
@@ -310,16 +235,10 @@ function onEditInstance(config: JumpserverConfig & { hasCredential: boolean }): 
 const hostsStore = useHostsStore()
 const jumpserverStore = useJumpserverStore()
 const terminalStore = useTerminalStore()
-const hostFilter = ref('')
-const visibleHosts = computed(() => {
-  const keyword = hostFilter.value.trim().toLocaleLowerCase()
-  return hostsStore.hosts.map((host, index) => ({ host, index })).filter(({ host }) =>
-    `${host.name} ${host.host} ${host.username}`.toLocaleLowerCase().includes(keyword)
-  )
-})
 const connectedHostIds = computed(() => new Set(terminalStore.tabs
-  .filter((tab) => tab.status === 'connected' && tab.hostId)
-  .map((tab) => tab.hostId)))
+  .filter((tab) => tab.status === 'connected')
+  .map((tab) => tab.hostId)
+  .filter((id): id is string => typeof id === 'string')))
 const editTarget = ref<HostRecord | null | undefined>(undefined)
 const contextMenuHost = ref<HostRecord | null>(null)
 const contextMenuPos = ref({ x: 0, y: 0 })
@@ -421,11 +340,6 @@ async function onLocalTerminal(): Promise<void> {
   }
 }
 
-function reorderHostsByDrag(newOrder: HostRecord[]): void {
-  hostsStore.hosts.splice(0, hostsStore.hosts.length, ...newOrder)
-  hostsStore.saveHostOrder(newOrder.map((h) => h.id))
-}
-
 async function onHostClick(host: HostRecord): Promise<void> {
   // 统一入口：每次连接都新建并激活一个终端标签
   const targetTabId = terminalStore.addTab('direct')
@@ -474,82 +388,6 @@ async function onResetHostTrust(host: HostRecord): Promise<void> {
     await window.electronAPI.terminal.resetHostTrust(host.id)
   }
 }
-
-let dragSourceId: string | null = null
-let dragTargetIndex: number | null = null
-
-function clearDropIndicators(): void {
-  document.querySelectorAll('.drop-indicator-zone').forEach((el) => el.classList.remove('active'))
-}
-
-function onDragStart(e: DragEvent, host: HostRecord): void {
-  dragSourceId = host.id
-  if (e.dataTransfer) {
-    e.dataTransfer.effectAllowed = 'move'
-  }
-  requestAnimationFrame(() => {
-    const el = document.querySelector(`[data-host-id="${host.id}"]`)
-    if (el) el.classList.add('dragging')
-  })
-}
-
-function onDragOver(e: DragEvent, host: HostRecord): void {
-  if (!dragSourceId || host.id === dragSourceId) return
-  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
-  dragTargetIndex = hostsStore.hosts.findIndex((h) => h.id === host.id)
-}
-
-function onDragOverZone(e: DragEvent, index: number): void {
-  if (!dragSourceId) return
-  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
-  clearDropIndicators()
-  const zone = document.querySelector(`[data-drop-index="${index}"]`)
-  if (zone) zone.classList.add('active')
-  dragTargetIndex = index
-}
-
-function onDropOnZone(e: DragEvent, dropIndex: number): void {
-  e.preventDefault()
-  if (!dragSourceId) return
-  const srcIdx = hostsStore.hosts.findIndex((h) => h.id === dragSourceId)
-  if (srcIdx === -1) return
-  if (srcIdx === dropIndex || srcIdx === dropIndex - 1) {
-    clearDropIndicators()
-    dragSourceId = null
-    dragTargetIndex = null
-    return
-  }
-  const newList = [...hostsStore.hosts]
-  const [moved] = newList.splice(srcIdx, 1)
-  const dstIdx = srcIdx < dropIndex ? dropIndex - 1 : dropIndex
-  newList.splice(dstIdx, 0, moved)
-  reorderHostsByDrag(newList)
-  clearDropIndicators()
-  dragSourceId = null
-  dragTargetIndex = null
-}
-
-function onDrop(e: DragEvent, host: HostRecord): void {
-  e.preventDefault()
-  if (!dragSourceId || host.id === dragSourceId) return
-  const srcIdx = hostsStore.hosts.findIndex((h) => h.id === dragSourceId)
-  const dstIdx = hostsStore.hosts.findIndex((h) => h.id === host.id)
-  if (srcIdx === -1 || dstIdx === -1) return
-  const newList = [...hostsStore.hosts]
-  const [moved] = newList.splice(srcIdx, 1)
-  // 与 onDropOnZone 语义对齐：向下拖拽时源项已先移除，目标索引需前移一位（插到目标项之前）
-  const insertIdx = srcIdx < dstIdx ? dstIdx - 1 : dstIdx
-  newList.splice(insertIdx, 0, moved)
-  reorderHostsByDrag(newList)
-  dragSourceId = null
-}
-
-function onDragEnd(): void {
-  document.querySelectorAll('.host-item.dragging').forEach((el) => el.classList.remove('dragging'))
-  clearDropIndicators()
-  dragSourceId = null
-  dragTargetIndex = null
-}
 </script>
 
 <style scoped>
@@ -562,182 +400,12 @@ function onDragEnd(): void {
   flex-direction: column;
 }
 
-.host-search { display: flex; align-items: center; gap: 8px; flex-shrink: 0; margin: 0 2px 10px; padding: 7px 10px; min-height: 34px; border: 1px solid var(--divider); border-radius: var(--radius-control); background: var(--surface, var(--bg)); color: var(--text-tertiary); }
-.host-search:focus-within { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 24%, transparent); }
-.host-search svg { flex-shrink: 0; }
-.host-search input { min-width: 0; width: 100%; font-size: 12px; line-height: 18px; color: var(--text-primary); background: transparent; border: 0; outline: 0; }
-.host-search input::placeholder { color: var(--text-tertiary); }
-.host-count { margin-top: auto; padding: 18px 10px 4px; font-size: 11px; color: var(--text-tertiary); }
-.host-connection-dot { width: 7px; height: 7px; flex-shrink: 0; border-radius: 50%; background: var(--text-disabled); margin-right: 9px; }
-.host-connection-dot.connected { background: var(--success); }
-
 .list-placeholder {
   padding: 24px 16px;
   text-align: center;
   color: var(--text-tertiary);
   font-size: 12px;
   line-height: 1.7;
-}
-
-/* ===== 直连模式空主机列表 ===== */
-.host-empty-state {
-  padding-top: 40px;
-}
-
-.host-empty-actions {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-  margin-top: 16px;
-}
-
-.host-empty-btn {
-  width: 180px;
-  padding: 7px 12px;
-  font-size: 12px;
-  color: var(--text-secondary);
-  background: var(--surface-alt);
-  border: 1px solid var(--divider);
-  border-radius: var(--radius-control);
-  cursor: pointer;
-  transition: all 0.15s ease;
-  font-family: inherit;
-}
-
-.host-empty-btn:hover {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
-.host-empty-btn.primary {
-  color: var(--accent-contrast, #fff);
-  background: var(--accent);
-  border-color: var(--accent);
-}
-
-.host-empty-btn.primary:hover {
-  opacity: 0.9;
-  color: var(--accent-contrast, #fff);
-}
-
-.host-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 10px;
-  min-height: 46px;
-  cursor: pointer;
-  border: 0;
-  border-radius: var(--radius-control);
-  transition: background-color var(--transition-fast);
-  position: relative;
-}
-
-.host-item:hover {
-  background: var(--surface-alt, var(--hover-overlay));
-}
-
-.host-item.active {
-  background: var(--accent-muted);
-}
-
-.host-item-info {
-  flex: 1;
-  min-width: 0;
-  padding-right: 32px;
-}
-
-.host-name {
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--text-primary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.host-detail {
-  font-size: 11px;
-  color: var(--text-tertiary);
-  margin-top: 2px;
-  font-family: var(--font-mono);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.host-item-actions {
-  display: flex;
-  flex-direction: column;
-  gap: 0;
-  position: absolute;
-  right: 6px;
-  top: 4px;
-  opacity: 0;
-  pointer-events: none;
-}
-
-.host-item:hover .host-item-actions, .host-item:focus-within .host-item-actions {
-  opacity: 1;
-  pointer-events: auto;
-}
-
-.btn-icon.tiny {
-  width: 24px;
-  height: 24px;
-  font-size: 12px;
-}
-
-.drag-handle {
-  cursor: grab;
-  color: var(--text-tertiary);
-  position: absolute;
-  left: -3px;
-  opacity: 0;
-  font-size: 14px;
-  letter-spacing: -1px;
-  user-select: none;
-  flex-shrink: 0;
-}
-
-.drag-handle:active {
-  cursor: grabbing;
-}
-
-.host-item.dragging {
-  opacity: 0.5;
-  transform: scale(1.02);
-}
-
-.drop-indicator-zone {
-  height: 4px;
-  margin: 0 14px;
-  border-radius: 2px;
-  background: transparent;
-  transition: background var(--transition-fast), height var(--transition-fast);
-  position: relative;
-}
-
-.drop-indicator-zone.active {
-  height: 6px;
-  background: var(--accent);
-}
-
-.drop-indicator-zone.active::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: -3px;
-  height: 4px;
-  border-radius: 2px;
-  background: var(--accent);
-}
-
-.host-item[draggable]:hover .drag-handle {
-  color: var(--text-secondary);
-  opacity: 1;
 }
 
 /* ===== 右键菜单 ===== */

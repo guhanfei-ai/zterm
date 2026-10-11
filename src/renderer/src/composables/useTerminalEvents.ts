@@ -89,7 +89,8 @@ export function useTerminalEvents(options: { onHostTrustRequired?: (event: SshHo
     // ---- Data fetching (fire-and-forget, errors must not block listeners) ----
     updateStore.fetchCurrentVersion().catch(() => {})
     updateStore.loadDismissedVersion().catch(() => {})
-    hostsStore.fetchHosts().catch(() => {})
+    // 主机列表组件可能已经开始初始化，避免同一轮挂载重复读取。
+    if (!hostsStore.loading && !hostsStore.treeLoaded) hostsStore.fetchHosts().catch(() => {})
     keysStore.fetchKeys().catch(() => {})
 
     // 启动后延迟 3 秒自动静默检查更新

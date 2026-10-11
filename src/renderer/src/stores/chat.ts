@@ -320,7 +320,7 @@ export const useChatStore = defineStore('chat', () => {
       return createChatTab({
         id: snapshot.id,
         title: snapshot.title,
-        mode: 'agent',
+        mode: snapshot.mode,
         includeTerminalContext: snapshot.includeTerminalContext,
         linkedTerminalTabId,
         linkedTerminalUnavailable: !!snapshot.linkedTerminalTabId && !linkedTerminalTabId
