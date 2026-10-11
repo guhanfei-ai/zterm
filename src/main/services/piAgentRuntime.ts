@@ -37,6 +37,7 @@ import { buildPiModelSetup, PI_SANDBOX_DIR, ensurePiSandboxEnv } from './piModel
 import { createBoundTerminalTools, type PiToolTurnState } from './piAgentTools'
 import { activeTerminalToolNames, BUILTIN_READ_TOOL_NAMES } from './agentReadTools'
 import { isMissingOptionalProbe } from './agentCompletionPolicy'
+import { hasTextToolCall } from './modelToolProtocol'
 
 // ---- 每轮唯一可变状态(R01) ----
 
@@ -128,13 +129,14 @@ const PI_HOST_SYSTEM_PROMPT = [
   '行为准则:',
   '- 对话优先:普通问候、解释、追问自然回答,不为了"像 Agent"执行无关命令。',
   '- 未绑定终端时可以正常聊天；需要机器上的实际信息或操作时，请用户连接并点击绑定终端。没有工具权限时不得声称已经检查或执行。',
+  '- 工具是否可用以本轮实际工具列表为准。工具列表为空时只能聊天，不能把工具调用写成回复文本。',
   '- 问候只需简短自然回应，不主动列工具清单、权限说明或催用户提供任务。解释和讨论直接回答；用户需要机器现状或操作时再调用工具，并在同一对话中接续结果。',
-  '- SDK 提示中的 cwd 是本地模型运行目录，不是绑定终端的工作目录。所有工具路径属于绑定目标；不要把本地 cwd 传给远端工具。未知远端当前目录时，省略 read_bound_directory 的 path 获取目标当前目录。',
+  '- SDK 提示中的 cwd 是本地模型运行目录，不是绑定终端的工作目录。所有工具路径属于绑定目标；不要把本地 cwd 传给远端工具。未知远端当前目录时，使用目录读取工具并省略路径，获取目标当前目录。',
   '- 取证优先:需要机器现状证据时,用工具查看真实输出,不拿旧输出当本轮检查结果。',
   '- 默认读模式：只通过内置读工具获取文件、目录、文本、系统、进程和端口信息，不自行拼装终端命令。',
   '- 读写模式：用户开启后可以通过执行工具自动操作，无需逐条审批；危险命令和原有不支持的语法仍会被拦截。',
   '- 两种模式都优先用内置读工具取证。读工具缺少能力时如实说明范围；不安装远端组件、不提权、不通过其他接口绕过。',
-  '- read_bound_terminal_context 只读取已有输出；需要当前机器状态时必须调用实际查询工具。',
+  '- 终端上下文工具只读取已有输出；需要当前机器状态时必须调用实际查询工具。',
   '- 终端提示未提交输入或 Shell 未就绪时，说明需要用户先处理并结束本轮，不循环重试、不替用户清除输入。',
   '- 读工具的 status 表示是否得到可用结果；失败时 exitCode 是真实非零命令退出码或 null，不能把 null 当作成功。内容、参数与协议错误查看 error.code/phase；失败的 truncated 固定为 false，窗口限制查看错误码与 data 中的范围信息。',
   '- 文件总行数和末尾绝对行号可能未知，不得自行补全。按 truncationReasons 解释限制；只有 canContinue=true 时使用 nextStartLine 接续，不能把超出 64 KiB 窗口当成文件已经结束。',
@@ -184,7 +186,8 @@ export function buildHistoryEntries(
   history: ChatTurn[],
   options?: BuildHistoryOptions
 ): FileEntry[] {
-  let list = history
+  // 保留用户可见的旧历史，但不把未执行的协议文本当作助手回答回灌给模型。
+  let list = history.filter((turn) => turn.role !== 'assistant' || !hasTextToolCall(turn.content))
   const drop = options?.dropTrailingUserMessage
   if (drop && list.length > 0) {
     const last = list[list.length - 1]
@@ -991,12 +994,27 @@ export class PiAgentRuntime implements AgentRuntime {
             })
             break
           }
-          // F08:成功消息清除错误标记 —— SDK 自动重试成功后不再判失败
-          turn.modelError = null
           const text = (assistant.content ?? [])
             .filter((c) => c.type === 'text' && typeof c.text === 'string')
             .map((c) => c.text as string)
             .join('')
+          if (hasTextToolCall(text)) {
+            // Pi 内存里仍有原始异常正文；下一轮重建并从已校验的历史恢复，避免反复模仿。
+            tab.sessionConfigKey = null
+            if (!tab.bridge) {
+              // 未绑定时没有工具权限；给出可操作的绑定提示，不显示或执行协议文本。
+              const hint = '当前对话尚未绑定终端，无法读取本机或远程主机信息。请点击右上方“绑定终端”，再发送刚才的查询。本次查询没有执行。'
+              turn.modelError = null
+              turn.lastAssistantText = hint
+              callbacks.emitMessage({ type: 'assistant_reply', content: hint, details: { streaming: false, withCommands: false } })
+            } else {
+              turn.modelError = '模型返回格式异常：工具调用被写成了普通文本，这次调用没有执行。请重试；若反复出现，请在模型设置中验证工具调用支持。'
+              callbacks.emitMessage({ type: 'error', content: turn.modelError })
+            }
+            break
+          }
+          // F08:正常消息清除错误标记 —— SDK 自动重试成功后不再判失败。
+          turn.modelError = null
           if (text) {
             turn.lastAssistantText = text
             callbacks.emitMessage({

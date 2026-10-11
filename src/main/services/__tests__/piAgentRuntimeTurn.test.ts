@@ -292,11 +292,11 @@ describe('R01 stop 后旧轮失效', () => {
 })
 
 describe('R06 事件映射', () => {
-  async function startArrested(runtime: PiAgentRuntime) {
+  async function startArrested(runtime: PiAgentRuntime, bridge: TerminalBridge | null = makeBridge()) {
     arrestNextSession = true // 创建即挂起,事件注入后手动放行
     const callbacks = makeCallbacks()
     const started = runtime.startTask(
-      'tab-ev', '任务', 25, makeBridge(), callbacks,
+      'tab-ev', '任务', 25, bridge, callbacks,
       { userMessage: '检查一下' }
     )
     await vi.waitFor(() => expect(createdSessions.length).toBeGreaterThanOrEqual(1))
@@ -304,6 +304,53 @@ describe('R06 事件映射', () => {
     await vi.waitFor(() => expect(session.prompts.length).toBe(1))
     return { callbacks, session, started }
   }
+
+  it.each([false, true])('DSML 普通正文不执行、不当作正常结果；已绑定：%s', async bound => {
+    const runtime = new PiAgentRuntime(makeConfig())
+    const bridge = bound ? makeBridge() : null
+    const { callbacks, session, started } = await startArrested(runtime, bridge)
+    const protocol = '<｜DSML｜calls>\n<｜DSML｜invoke name="read_bound_processes">\n</｜DSML｜invoke>\n</｜DSML｜calls>'
+    session.emit({ type: 'message_end', message: {
+      role: 'assistant', stopReason: 'stop',
+      content: [{ type: 'text', text: '我来看看进程。\n' }, { type: 'text', text: protocol }],
+    } } as unknown as AgentSessionEvent)
+    session.releasePrompt()
+    await started
+
+    expect(callbacks.stepCompletions.at(-1)?.steps).toEqual([])
+    expect(callbacks.messages.some(msg => msg.type === 'execution' || msg.type === 'observation')).toBe(false)
+    expect(callbacks.messages.some(msg => msg.content.includes('DSML'))).toBe(false)
+    if (bound) {
+      expect(session.setActiveToolsByName).toHaveBeenLastCalledWith(expect.arrayContaining(['list_bound_processes']))
+      expect(callbacks.messages.some(msg => msg.type === 'assistant_reply')).toBe(false)
+      expect(callbacks.messages.some(msg => msg.type === 'error' && msg.content.includes('格式异常'))).toBe(true)
+      expect(callbacks.states.at(-1)).toBe('failed')
+      expect(callbacks.stepCompletions.at(-1)).toMatchObject({ stopReason: 'ERROR' })
+    } else {
+      expect(session.setActiveToolsByName).toHaveBeenLastCalledWith([])
+      expect(callbacks.messages.find(msg => msg.type === 'assistant_reply')?.content).toContain('绑定终端')
+      expect(callbacks.states.at(-1)).toBe('idle')
+      expect(callbacks.stepCompletions.at(-1)).toMatchObject({ turnCompleted: true, stopReason: undefined })
+    }
+    await runtime.startTask('tab-ev', '接着解释', 25, bridge, makeCallbacks(), { sessionPolicy: 'reuse' })
+    expect(createdSessions).toHaveLength(2)
+    expect(session.disposed).toBe(true)
+    runtime.removeTab('tab-ev')
+  })
+
+  it('解释 DSML 的代码示例仍作为普通回复显示', async () => {
+    const runtime = new PiAgentRuntime(makeConfig())
+    const { callbacks, session, started } = await startArrested(runtime)
+    const text = '这是协议示例：\n```xml\n<｜DSML｜calls>\n<｜DSML｜invoke name="example">\n</｜DSML｜invoke>\n</｜DSML｜calls>\n```'
+    session.emit({ type: 'message_end', message: {
+      role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text }],
+    } } as unknown as AgentSessionEvent)
+    session.releasePrompt()
+    await started
+    expect(callbacks.messages.find(msg => msg.type === 'assistant_reply')?.content).toBe(text)
+    expect(callbacks.states.at(-1)).toBe('idle')
+    runtime.removeTab('tab-ev')
+  })
 
   it('user message_end 不产生 assistant_reply(角色分流)', async () => {
     const runtime = new PiAgentRuntime(makeConfig())
@@ -489,6 +536,23 @@ describe('R06 事件映射', () => {
 // ================================================================
 
 describe('R05 buildHistoryEntries:role 映射', () => {
+  it('旧 DSML 调用正文不回灌给模型，原历史及正常代码示例保留', () => {
+    const protocol = '<｜DSML｜calls>\n<｜DSML｜invoke name="read_bound_processes">\n</｜DSML｜invoke>\n</｜DSML｜calls>'
+    const example = '```xml\n' + protocol + '\n```'
+    const history: ChatTurn[] = [
+      { role: 'user', content: '看看进程', createdAt: '2026-10-11T00:00:00.000Z' },
+      { role: 'assistant', content: protocol, createdAt: '2026-10-11T00:00:01.000Z' },
+      { role: 'assistant', content: example, createdAt: '2026-10-11T00:00:02.000Z' },
+      { role: 'user', content: '这是什么情况', createdAt: '2026-10-11T00:00:03.000Z' },
+    ]
+    const entries = buildHistoryEntries(history)
+    const messages = entries.slice(1) as Array<{ message: { role: string; content: unknown } }>
+    expect(messages.map(entry => entry.message.role)).toEqual(['user', 'assistant', 'user'])
+    expect(messages[1].message.content).toEqual([{ type: 'text', text: example }])
+    expect(history).toHaveLength(4)
+    expect(history[1].content).toBe(protocol)
+  })
+
   it('user/assistant/tool → 对应 Pi message role,链式 parentId', () => {
     const history: ChatTurn[] = [
       { role: 'user', content: '记住 token ABC', createdAt: '2026-09-25T00:00:00.000Z' },

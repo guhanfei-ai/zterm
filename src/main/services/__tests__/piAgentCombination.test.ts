@@ -19,6 +19,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { EventEmitter } from 'node:events'
+import { createFakeAgentReceiver } from '../../../test/agentProtocolReceiver'
 import type { AgentSession, AgentSessionEvent } from '@earendil-works/pi-coding-agent'
 
 // ================================================================
@@ -101,18 +102,22 @@ function makeFakeSession(): FakeTerminal {
   let output = 'READY'
   let seq = 0
   const events = new EventEmitter()
+  const receive = createFakeAgentReceiver(events)
   const held = new Map<string, () => void>()
   const session = {
     connected,
     tabId: `fake-${Math.random().toString(36).slice(2, 8)}`,
     sessionMeta: undefined,
     currentHost: undefined,
-    write: async (cmd: string) => {
-      const ready = cmd.match(/'__ZTERM_AGENT_READY_' '([a-f0-9]{32})__'/)
+    write: async (input: string) => {
+      const ready = input.match(/'__ZTERM_AGENT_READY_' '([a-f0-9]{32})__'/)
       if (ready) {
         events.emit('data', Buffer.from(`\r\n__ZTERM_AGENT_READY_${ready[1]}__:37\r\n`))
         return
       }
+      const received = receive(input)
+      if (!received) return
+      const cmd = received.command
       inFlight++
       peak = Math.max(peak, inFlight)
       log.push(cmd)
@@ -127,10 +132,7 @@ function makeFakeSession(): FakeTerminal {
       }
       inFlight--
       output = `DONE-${++seq}`
-      const done = cmd.match(/'__ZTERM_AGENT_END_' '([a-f0-9]{32})__'/)
-      events.emit('data', Buffer.from(done
-        ? `\r\n__ZTERM_AGENT_BEGIN_${done[1]}__\r\n${output}\r\n__ZTERM_AGENT_END_${done[1]}__:0\r\n`
-        : `\r\n${output}\r\n`))
+      events.emit('data', Buffer.from(`\r\n__ZTERM_AGENT_BEGIN_${received.nonce}__\r\n${output}\r\n__ZTERM_AGENT_END_${received.nonce}__:0\r\n`))
     },
     getRecentOutput: () => output,
     on: events.on.bind(events),

@@ -18,6 +18,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, mkdirSync } from 'node:fs'
 import { EventEmitter } from 'node:events'
+import { createFakeAgentReceiver } from '../../../test/agentProtocolReceiver'
 import os from 'node:os'
 import path from 'node:path'
 import type { AgentSession, AgentSessionEvent } from '@earendil-works/pi-coding-agent'
@@ -127,18 +128,22 @@ function makeFakeSession(hold?: (log: string[]) => { release: () => void } | und
   let output = 'READY'
   let seq = 0
   const events = new EventEmitter()
+  const receive = createFakeAgentReceiver(events)
   const gates = new Map<string, () => void>()
   const session = {
     connected,
     tabId: `fake-${Math.random().toString(36).slice(2, 8)}`,
     sessionMeta: undefined,
     currentHost: undefined,
-    write: async (cmd: string) => {
-      const ready = cmd.match(/'__ZTERM_AGENT_READY_' '([a-f0-9]{32})__'/)
+    write: async (input: string) => {
+      const ready = input.match(/'__ZTERM_AGENT_READY_' '([a-f0-9]{32})__'/)
       if (ready) {
         events.emit('data', Buffer.from(`\r\n__ZTERM_AGENT_READY_${ready[1]}__:37\r\n`))
         return
       }
+      const received = receive(input)
+      if (!received) return
+      const cmd = received.command
       log.push(cmd)
       const key = [...gates.keys()].find((k) => cmd.includes(k))
       if (key) {
@@ -150,10 +155,7 @@ function makeFakeSession(hold?: (log: string[]) => { release: () => void } | und
         await new Promise((r) => setTimeout(r, 5))
       }
       output = `DONE-${++seq}`
-      const done = cmd.match(/'__ZTERM_AGENT_END_' '([a-f0-9]{32})__'/)
-      events.emit('data', Buffer.from(done
-        ? `\r\n__ZTERM_AGENT_BEGIN_${done[1]}__\r\n${output}\r\n__ZTERM_AGENT_END_${done[1]}__:0\r\n`
-        : `\r\n${output}\r\n`))
+      events.emit('data', Buffer.from(`\r\n__ZTERM_AGENT_BEGIN_${received.nonce}__\r\n${output}\r\n__ZTERM_AGENT_END_${received.nonce}__:0\r\n`))
     },
     getRecentOutput: () => output,
     on: events.on.bind(events),
@@ -244,20 +246,23 @@ describe('G01 旧任务迟到结果不写入新任务', () => {
     // 旧终端:已收到用户命令与部分输出,但结束标记一直未返回。
     const oldLog: string[] = []
     const oldEvents = new EventEmitter()
+    const receiveOld = createFakeAgentReceiver(oldEvents)
     let oldNonce = ''
     const oldSession = {
       connected: true,
       tabId: 'old-term',
       sessionMeta: undefined,
       currentHost: undefined,
-      write: (cmd: string) => {
-        const ready = cmd.match(/'__ZTERM_AGENT_READY_' '([a-f0-9]{32})__'/)
+      write: (input: string) => {
+        const ready = input.match(/'__ZTERM_AGENT_READY_' '([a-f0-9]{32})__'/)
         if (ready) {
           oldEvents.emit('data', Buffer.from(`\r\n__ZTERM_AGENT_READY_${ready[1]}__:37\r\n`))
           return
         }
-        oldLog.push(cmd)
-        oldNonce = cmd.match(/'__ZTERM_AGENT_END_' '([a-f0-9]{32})__'/)?.[1] ?? ''
+        const received = receiveOld(input)
+        if (!received) return
+        oldLog.push(received.command)
+        oldNonce = received.nonce
         oldEvents.emit('data', Buffer.from('\r\nOLD-PARTIAL-OUTPUT\r\n'))
       },
       getRecentOutput: () => 'OLD-PARTIAL-OUTPUT',

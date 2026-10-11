@@ -18,6 +18,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
 import { EventEmitter } from 'node:events'
+import { createFakeAgentReceiver } from '../../../test/agentProtocolReceiver'
 import os from 'node:os'
 import path from 'node:path'
 import type { AgentSession, AgentSessionEvent } from '@earendil-works/pi-coding-agent'
@@ -141,6 +142,7 @@ function makeFakeSession(host = 'host'): FakeTerminal {
   let output = 'READY'
   let seq = 0
   const events = new EventEmitter()
+  const receive = createFakeAgentReceiver(events)
   const tabId = `fake-${Math.random().toString(36).slice(2, 8)}`
   const session = {
     connected,
@@ -148,19 +150,18 @@ function makeFakeSession(host = 'host'): FakeTerminal {
     sessionMeta: { displayName: 'fake-host', displayDetail: 'fake@host', source: 'direct' },
     currentHost: { host, port: 22, username: 'fake' },
     verifiedHostKey: { algorithm: 'ssh-ed25519', fingerprint: `SHA256:${host}` },
-    write: async (cmd: string) => {
-      const ready = cmd.match(/'__ZTERM_AGENT_READY_' '([a-f0-9]{32})__'/)
+    write: async (input: string) => {
+      const ready = input.match(/'__ZTERM_AGENT_READY_' '([a-f0-9]{32})__'/)
       if (ready) {
         events.emit('data', Buffer.from(`\r\n__ZTERM_AGENT_READY_${ready[1]}__:37\r\n`))
         return
       }
-      writes.push(cmd)
+      const received = receive(input)
+      if (!received) return
+      writes.push(received.command)
       await new Promise((r) => setTimeout(r, 5))
-      const done = cmd.match(/'__ZTERM_AGENT_END_' '([a-f0-9]{32})__'/)
       output = `DONE-${++seq}`
-      events.emit('data', Buffer.from(done
-        ? `\r\n__ZTERM_AGENT_BEGIN_${done[1]}__\r\n${output}\r\n__ZTERM_AGENT_END_${done[1]}__:0\r\n`
-        : `\r\n${output}\r\n`))
+      events.emit('data', Buffer.from(`\r\n__ZTERM_AGENT_BEGIN_${received.nonce}__\r\n${output}\r\n__ZTERM_AGENT_END_${received.nonce}__:0\r\n`))
     },
     getRecentOutput: () => output,
     on: events.on.bind(events),

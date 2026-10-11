@@ -64,15 +64,30 @@ function quoteForSh(text: string): string {
   let chunk = ''
   let bytes = 0
   // 在单引号字符串之间用反斜杠续行，shell 会拼回同一个参数。
-  // 不往命令/路径中插入换行，也不改 stty；避免窄 PTY 的规范输入行上限。
+  // macOS 规范输入上限是 1024 字节；为引号、续行和协议前后缀留足空间。
+  // 不往命令/路径中插入换行，也不改用户终端的 stty 设置。
   for (const character of text) {
     const atom = character === "'" ? "'\\''" : character
     const size = Buffer.byteLength(atom)
-    if (bytes + size > 1024) { chunks.push("'" + chunk + "'"); chunk = ''; bytes = 0 }
+    if (bytes + size > 512) { chunks.push("'" + chunk + "'"); chunk = ''; bytes = 0 }
     chunk += atom; bytes += size
   }
   chunks.push("'" + chunk + "'")
   return chunks.join('\\\n')
+}
+
+/** 反斜杠加倍，其余非 ASCII/控制字节用 POSIX 八进制转义；接收后按原字节解码。 */
+function encodeAgentScript(script: string): string {
+  const lines: string[] = []
+  let line = ''
+  for (const byte of Buffer.from(script)) {
+    const atom = byte === 92 ? '\\\\'
+      : byte >= 32 && byte <= 126 ? String.fromCharCode(byte) : '\\0' + byte.toString(8).padStart(3, '0')
+    if (line.length + atom.length > 512) { lines.push(line); line = '' }
+    line += atom
+  }
+  lines.push(line)
+  return lines.join('\n')
 }
 
 export class TerminalBridge {
@@ -269,15 +284,20 @@ export class TerminalBridge {
     const nonce = randomBytes(16).toString('hex')
     const marker = `__ZTERM_AGENT_END_${nonce}__`
     const startMarker = `__ZTERM_AGENT_BEGIN_${nonce}__`
-    // 用户命令被完整引用为 sh -c 的一个参数，不能提前结束外层完成协议。
+    // 用户命令解码后仍作为 sh -c 的一个参数，不能提前结束外层完成协议。
     // wait 只等待该子 shell 自身的后台任务；显式脱离该 shell 的守护进程
     // 不属于同步命令结果，不能据此推断外部异步副作用已结束。
     const script = `${command}\n__zterm_agent_ec=$?\nwait\nexit "$__zterm_agent_ec"`
-    // 命令可能没有输出末尾换行（如 printf foo）；标记必须自起一行。
-    // 开始/结束标记都分段拼接，回显中的引号与空格无法冒充边界。
-    // 不修改 stty/窗口尺寸；窄终端的回显和提示符在开始标记前整体丢弃。
-    const wrapped = `printf '\\n%s%s\\n' '__ZTERM_AGENT_BEGIN_' '${nonce}__'; command sh -c ${quoteForSh(script)}; __zterm_agent_ec=$?; printf '\\n%s%s:%d\\n' '__ZTERM_AGENT_END_' '${nonce}__' "$__zterm_agent_ec"\n`
-    const execution = await this.captureAgentMarker(marker, wrapped, timeout, signal, true, startMarker)
+    // 就绪探测结束时，交互 Shell 的编辑器未必已经恢复。先用一个短行启动接收器，
+    // 等它确认后再传脚本，由 read 消费短行，不经过 ZLE/Readline 的多行编辑。
+    // 不修改 stty，不创建目标临时文件；EOF 或缺少随机发送边界时不执行脚本。
+    const receiverMarker = `__ZTERM_AGENT_INPUT_${nonce}__`
+    const sendMarker = `__ZTERM_AGENT_SEND_${nonce}__`
+    const receiver = String.raw`printf "\n%s%s\n" "$1" "$4"; code=; received=; while IFS= read -r line; do if [ "$line" = "__ZTERM_AGENT_SEND_$4" ]; then received=1; break; fi; code="$code$line"; done; [ "$received" = 1 ] || exit 1; printf "\n%s%s\n" "$2" "$4"; command sh -c "$(printf "%b" "$code")"; ec=$?; printf "\n%s%s:%d\n" "$3" "$4" "$ec"`
+    const wrapped = `command sh -c ${quoteForSh(receiver)} sh '__ZTERM_AGENT_INPUT_' '__ZTERM_AGENT_BEGIN_' '__ZTERM_AGENT_END_' '${nonce}__'\n`
+    const execution = await this.captureAgentMarker(marker, wrapped, timeout, signal, true, startMarker, {
+      marker: receiverMarker, input: `${encodeAgentScript(script)}\n${sendMarker}\n`, authorize: authorizeBeforeSend,
+    })
     if (execution.completion === 'verified' && execution.exitCode !== undefined) {
       const journal = recentAgentResults.get(this.session)
       // 查询元数据供工具解析；历史与界面保留对应的可读结果，不暴露内部文件帧。
@@ -300,6 +320,7 @@ export class TerminalBridge {
     signal?: AbortSignal,
     withExitCode = false,
     startMarker?: string,
+    receiver?: { marker: string; input: string; authorize?: () => boolean },
   ): Promise<{ completion: AgentCommandResult['completion']; output: string; sent: boolean; truncated: boolean; exitCode?: number }> {
     if (!this.isAgentReady()) return Promise.resolve({ completion: 'disconnected', output: '终端 Shell 未就绪或已断开', sent: false, truncated: false })
     if (signal?.aborted) return Promise.resolve({ completion: 'aborted', output: '执行前已取消', sent: false, truncated: false })
@@ -312,6 +333,9 @@ export class TerminalBridge {
         : new RegExp(`(?:^|\\r?\\n)${foldedMarker(marker)}(?=\\r?\\n)`)
       const startPattern = startMarker
         ? new RegExp(`(?:^|\\r?\\n)${foldedMarker(startMarker)}\\r?\\n`) : undefined
+      const receiverPattern = receiver
+        ? new RegExp(`(?:^|\\r?\\n)${foldedMarker(receiver.marker)}\\r?\\n`) : undefined
+      let dispatched = false
       let started = !startPattern
       let capture = ''
       let truncated = false
@@ -341,7 +365,15 @@ export class TerminalBridge {
       }
       const onData = (raw: Buffer | string): void => {
         capture += typeof raw === 'string' ? raw : decoder.decode(raw, { stream: true })
-        if (!started && startPattern) {
+        if (receiver && receiverPattern && !dispatched && receiverPattern.test(stripVTControlCharacters(capture))) {
+          dispatched = true
+          // 接收器握手也是异步边界，执行数据发送前再次检查权限。
+          if (signal?.aborted || receiver.authorize && !receiver.authorize()) { finish('aborted'); return }
+          try { this.session.write(receiver.input) }
+          catch { finish('disconnected'); return }
+          if (settled) return
+        }
+        if (!started && startPattern && (!receiver || dispatched)) {
           const clean = stripVTControlCharacters(capture)
           const start = startPattern.exec(clean)
           if (start) {

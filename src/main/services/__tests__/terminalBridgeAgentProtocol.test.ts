@@ -1,16 +1,45 @@
 import { EventEmitter } from 'node:events'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { mkdtempSync, writeFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { describe, expect, it, vi } from 'vitest'
+import * as pty from 'node-pty'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { TerminalBridge, type AnyTerminalSession } from '../terminalBridge'
 import { TerminalOutputBuffer } from '../terminalOutputBuffer'
 import { createBoundTerminalTools, type PiToolTurnState } from '../piAgentTools'
 import { prepareBuiltinRead } from '../agentReadTools'
 import { TEST_SANDBOX } from '../../../test/setup'
 
+const protocolShells = new Set<ChildProcessWithoutNullStreams>()
+afterEach(async () => {
+  await Promise.all([...protocolShells].map((child) => new Promise<void>((resolve) => {
+    child.once('close', () => resolve())
+    child.kill('SIGKILL')
+  })))
+})
+
+/** 短命 POSIX 子进程通过 stdin 接收协议数据，不接触真实终端。 */
+function posixProtocolSender(events: EventEmitter, cwd?: string) {
+  let receiver: ChildProcessWithoutNullStreams | undefined
+  return (input: string): void => {
+    if (input.includes("'__ZTERM_AGENT_READY_'")) {
+      events.emit('data', execFileSync('/bin/sh', ['-c', input], { cwd, timeout: 3000 }))
+    } else if (input.includes("'__ZTERM_AGENT_INPUT_'")) {
+      receiver = spawn('/bin/sh', ['-c', input], { cwd })
+      const child = receiver
+      protocolShells.add(child)
+      child.on('close', () => protocolShells.delete(child))
+      child.on('error', (error) => events.emit('error', error))
+      child.stdout.on('data', (data) => events.emit('data', data))
+      child.stderr.on('data', (data) => events.emit('data', data))
+    } else {
+      receiver!.stdin.write(input)
+    }
+  }
+}
+
 /** Only an in-memory terminal: never starts a shell, SSH connection or service. */
-function fakeTerminal(options?: { answerProbe?: boolean; probeExitCode?: number; autoComplete?: boolean; completeAll?: boolean; exitCode?: number; onProbe?: () => void }) {
+function fakeTerminal(options?: { answerProbe?: boolean; answerReceiver?: boolean; probeExitCode?: number; autoComplete?: boolean; completeAll?: boolean; exitCode?: number; onProbe?: () => void; onReceiver?: () => void }) {
   const events = new EventEmitter() as EventEmitter & { connected: boolean; tabId: string; sessionMeta: object; getRecentOutput: () => string; write: (data: string) => void }
   events.connected = true
   events.tabId = `agent-protocol-${Math.random()}`
@@ -23,15 +52,17 @@ function fakeTerminal(options?: { answerProbe?: boolean; probeExitCode?: number;
     getRecentOutputForAgent: (lines: number) => buffer.recent(lines, false),
   })
   const writes: string[] = []
+  const payloads: string[] = []
   let finish: ((output?: string) => void) | undefined
   events.write = (input) => {
-    writes.push(input)
     const ready = input.match(/'__ZTERM_AGENT_READY_' '([a-f0-9]{32})__'/)
+    const done = input.match(/'__ZTERM_AGENT_END_' '([a-f0-9]{32})__'/)
+    if (!ready && !done) { payloads.push(input); return }
+    writes.push(input)
     if (ready && options?.answerProbe !== false) {
       options?.onProbe?.()
       events.emit('data', Buffer.from(`\r\n__ZTERM_AGENT_READY_${ready[1]}__:${options?.probeExitCode ?? 37}\r\n`))
     }
-    const done = input.match(/'__ZTERM_AGENT_END_' '([a-f0-9]{32})__'/)
     if (done) {
       finish = (output = '命令输出') => {
         events.emit('data', Buffer.from(`\r\n__ZTERM_AGENT_BEGIN_${done[1]}__`))
@@ -39,13 +70,35 @@ function fakeTerminal(options?: { answerProbe?: boolean; probeExitCode?: number;
         events.emit('data', Buffer.from(`\r\n${output}\r\n__ZTERM_AGENT_END_${done[1].slice(0, 12)}`))
         events.emit('data', Buffer.from(`${done[1].slice(12)}__:${options?.exitCode ?? 0}\r\n`))
       }
+      if (options?.answerReceiver !== false) {
+        options?.onReceiver?.()
+        events.emit('data', `\r\n__ZTERM_AGENT_INPUT_${done[1]}__\r\n`)
+      }
       if (options?.completeAll || options?.autoComplete && writes.length === 2) finish()
     }
   }
-  return { bridge: new TerminalBridge(events as unknown as AnyTerminalSession), events, writes, complete: (text?: string) => finish?.(text) }
+  return { bridge: new TerminalBridge(events as unknown as AnyTerminalSession), events, writes, payloads, complete: (text?: string) => finish?.(text) }
 }
 
 describe('Pi Agent 专用终端完成协议', () => {
+  it('接收器确认前不发送脚本，未确认时的结束标记不能冒充完成', async () => {
+    const fake = fakeTerminal({ answerReceiver: false })
+    const pending = fake.bridge.executeAgentCommand('printf result', 120)
+    await vi.waitFor(() => expect(fake.writes).toHaveLength(2))
+    expect(fake.payloads).toEqual([])
+    fake.complete('尚未执行')
+    expect(await pending).toMatchObject({ completion: 'timedOut', commandSent: true, output: '' })
+    expect(fake.payloads).toEqual([])
+  })
+  it('接收器握手期间撤销授权后不发送脚本，等待中的子进程结果保持未验证', async () => {
+    let authorized = true
+    const fake = fakeTerminal({ onReceiver: () => { authorized = false } })
+    const authorize = vi.fn(() => authorized)
+    const result = await fake.bridge.executeAgentCommand('printf result', 1000, undefined, authorize)
+    expect(result).toMatchObject({ completion: 'aborted', commandSent: true, output: '' })
+    expect(authorize).toHaveBeenCalledTimes(2)
+    expect(fake.payloads).toEqual([])
+  })
   it.runIf(process.platform !== 'win32')('真实 POSIX 包装执行复杂引号查询，回显模板不能制造搜索命中', async () => {
     const root = mkdtempSync(join(TEST_SANDBOX.tmp, 'protocol-read-'))
     const marker = join(root, 'injected')
@@ -53,10 +106,10 @@ describe('Pi Agent 专用终端完成协议', () => {
     const query = "ssh 'literal' $HOME `printf unintended` $(touch injected)"
     writeFileSync(path, query + '\nordinary\n')
     const fake = fakeTerminal()
+    const send = posixProtocolSender(fake.events, root)
     fake.events.write = (input) => {
       fake.events.emit('data', '\x1b[32mroot#\x1b[0m ' + input.replace(/(.{40})/g, '$1\r\n'))
-      const output = execFileSync('/bin/sh', ['-c', input], { cwd: root, encoding: 'utf8', timeout: 1000 })
-      fake.events.emit('data', Buffer.from(output))
+      send(input)
     }
     const command = prepareBuiltinRead('search_bound_text', { path, query }).command
     const result = await fake.bridge.executeAgentCommand(command, 2000)
@@ -154,11 +207,11 @@ describe('Pi Agent 专用终端完成协议', () => {
     writeFileSync(path, 'first\n你好\nthird\n')
     const fake = fakeTerminal()
     const sizes: number[] = []
+    const send = posixProtocolSender(fake.events, root)
     fake.events.write = (input) => {
       sizes.push(...input.split('\n').map((line) => Buffer.byteLength(line)))
       fake.events.emit('data', input.replace(/(.{40})/g, '$1\r\n'))
-      const output = execFileSync('/bin/sh', ['-c', input], { cwd: root, encoding: 'utf8', timeout: 3000 })
-      fake.events.emit('data', Buffer.from(output))
+      send(input)
     }
     const turn: PiToolTurnState = {
       running: true, stopped: false, cancelled: false, maxSteps: 25,
@@ -175,22 +228,70 @@ describe('Pi Agent 专用终端完成协议', () => {
     expect(fake.bridge.getTerminalContext().agentRecentOutput).toBe('')
     expect(fake.bridge.getTerminalContext().recentAgentResults?.[0]).toMatchObject({ output: '2:你好\n', truncated: true })
     expect(turn.steps.at(-1)?.commandOutput).toBe('2:你好\n')
-    // 常见 Linux PTY 的规范输入行有 4096 字节上限，查询模板不能挤满一行。
-    expect(Math.max(...sizes)).toBeLessThan(4096)
+    // 使用更严格的 macOS 1024 字节上限，同时覆盖 POSIX 包装前后缀。
+    expect(Math.max(...sizes) + 1).toBeLessThan(1024)
   })
   it.runIf(process.platform !== 'win32')('超长且含引号的命令按物理行分段，shell 参数仍保持原样', async () => {
     const fake = fakeTerminal()
     const text = "single' $HOME `literal` 中文".repeat(400)
     let maxLineBytes = 0
+    const send = posixProtocolSender(fake.events)
     fake.events.write = (input) => {
       maxLineBytes = Math.max(maxLineBytes, ...input.split('\n').map((line) => Buffer.byteLength(line)))
-      fake.events.emit('data', execFileSync('/bin/sh', ['-c', input], { encoding: 'utf8', timeout: 3000 }))
+      send(input)
     }
     const quoted = "'" + text.replace(/'/g, "'\\''") + "'"
     const result = await fake.bridge.executeAgentCommand("printf '%s' " + quoted, 4000)
     expect(result).toMatchObject({ completion: 'verified', exitCode: 0, output: text })
-    expect(maxLineBytes).toBeLessThan(4096)
+    expect(maxLineBytes + 1).toBeLessThan(1024)
   })
+  it.runIf(process.platform === 'darwin').each([
+    { mode: '规范输入', shellPath: '/bin/zsh', args: ['-f', '+Z', '-i'] },
+    { mode: '交互编辑', shellPath: '/bin/zsh', args: ['-f', '-i'] },
+    { mode: 'bash 交互编辑', shellPath: '/bin/bash', args: ['--noprofile', '--norc', '-i'] },
+  ])('macOS $mode PTY 完整执行进程、系统和复杂引号文件查询', async ({ shellPath, args }) => {
+    // 禁用 ZLE 的用例覆盖探测输出刚到达、编辑器尚未恢复时的规范输入状态。
+    // 只使用测试自己的短命 PTY，退出时强制回收，不连接用户终端或 SSH。
+    const shell = pty.spawn(shellPath, args, {
+      name: 'xterm-256color', cols: 80, rows: 24, cwd: TEST_SANDBOX.home,
+      env: { PATH: process.env.PATH, LANG: 'en_US.UTF-8', HOME: TEST_SANDBOX.home, ZDOTDIR: TEST_SANDBOX.home,
+        PS1: 'ZTERM_TEST> ', PS2: 'quote> ' },
+    })
+    const exited = new Promise<void>((resolve) => shell.onExit(() => resolve()))
+    const fake = fakeTerminal()
+    let transcript = ''
+    const subscription = shell.onData((data) => { transcript += data; fake.events.emit('data', data) })
+    fake.events.write = (input) => { fake.writes.push(input); shell.write(input) }
+    try {
+      await vi.waitFor(() => expect(transcript).toContain('ZTERM_TEST> '))
+      const processes = await fake.bridge.executeAgentCommand(prepareBuiltinRead('list_bound_processes', {}).command, 3000)
+      expect(processes, transcript.slice(-2800)).toMatchObject({ completion: 'verified', exitCode: 0 })
+      expect(processes.output).toMatch(/PID\s+PPID\s+USER/)
+      const processResult = await fake.bridge.executeAgentCommand(
+        prepareBuiltinRead('list_bound_processes', { pid: process.pid }).command, 3000,
+      )
+      expect(processResult).toMatchObject({ completion: 'verified', exitCode: 0 })
+      expect(processResult.output).toContain(String(process.pid))
+      const system = await fake.bridge.executeAgentCommand(prepareBuiltinRead('read_bound_system', {}).command, 3000)
+      expect(system, transcript.slice(-1800)).toMatchObject({ completion: 'verified', exitCode: 0 })
+      expect(system.output).toContain('Darwin')
+      const path = join(TEST_SANDBOX.home, "file' 中文 $HOME `literal`.txt")
+      writeFileSync(path, 'first\n你好\nthird\n')
+      const file = await fake.bridge.executeAgentCommand(prepareBuiltinRead('read_bound_file', { path }).command, 3000)
+      expect(file).toMatchObject({ completion: 'verified', exitCode: 0 })
+      expect(file.output).toContain('你好')
+      const text = "single' $HOME `literal` 中文\nlast".repeat(400)
+      const quoted = "'" + text.replace(/'/g, "'\\''") + "'"
+      const literal = await fake.bridge.executeAgentCommand("printf '%s' " + quoted, 3000)
+      expect(literal).toMatchObject({ completion: 'verified', exitCode: 0, output: text })
+      // macOS MAX_CANON 是 1024；断言包括协议前后缀与续行字符的整个物理行。
+      expect(Math.max(...fake.writes.flatMap((input) => input.split('\n').map((line) => Buffer.byteLength(line) + 1)))).toBeLessThan(1024)
+    } finally {
+      subscription.dispose()
+      shell.kill('SIGKILL')
+      await exited
+    }
+  }, 15_000)
   it('真实 Pi 工具在探测中降权时零下发，随后仍可查询同一终端', async () => {
     const turn: PiToolTurnState = {
       running: true, stopped: false, cancelled: false, maxSteps: 25,
@@ -234,9 +335,9 @@ describe('Pi Agent 专用终端完成协议', () => {
     expect(result.exitCode).toBe(7)
     expect(result.commandSent).toBe(true)
     expect(result.output).toContain('最后一段输出')
-    expect(fake.writes[1]).toContain("sh -c 'printf hello")
+    expect(fake.payloads[0]).toContain('printf hello')
     // 用户命令可能不以换行结束；协议须主动起新行打印标记。
-    expect(fake.writes[1]).toContain("printf '\\n%s%s:%d\\n'")
+    expect(fake.writes[1]).toContain('printf "\\n%s%s:%d\\n"')
     expect(fake.writes[1]).not.toMatch(/__ZTERM_AGENT_END_[a-f0-9]{32}__/)
   })
 
