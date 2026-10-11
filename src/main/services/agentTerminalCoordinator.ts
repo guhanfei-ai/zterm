@@ -1,6 +1,6 @@
 import type { TerminalBridge } from './terminalBridge'
 
-/** 每个真实 terminal session 一条 Agent 命令链；Pi 与 Graph 回退共享。 */
+/** 每个真实 terminal session 一条 Agent 命令链，跨对话标签共享。 */
 const terminalLocks = new Map<object, Promise<void>>()
 const reservations = new Map<object, number>()
 let manualInputs = new WeakMap<object, { pending: boolean; paste: boolean }>()

@@ -126,8 +126,8 @@ vi.mock('@earendil-works/pi-coding-agent', async (importOriginal) => {
 
 import { PiAgentRuntime, buildHistoryEntries } from '../piAgentRuntime'
 import type { TerminalBridge } from '../terminalBridge'
-import type { AgentGraphCallbacks } from '../agentGraph'
-import type { ChatTurn, StepRecord } from '../agentGraphState'
+import type { AgentRuntimeCallbacks } from '../agentRuntime'
+import type { ChatTurn, StepRecord } from '../agentTypes'
 
 // ---- 脚手架 ----
 
@@ -151,7 +151,7 @@ interface RecordedCallbacks {
   stepCompletions: Array<{ steps: StepRecord[]; stopReason?: string | null; conclusion?: string; turnCompleted?: boolean }>
 }
 
-function makeCallbacks(): AgentGraphCallbacks & RecordedCallbacks {
+function makeCallbacks(): AgentRuntimeCallbacks & RecordedCallbacks {
   const cb: RecordedCallbacks = { messages: [], states: [], stepCompletions: [] }
   return {
     ...cb,
@@ -161,7 +161,6 @@ function makeCallbacks(): AgentGraphCallbacks & RecordedCallbacks {
     emitStateChange(phase) {
       cb.states.push(phase as string)
     },
-    getTerminalContext() { return null },
     onStepComplete(data) {
       cb.stepCompletions.push({
         steps: data.steps,
@@ -170,7 +169,7 @@ function makeCallbacks(): AgentGraphCallbacks & RecordedCallbacks {
         turnCompleted: data.turnCompleted,
       })
     },
-  } as AgentGraphCallbacks & RecordedCallbacks
+  } as AgentRuntimeCallbacks & RecordedCallbacks
 }
 
 function makeConfig() {
@@ -204,7 +203,7 @@ afterEach(() => {
 
 describe('R02 异步窗口内停止', () => {
   it('startTask 未完成时 stop:不 prompt、不发命令、session 释放', async () => {
-    const runtime = new PiAgentRuntime(undefined as never, makeConfig())
+    const runtime = new PiAgentRuntime(makeConfig())
     const bridge = makeBridge()
     const callbacks = makeCallbacks()
 
@@ -219,7 +218,7 @@ describe('R02 异步窗口内停止', () => {
   })
 
   it('startTask 未完成时 removeTab:不 prompt,无残留', async () => {
-    const runtime = new PiAgentRuntime(undefined as never, makeConfig())
+    const runtime = new PiAgentRuntime(makeConfig())
     const started = runtime.startTask('tab-1', '任务', 25, makeBridge(), makeCallbacks())
     runtime.removeTab('tab-1')
     await started
@@ -228,7 +227,7 @@ describe('R02 异步窗口内停止', () => {
   })
 
   it('初始化期间重启新一轮:旧轮不 prompt,新轮正常执行', async () => {
-    const runtime = new PiAgentRuntime(undefined as never, makeConfig())
+    const runtime = new PiAgentRuntime(makeConfig())
     const bridge = makeBridge()
     const cb1 = makeCallbacks()
     const cb2 = makeCallbacks()
@@ -254,7 +253,7 @@ describe('R02 异步窗口内停止', () => {
 
 describe('R01 stop 后旧轮失效', () => {
   it('prompt 挂起中 stop:事件不再转发,不复活任务', async () => {
-    const runtime = new PiAgentRuntime(undefined as never, makeConfig())
+    const runtime = new PiAgentRuntime(makeConfig())
     const bridge = makeBridge()
     const callbacks = makeCallbacks()
 
@@ -307,7 +306,7 @@ describe('R06 事件映射', () => {
   }
 
   it('user message_end 不产生 assistant_reply(角色分流)', async () => {
-    const runtime = new PiAgentRuntime(undefined as never, makeConfig())
+    const runtime = new PiAgentRuntime(makeConfig())
     const { callbacks, session, started } = await startArrested(runtime)
 
     session.emit({
@@ -322,7 +321,7 @@ describe('R06 事件映射', () => {
   })
 
   it('完整序列:thinking_delta 累计(替换语义)→ assistant_reply 落一次 → idle', async () => {
-    const runtime = new PiAgentRuntime(undefined as never, makeConfig())
+    const runtime = new PiAgentRuntime(makeConfig())
     const { callbacks, session, started } = await startArrested(runtime)
 
     session.emit({
@@ -369,7 +368,7 @@ describe('R06 事件映射', () => {
   })
 
   it('assistant stopReason=error(prompt 正常 resolve)→ 显式 failed,不 COMPLETED', async () => {
-    const runtime = new PiAgentRuntime(undefined as never, makeConfig())
+    const runtime = new PiAgentRuntime(makeConfig())
     const { callbacks, session, started } = await startArrested(runtime)
 
     session.emit({
@@ -396,7 +395,7 @@ describe('R06 事件映射', () => {
   })
 
   it('prompt reject(执行期错误)→ failed + ERROR', async () => {
-    const runtime = new PiAgentRuntime(undefined as never, makeConfig())
+    const runtime = new PiAgentRuntime(makeConfig())
     arrestNextSession = true
     const callbacks = makeCallbacks()
     const started = runtime.startTask('tab-err', '任务', 25, makeBridge(), callbacks)
@@ -414,7 +413,7 @@ describe('R06 事件映射', () => {
   })
 
   it('tool_execution_end 错误分类:预算耗尽如实报错,不显示成功', async () => {
-    const runtime = new PiAgentRuntime(undefined as never, makeConfig())
+    const runtime = new PiAgentRuntime(makeConfig())
     const { callbacks, session, started } = await startArrested(runtime)
 
     session.emit({
@@ -450,7 +449,7 @@ describe('R06 事件映射', () => {
   })
 
   it('tool_execution_end 成功:execution 卡片 + observation 带 command/duration/fidelity', async () => {
-    const runtime = new PiAgentRuntime(undefined as never, makeConfig())
+    const runtime = new PiAgentRuntime(makeConfig())
     const { callbacks, session, started } = await startArrested(runtime)
 
     session.emit({
@@ -535,15 +534,12 @@ describe('R05 buildHistoryEntries:role 映射', () => {
 
 describe('S02 续跑语义', () => {
   it('历史已有命令但本轮只是聊天:保持 idle,不写 COMPLETED', async () => {
-    const runtime = new PiAgentRuntime(undefined as never, makeConfig())
+    const runtime = new PiAgentRuntime(makeConfig())
     const callbacks = makeCallbacks()
     await runtime.startTask('tab-chat-after-work', '旧任务', 25, makeBridge(), callbacks, {
       userMessage: '解释刚才的输出',
       restoredState: {
-        currentStep: 1,
         steps: [step(1, 'uptime')],
-        systemDetected: false,
-        stopReason: 'ROUND_LIMIT',
       },
     })
 
@@ -554,7 +550,7 @@ describe('S02 续跑语义', () => {
   })
 
   it('continueTask 拒绝已停止的轮;正常续跑重置预算并收尾', async () => {
-    const runtime = new PiAgentRuntime(undefined as never, makeConfig())
+    const runtime = new PiAgentRuntime(makeConfig())
     const bridge = makeBridge()
     const callbacks = makeCallbacks()
 
@@ -579,7 +575,7 @@ describe('S02 续跑语义', () => {
 
 describe('R01 updateAllowWrite', () => {
   it('运行中更新 allowWrite 即时写入当前轮', async () => {
-    const runtime = new PiAgentRuntime(undefined as never, makeConfig())
+    const runtime = new PiAgentRuntime(makeConfig())
     const bridge = makeBridge()
     const callbacks = makeCallbacks()
 

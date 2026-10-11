@@ -291,19 +291,4 @@ describe('Terminal Store — Map index', () => {
     })
   })
 
-  describe('deprecated methods', () => {
-    it('should still work for backward-compatible setStatus', () => {
-      const store = useTerminalStore()
-      store.addTab()
-      // setStatus operates on activeTab
-      const result = store.setStatus('connecting')
-      expect(result).toBe(true)
-      expect(store.activeTab?.status).toBe('connecting')
-    })
-
-    it('should return false when no active tab', () => {
-      const store = useTerminalStore()
-      expect(store.setStatus('connecting')).toBe(false)
-    })
-  })
 })

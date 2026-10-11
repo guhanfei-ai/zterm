@@ -10,7 +10,7 @@ describe('实际 Pi SDK 的生产工具集合', () => {
   it('关闭内置 MCP/代码扩展后仅声明当前模式的宿主工具，且不产生后台请求', async () => {
     const network = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => { throw new Error('Forbidden network') })
     const config = { providerType: 'openai-compatible' as const, label: 'test', baseUrl: 'https://example.invalid/v1', apiKey: 'synthetic', model: 'test', enableStreaming: true, reasoningMode: 'auto' as const }
-    const runtime = new PiAgentRuntime(undefined, config, { agentDir: TEST_SANDBOX.piAgentDir })
+    const runtime = new PiAgentRuntime(config, { agentDir: TEST_SANDBOX.piAgentDir })
     try {
       const loader = await (runtime as unknown as { ensureLoader(): Promise<ResourceLoader> }).ensureLoader()
       const setup = await buildPiModelSetup(config)

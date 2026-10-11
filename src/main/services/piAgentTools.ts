@@ -18,8 +18,8 @@ import type { AgentToolResult } from '@earendil-works/pi-agent-core'
 import { checkCommand } from './safetyGuard'
 import type { AgentCommandResult, TerminalBridge } from './terminalBridge'
 import type { SafetyCheck } from './safetyGuard'
-import type { AgentGraphCallbacks } from './agentGraph'
-import type { StepRecord } from './agentGraphState'
+import type { AgentRuntimeCallbacks } from './agentRuntime'
+import type { StepRecord } from './agentTypes'
 import { createBuiltinReadTools, readResultText, ReadParameterError, type PreparedRead, type ReadExecutionDetails, type ReadTruncationReason } from './agentReadTools'
 import { stripVTControlCharacters } from 'node:util'
 import {
@@ -96,7 +96,7 @@ export interface PiToolTurnState {
   /** 旧轮内同命令的附加提示；真正的结果不明隔离按底层 session 跨轮维持。 */
   unknownWriteCommands: Set<string>
   /** G01:该轮的回调(迟到结果校验所属轮仍有效后按旧任务身份回调)。 */
-  callbacks: AgentGraphCallbacks
+  callbacks: AgentRuntimeCallbacks
 }
 
 /**
@@ -146,7 +146,7 @@ function readCallsLimit(turn: PiToolTurnState): number {
 }
 /** 工具返回给模型的输出上限(总纲 6.6:输出大小有界,截断可见)。 */
 const MAX_TOOL_OUTPUT_CHARS = 8000
-/** 与现有 graph 对齐的步超时(agentGraphConfig.ts)。 */
+/** 单次终端命令的执行超时。 */
 const STEP_TIMEOUT_MS = 30_000
 
 /** 命令执行结果保真度：只有收到 Agent 协议结束标记和退出码才算 verified。 */
@@ -156,7 +156,7 @@ function truncateToolOutput(text: string): string {
   return text.length <= MAX_TOOL_OUTPUT_CHARS ? text : text.slice(0, MAX_TOOL_OUTPUT_CHARS) + '\n…[输出已截断]'
 }
 
-/** 兼容既有测试入口；真实协调状态已下沉为 Pi/Graph 共用模块。 */
+/** 测试之间重置全局终端协调状态。 */
 export function resetTerminalLocksForTest(): void {
   resetAgentTerminalCoordinatorForTest()
 }

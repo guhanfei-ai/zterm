@@ -110,12 +110,12 @@
           <div class="empty-hint">例如："端口是什么？"，或 "看看 8080 被谁占用"</div>
         </div>
         <!-- 第四轮收口：Agent 时间线只读 tab.messages（单数据源），
-             由 AgentTimelineItem 内部按 msg 类型分发渲染 -->
+             由 AgentMessageBlock 内部按 msg 类型分发渲染 -->
         <AgentMessageBlock
           v-for="msg in agentTimelineMessages"
           :key="msg.id"
           :msg="msg"
-          @save-conclusion="saveConclusionAsMarkdown"
+          @save-markdown="saveReplyAsMarkdown"
         />
       </div>
     </template>
@@ -208,9 +208,7 @@ const chatMessagesInChatMode = computed(() =>
   chatStore.messages.filter((m) => !m.isAgentConclusion && !m.isAgentNaturalReply && !m.isAgentUserTurn && !m.isAgentCard)
 )
 
-// 第四轮收口：Agent 时间线 = tab.messages 中"属于 Agent"的所有消息，
-// 由 AgentTimelineItem 内部按 isAgentConclusion / isAgentUserTurn /
-// isAgentNaturalReply / isAgentCard 分发渲染。tab.messages 是唯一 source of truth。
+// Agent 时间线统一读取 tab.messages，由消息组件按角色与执行卡片类型分发。
 const agentTimelineMessages = computed(() => chatStore.messages)
 
 const selectedModel = ref('')
@@ -337,7 +335,6 @@ async function loadAvailableModels(): Promise<void> {
 
 function onModeChange(mode: PanelMode): void {
   if (chatStore.isStreaming || isAgentBusy(chatStore.agentState)) return
-  if (mode === 'chat') cleanupAgentListeners(chatStore.activeTabId)
   chatStore.setMode(mode)
   // 模式按对话标签保留；草稿由当前对话标签持有。
   chatStore.setError(null)
@@ -353,35 +350,6 @@ function onSend(): void {
 function onStop(): void {
   if (chatStore.mode === 'chat') onStopChat()
   else onAgentStop()
-}
-
-// ============================================================
-// ---- Agent listeners: per-tab isolation ----
-// ============================================================
-const agentListenerMap = new Map<string, Array<() => void>>()
-
-// 状态防乱序 guard：由 useAgentGlobalEvents 提供的应用级共享实例，
-// 保证较新的 stateChange 事件不会被较旧的 getStatus 快照反向回滚。
-// （全局 Agent 事件监听也已迁至应用级 setupAgentGlobalEvents，不随本组件卸载注销）
-
-// Register tab-specific listeners (for backwards compat, currently using global routing)
-function registerAgentListeners(chatTabId: string): void {
-  // Track that this tab has an active agent session.
-  // 当前架构下事件路由由全局监听器 + chatTabId 完成，per-tab 没有独立订阅。
-  // 保留此 map 作为"该 tab 当前是否处于 Agent 活跃期"的事实来源，供 cleanupAgentListeners 清理。
-  if (!agentListenerMap.has(chatTabId)) {
-    agentListenerMap.set(chatTabId, [])
-  }
-}
-
-function cleanupAgentListeners(chatTabId: string): void {
-  const unsubs = agentListenerMap.get(chatTabId)
-  if (unsubs) {
-    for (const unsub of unsubs) {
-      try { unsub() } catch { /* ignore */ }
-    }
-    agentListenerMap.delete(chatTabId)
-  }
 }
 
 // 由 chatStore.agentStatus 派生（全局 onStateChange → refreshAgentStatusByTabId 会持续刷新）。
@@ -623,8 +591,6 @@ async function onStartAgent(): Promise<void> {
   agentScrollState.set(chatStore.activeTabId, false)
   forceScrollAgentToBottom()
 
-  registerAgentListeners(chatTabId)
-
   const restoreRejectedStart = (error: string): void => {
     chatStore.removeMessageByIdByTabId(chatTabId, userTurnId)
     chatStore.setPendingContextByTabId(chatTabId, pendingContext)
@@ -634,7 +600,6 @@ async function onStartAgent(): Promise<void> {
     const tab = chatStore.tabs.find(tab => tab.id === chatTabId)
     if (tab && !tab.draft) tab.draft = text
     nextTick(resetInputHeight)
-    cleanupAgentListeners(chatTabId)
   }
 
   try {
@@ -706,7 +671,7 @@ async function onAgentStop(): Promise<void> {
 
 async function onAgentReset(): Promise<void> {
   const chatTabId = chatStore.activeTabId
-  cleanupAgentListeners(chatTabId)
+
   await window.electronAPI.agent.fullReset({ chatTabId })
   // IPC 往返期间可能已切换标签：所有写入定向到发起请求的 chatTabId，
   // 否则 fullReset 会清掉另一个标签的 Agent 时间线（不可逆）
@@ -723,7 +688,7 @@ async function onAgentReset(): Promise<void> {
 
 async function onAgentContinue(): Promise<void> {
   const chatTabId = chatStore.activeTabId
-  registerAgentListeners(chatTabId)
+
   // 显式续跑：重置滚动状态，强制贴底看最新输出
   agentScrollState.set(chatTabId, false)
   forceScrollAgentToBottom()
@@ -731,7 +696,6 @@ async function onAgentContinue(): Promise<void> {
   const result = await window.electronAPI.agent.continueTask(undefined, { chatTabId })
   if (!result.success && result.error) {
     chatStore.setError(result.error)
-    cleanupAgentListeners(chatTabId)
     return
   }
   // 续跑前清掉悬空上下文：已成功接续（定向到发起的 tab，防 IPC 期间切标签串错位）
@@ -782,8 +746,6 @@ async function onAcceptPendingContext(): Promise<void> {
     return
   }
 
-  // 注册 Agent 消息监听
-  registerAgentListeners(chatTabId)
   chatStore.setError(null)
 
   // 显式恢复：先重置滚动状态并贴底，再发起 continueTask
@@ -795,12 +757,10 @@ async function onAcceptPendingContext(): Promise<void> {
     const result = await window.electronAPI.agent.continueTask(undefined, { chatTabId })
     if (!result.success && result.error) {
       chatStore.setError(`恢复失败：${result.error}`)
-      cleanupAgentListeners(chatTabId)
       return
     }
   } catch (err) {
     chatStore.setError(`恢复异常：${String(err)}`)
-    cleanupAgentListeners(chatTabId)
     return
   }
 
@@ -855,52 +815,15 @@ async function onToggleWrite(enabled: boolean): Promise<void> {
   }
 }
 
-// ---- Agent Conclusion Helpers ----
-// markdown 渲染已迁到 AgentTimelineItem.renderMarkdown 内；这里只保留"结构化报告"构造与 IPC 桥接
-function buildConclusionMarkdown(msg: { text: string; agentDetails?: Record<string, unknown> }): string {
-  const lines: string[] = []
-  const details = msg.agentDetails
-
-  if (details?.taskDescription) {
-    lines.push(`# Agent 总结报告：${details.taskDescription}`)
-  } else {
-    lines.push('# Agent 总结报告')
-  }
-  lines.push('')
-
-  const sysInfo = details?.systemInfo as { kernel?: string; distroName?: string; distroVersion?: string } | undefined
-  if (sysInfo?.distroName) {
-    lines.push(`**系统环境**：${sysInfo.distroName} ${sysInfo.distroVersion}（内核 ${sysInfo.kernel}）`)
-    lines.push('')
-  }
-
-  const steps = details?.steps as Array<{ stepNumber: number; plan: string; command?: string; observation: string; status: string }> | undefined
-  if (steps && steps.length > 0) {
-    lines.push('## 执行步骤')
-    lines.push('')
-    for (const step of steps) {
-      if (step.stepNumber === 0) continue
-      lines.push(`### 步骤 ${step.stepNumber}：${step.plan}`)
-      if (step.command) {
-        lines.push(`\n\`\`\`bash\n${step.command}\n\`\`\`\n`)
-      }
-      lines.push(`> ${step.observation}`)
-      lines.push('')
-    }
-  }
-
-  lines.push('## 结论')
-  lines.push('')
-  lines.push(msg.text)
-
-  return lines.join('\n')
-}
-
-async function saveConclusionAsMarkdown(msg: { text: string; agentDetails?: Record<string, unknown> }): Promise<void> {
-  const md = buildConclusionMarkdown(msg)
+/** 保存当前消息原文；历史回复和新回复使用同一条导出路径。 */
+async function saveReplyAsMarkdown(text: string): Promise<void> {
+  const chatTabId = chatStore.activeTabId
   try {
-    await window.electronAPI.agent.saveConclusion({ content: md })
-  } catch { /* ignore */ }
+    const result = await window.electronAPI.agent.saveMarkdown({ content: text })
+    if (!result.success && !result.canceled) chatStore.setErrorByTabId(chatTabId, result.error || '保存 Markdown 失败')
+  } catch {
+    chatStore.setErrorByTabId(chatTabId, '保存 Markdown 失败')
+  }
 }
 
 function isAgentNearBottom(el: HTMLElement, threshold = 60): boolean {
@@ -975,10 +898,6 @@ onUnmounted(() => {
   window.removeEventListener('focus', refreshAgentStatus)
   // 取消注入的应用级滚动回调（全局事件监听本身由 App.vue 持有，不在此注销）
   setAgentMessageArrivedHook(null)
-  // Cleanup all per-tab agent listeners
-  for (const [tabId] of agentListenerMap) {
-    cleanupAgentListeners(tabId)
-  }
 })
 
 // Cleanup Map entries when tabs are closed
@@ -989,11 +908,6 @@ watch(() => chatStore.tabs.map(t => t.id), (newIds, oldIds) => {
     agentScrollState.delete(id)
     // 同步清理 guard 中该标签的版本号与请求序号，避免 Map 无限增长
     agentStatusGuard.cleanup(id)
-    const listeners = agentListenerMap.get(id)
-    if (listeners) {
-      listeners.forEach(cleanup => cleanup())
-      agentListenerMap.delete(id)
-    }
   }
 })
 </script>
@@ -1251,74 +1165,6 @@ watch(() => chatStore.tabs.map(t => t.id), (newIds, oldIds) => {
 }
 
 .btn-stop:not(:disabled):active { background: var(--danger-hover); color: #fff; }
-
-.agent-conclusions {
-  margin: 8px 0 4px;
-}
-.conclusion-chat {
-  margin: 8px;
-}
-.conclusion-bubble {
-  background: var(--surface-alt);
-  border: 1px solid var(--border-soft);
-  border-radius: var(--radius-card);
-  padding: 10px 14px;
-  box-shadow: var(--shadow-subtle);
-}
-.conclusion-header {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 10px;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--success);
-}
-.conclusion-icon {
-  flex-shrink: 0;
-}
-.conclusion-body {
-  font-size: 13px;
-  line-height: 1.7;
-  color: var(--text-primary);
-  word-break: break-word;
-}
-.conclusion-body :deep(.code-block) {
-  background: var(--bg); border: 1px solid var(--divider);
-  border-radius: 4px; padding: 6px 10px;
-  margin: 6px 0; font-size: 11px;
-  font-family: monospace; white-space: pre-wrap;
-  overflow-x: auto;
-}
-.conclusion-body :deep(.inline-code) {
-  background: var(--surface-alt); padding: 1px 4px;
-  border-radius: 3px; font-size: 11px; font-family: monospace;
-}
-.conclusion-body :deep(strong) { color: var(--text-primary); }
-.conclusion-body :deep(em) { color: var(--text-secondary); }
-.conclusion-actions {
-  margin-left: auto;
-  display: flex;
-  gap: 4px;
-}
-.btn-md-action {
-  display: flex;
-  align-items: center;
-  gap: 3px;
-  font-size: 10px;
-  padding: 2px 8px;
-  border: 1px solid var(--divider-soft);
-  border-radius: 4px;
-  background: transparent;
-  color: var(--success);
-  cursor: pointer;
-  transition: all 0.15s;
-}
-.btn-md-action:hover {
-  background: var(--success-muted);
-  color: var(--success);
-  border-color: var(--divider);
-}
 
 /* ---- 顶部信息区容器：统一两层结构的留白、边距与对齐 ---- */
 .agent-header {

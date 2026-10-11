@@ -132,73 +132,6 @@ export const useTerminalStore = defineStore('terminal', () => {
     }
   }
 
-  // ---- State mutation helpers (activeTab) — return boolean ----
-  /**
-   * @deprecated Use setStatusByTabId(tabId, status) instead for multi-tab safety.
-   */
-  function setStatus(s: ConnectionStatus): boolean {
-    const tab = activeTab.value
-    if (!tab) return false
-    tab.status = s
-    return true
-  }
-
-  /**
-   * @deprecated Use setCurrentHostByTabId(tabId, hostId, hostName) instead for multi-tab safety.
-   */
-  function setCurrentHost(hostId: string | null, hostName?: string): boolean {
-    const tab = activeTab.value
-    if (!tab) return false
-    tab.hostId = hostId
-    tab.hostName = hostName || '未连接'
-    if (hostName) {
-      tab.title = hostName
-    }
-    if (hostId === '__local__') {
-      tab.reconnectTarget = { kind: 'local' }
-    } else if (hostId) {
-      tab.reconnectTarget = { kind: 'direct', hostId }
-    }
-    return true
-  }
-
-  /**
-   * @deprecated Use setErrorByTabId(tabId, err) instead for multi-tab safety.
-   */
-  function setError(err: string | null): boolean {
-    const tab = activeTab.value
-    if (!tab) return false
-    tab.error = err
-    return true
-  }
-
-  /**
-   * @deprecated Use setRecentOutputByTabId(tabId, output) instead for multi-tab safety.
-   */
-  function setRecentOutput(output: string): boolean {
-    const tab = activeTab.value
-    if (!tab) return false
-    tab.recentOutput = output
-    return true
-  }
-
-  /**
-   * @deprecated Use clearStateByTabId(tabId) instead for multi-tab safety.
-   */
-  function clearState(): boolean {
-    const tab = activeTab.value
-    if (!tab) return false
-    tab.status = 'disconnected'
-    tab.hostId = null
-    tab.hostName = '未连接'
-    tab.error = null
-    tab.recentOutput = ''
-    if (!tab.reconnectTarget) {
-      tab.title = getDefaultTabTitle(tab.mode, tab.id)
-    }
-    return true
-  }
-
   // ---- State mutation by tabId (multi-tab safe) — O(1) via _tabMap ----
   function setStatusByTabId(tabId: string, s: ConnectionStatus): boolean {
     const tab = _tabMap.get(tabId)
@@ -361,12 +294,6 @@ export const useTerminalStore = defineStore('terminal', () => {
     getTabsByMode,
     getActiveTabIdByMode,
     getActiveTabByMode,
-    // State mutation (activeTab) — boolean return
-    setStatus,
-    setCurrentHost,
-    setError,
-    setRecentOutput,
-    clearState,
     // State mutation by tabId — boolean return, O(1) via Map
     setStatusByTabId,
     setCurrentHostByTabId,

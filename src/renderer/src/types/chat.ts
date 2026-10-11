@@ -17,10 +17,9 @@ export interface ChatMessage {
   reasoning?: string
   status?: 'streaming' | 'done' | 'error'
   createdAt: string
-  // Agent conclusion support
+  // 历史总结消息的读取标记；正文使用统一助手卡片显示。
   isAgentConclusion?: boolean
-  agentDetails?: Record<string, unknown>
-  // Agent 自然聊天（reply 主循环的无命令回复；conclusion 为旧架构任务收尾卡片，保留兼容历史会话）
+  // Agent 自然聊天回复。
   isAgentNaturalReply?: boolean
   // Agent 模式下的用户发言（与 isAgentNaturalReply 对称）。
   // 必须显式标记，否则 chat 模式过滤与 resetAgent 都会漏掉它。

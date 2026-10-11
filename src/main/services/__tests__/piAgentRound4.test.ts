@@ -45,8 +45,7 @@ vi.mock('electron-store', () => ({
 vi.mock('../store', () => ({
   getStore: () => ({
     get: (key: string) =>
-      key === 'agent_engine' ? 'pi'
-        : key === 'provider_config' ? providerConfigStore
+      key === 'provider_config' ? providerConfigStore
         : key === 'ui_agentMaxSteps' ? agentMaxStepsStore
         : undefined,
     set: () => {},
@@ -303,7 +302,6 @@ describe('对话主轴与执行恢复分离', () => {
   it('无终端也能聊天，零可见工具；随后显式绑定开放只读工具且保持文字历史', async () => {
     const { loadContext } = await import('../agentContextStore')
     const app = new AgentApplication()
-    app.setAiClient({} as never)
     providerConfigStore = makeProviderConfig()
     const fake = makeFakeSession() // 存在连接也不能被自动认领。
     const { sink, log } = makeSink()
@@ -340,7 +338,7 @@ describe('对话主轴与执行恢复分离', () => {
 
   it('无终端的讨论保留旧任务未验证结果与恢复标记，不恢复旧写授权', async () => {
     const { loadContext } = await import('../agentContextStore')
-    const app = new AgentApplication(); app.setAiClient({} as never)
+    const app = new AgentApplication()
     providerConfigStore = makeProviderConfig()
     const fake = makeFakeSession()
     const tabId = 'tab-unbound-pending'
@@ -362,7 +360,7 @@ describe('对话主轴与执行恢复分离', () => {
   })
 
   it('终端接管不把空闲的聊天改成中断任务', () => {
-    const app = new AgentApplication(); app.setAiClient({} as never)
+    const app = new AgentApplication()
     providerConfigStore = makeProviderConfig()
     const fake = makeFakeSession(); const { sink } = makeSink()
     expect(app.bind({ chatTabId: 'idle-takeover', terminalTabId: fake.session.tabId }, sink).success).toBe(true)
@@ -374,7 +372,6 @@ describe('对话主轴与执行恢复分离', () => {
 
   it('无模型或伪造执行历史不会启动模型或终端', async () => {
     const app = new AgentApplication()
-    app.setAiClient({} as never)
     const { sink } = makeSink()
     expect((await app.startTask({ chatTabId: 'no-config', description: '你好' }, sink)).success).toBe(false)
     providerConfigStore = makeProviderConfig()
@@ -388,7 +385,6 @@ describe('对话主轴与执行恢复分离', () => {
   it('问候零命令且无恢复提示，随后读工具和解释仍接在同一对话历史', async () => {
     const { loadContext } = await import('../agentContextStore')
     const app = new AgentApplication()
-    app.setAiClient({} as never)
     providerConfigStore = makeProviderConfig()
     const fake = makeFakeSession()
     const { sink, log } = makeSink()
@@ -492,7 +488,6 @@ describe('恢复与改绑安全边界', () => {
     providerConfigStore = makeProviderConfig()
     const fake = makeFakeSession()
     const app = new AgentApplication()
-    app.setAiClient({} as never)
     const { sink, log } = makeSink()
     const tabId = 'tab-builtin-read'
     expect(app.bind({ chatTabId: tabId, terminalTabId: fake.session.tabId }, sink).success).toBe(true)
@@ -524,7 +519,6 @@ describe('恢复与改绑安全边界', () => {
     const b = makeFakeSession('other-host')
     await seedPendingContext('tab-target', a, { allowWrite: true })
     const app = new AgentApplication()
-    app.setAiClient({} as never)
     const { sink } = makeSink()
     expect(app.bind({ chatTabId: 'tab-target', terminalTabId: b.session.tabId }, sink).success).toBe(true)
 
@@ -546,7 +540,6 @@ describe('恢复与改绑安全边界', () => {
     const fake = makeFakeSession()
     await seedPendingContext('tab-legacy', fake, { legacy: true })
     const app = new AgentApplication()
-    app.setAiClient({} as never)
     const { sink } = makeSink()
     expect(app.bind({ chatTabId: 'tab-legacy', terminalTabId: fake.session.tabId }, sink).success).toBe(true)
 
@@ -565,7 +558,6 @@ describe('恢复与改绑安全边界', () => {
       uncertainCommand: 'touch /tmp/possibly-created',
     })
     const app = new AgentApplication()
-    app.setAiClient({} as never)
     const { sink, log } = makeSink()
     expect(app.bind({ chatTabId: 'tab-uncertain-history', terminalTabId: fake.session.tabId }, sink).success).toBe(true)
 
@@ -594,7 +586,6 @@ describe('恢复与改绑安全边界', () => {
     providerConfigStore = makeProviderConfig()
     const fake = makeFakeSession()
     const app = new AgentApplication()
-    app.setAiClient({} as never)
     const { sink, log } = makeSink()
     expect(app.bind({ chatTabId: 'tab-stopped-resume', terminalTabId: fake.session.tabId }, sink).success).toBe(true)
 
@@ -624,7 +615,6 @@ describe('恢复与改绑安全边界', () => {
     const fake = makeFakeSession()
     await seedPendingContext('tab-privilege', fake, { allowWrite: true })
     const app = new AgentApplication()
-    app.setAiClient({} as never)
     const { sink, log } = makeSink()
     expect(app.bind({ chatTabId: 'tab-privilege', terminalTabId: fake.session.tabId }, sink).success).toBe(true)
     let blocked = false
@@ -648,7 +638,6 @@ describe('恢复与改绑安全边界', () => {
     const a = makeFakeSession()
     const b = makeFakeSession('other-host')
     const app = new AgentApplication()
-    app.setAiClient({} as never)
     const { sink, log } = makeSink()
     expect(app.bind({ chatTabId: 'tab-running', terminalTabId: a.session.tabId }, sink).success).toBe(true)
     let entered!: () => void
@@ -676,7 +665,6 @@ describe('恢复与改绑安全边界', () => {
     providerConfigStore = makeProviderConfig()
     const original = makeFakeSession('original-host')
     const app = new AgentApplication()
-    app.setAiClient({} as never)
     const { sink } = makeSink()
     expect(app.bind({ chatTabId: 'tab-reconnect', terminalTabId: original.session.tabId }, sink).success).toBe(true)
     expect(app.setAllowWrite(true, 'tab-reconnect')).toMatchObject({ success: true, allowWrite: true })
@@ -708,7 +696,6 @@ describe('恢复与改绑安全边界', () => {
       ],
     })
     const app = new AgentApplication()
-    app.setAiClient({} as never)
     const { sink, log } = makeSink()
     expect(app.bind({ chatTabId: 'tab-fresh-target', terminalTabId: newTarget.session.tabId }, sink).success).toBe(true)
     promptScripts.push(async () => {
@@ -733,7 +720,6 @@ describe('恢复与改绑安全边界', () => {
       completion: 'verified', commandSent: true, exitCode: 2,
     })
     const app = new AgentApplication()
-    app.setAiClient({} as never)
     const { sink, log } = makeSink()
     try {
       expect(app.bind({ chatTabId: 'tab-nonzero', terminalTabId: fake.session.tabId }, sink).success).toBe(true)
@@ -765,7 +751,6 @@ describe('恢复与改绑安全边界', () => {
         completion: 'verified', commandSent: true, exitCode: 127,
       })
     const app = new AgentApplication()
-    app.setAiClient({} as never)
     const { sink, log } = makeSink()
     try {
       expect(app.bind({ chatTabId: 'tab-optional-probe', terminalTabId: fake.session.tabId }, sink).success).toBe(true)
@@ -792,7 +777,6 @@ describe('恢复与改绑安全边界', () => {
       completion: 'timedOut', commandSent: true,
     })
     const app = new AgentApplication()
-    app.setAiClient({} as never)
     const { sink, log } = makeSink()
     try {
       expect(app.bind({ chatTabId: 'tab-unknown-end', terminalTabId: fake.session.tabId }, sink).success).toBe(true)
@@ -823,7 +807,6 @@ describe('矩阵1:首轮 → 同 session 追问(H01)', () => {
     providerConfigStore = makeProviderConfig()
     const fake = makeFakeSession()
     const app = new AgentApplication()
-    app.setAiClient({} as never)
     const { sink, log } = makeSink()
 
     const first = await bootAndFirstTurn(app, sink, fake)
@@ -860,7 +843,6 @@ describe('矩阵1:首轮 → 同 session 追问(H01)', () => {
     providerConfigStore = makeProviderConfig()
     const fake = makeFakeSession()
     const app = new AgentApplication()
-    app.setAiClient({} as never)
     const { sink, log } = makeSink()
 
     await bootAndFirstTurn(app, sink, fake)
@@ -889,7 +871,6 @@ describe('设置中的工具步数上限', () => {
     agentMaxStepsStore = 30
     const fake = makeFakeSession()
     const app = new AgentApplication()
-    app.setAiClient({} as never)
     const { sink, log } = makeSink()
     expect(app.bind({ chatTabId: 'tab-h', terminalTabId: fake.session.tabId }, sink).success).toBe(true)
     promptScripts.push(async tools => {
@@ -924,7 +905,6 @@ describe('设置中的工具步数上限', () => {
     const tabId = 'tab-configured-budget-restore'
     await seedPendingContext(tabId, fake)
     const app = new AgentApplication()
-    app.setAiClient({} as never)
     const { sink, log } = makeSink()
     expect(app.bind({ chatTabId: tabId, terminalTabId: fake.session.tabId }, sink).success).toBe(true)
     promptScripts.push(async tools => {
@@ -944,7 +924,6 @@ describe('矩阵2:预算暂停 → 配置不变 → 点继续', () => {
     providerConfigStore = makeProviderConfig()
     const fake = makeFakeSession()
     const app = new AgentApplication()
-    app.setAiClient({} as never)
     const { sink, log } = makeSink()
 
     // 首轮:耗尽预算(maxSteps=1,第二条触发)
@@ -1001,7 +980,6 @@ describe('矩阵3:配置变化后继续', () => {
       providerConfigStore = makeProviderConfig()
       const fake = makeFakeSession()
       const app = new AgentApplication()
-      app.setAiClient({} as never)
       const { sink, log } = makeSink()
 
       // 首轮:工具执行 + 回复 + 耗尽预算
@@ -1077,7 +1055,6 @@ describe('矩阵4:旧轮迟到 vs 新轮正常事件', () => {
     const oldFake = makeFakeSession()
     const newFake = makeFakeSession()
     const app = new AgentApplication()
-    app.setAiClient({} as never)
     const { sink, log } = makeSink()
 
     // 首轮:绑定旧终端,挂起(工具不完成,prompt 挂起)
@@ -1133,12 +1110,12 @@ describe('矩阵5(H04):loader 隔离真注入与执行前拦截', () => {
 
     try {
       // H04:agentDir 注入 —— 生产构造选项,fixture 真正到达被测 loader
-      const runtime = new PiAgentRuntime(undefined as never, makeProviderConfig() as never, { agentDir: ownDir })
+      const runtime = new PiAgentRuntime(makeProviderConfig() as never, { agentDir: ownDir })
       const fakeTab = makeFakeSession()
       const bridgeMod = await import('../terminalBridge')
       const bridge = new bridgeMod.TerminalBridge(fakeTab.session)
       const callbacks = {
-        emitMessage() {}, emitStateChange() {}, getTerminalContext() { return null }, onStepComplete() {},
+        emitMessage() {}, emitStateChange() {}, onStepComplete() {},
       }
       promptScripts.push(async () => {})
       await runtime.startTask('tab-h4', '任务', 25, bridge, callbacks as never, {})
@@ -1396,7 +1373,6 @@ describe('M01 授权层单元:stop-only 后直接调用 provider 被拒', () => 
     providerConfigStore = makeProviderConfig()
     const fake = makeFakeSession()
     const app = new AgentApplication()
-    app.setAiClient({} as never)
     const { sink, log } = makeSink()
 
     const bindResult = app.bind({ chatTabId: 'tab-m1', terminalTabId: fake.session.tabId }, sink)
@@ -1446,7 +1422,6 @@ describe('M01 授权层单元:stop-only 后直接调用 provider 被拒', () => 
     providerConfigStore = makeProviderConfig()
     const fake = makeFakeSession()
     const app = new AgentApplication()
-    app.setAiClient({} as never)
     const { sink, log } = makeSink()
 
     const bindResult = app.bind({ chatTabId: 'tab-m1b', terminalTabId: fake.session.tabId }, sink)
@@ -1492,7 +1467,6 @@ describe('I01/J01:stop 后同 session 追问的旧轮隔离', () => {
     providerConfigStore = makeProviderConfig()
     const fake = makeFakeSession()
     const app = new AgentApplication()
-    app.setAiClient({} as never)
     const { sink, log } = makeSink()
 
     const bindResult = app.bind({ chatTabId: 'tab-j1a', terminalTabId: fake.session.tabId }, sink)
@@ -1530,7 +1504,6 @@ describe('I01/J01:stop 后同 session 追问的旧轮隔离', () => {
     providerConfigStore = makeProviderConfig()
     const fake = makeFakeSession()
     const app = new AgentApplication()
-    app.setAiClient({} as never)
     const { sink, log } = makeSink()
 
     const bindResult = app.bind({ chatTabId: 'tab-j1b', terminalTabId: fake.session.tabId }, sink)
@@ -1581,7 +1554,6 @@ describe('K01:旧 preflight 恢复后的工具调用被不可逆拒绝', () => {
     providerConfigStore = makeProviderConfig()
     const fake = makeFakeSession()
     const app = new AgentApplication()
-    app.setAiClient({} as never)
     const { sink, log } = makeSink()
 
     await setupOldPrefight('tab-k1a', fake, app, sink)
@@ -1617,7 +1589,6 @@ describe('K01:旧 preflight 恢复后的工具调用被不可逆拒绝', () => {
     providerConfigStore = makeProviderConfig()
     const fake = makeFakeSession()
     const app = new AgentApplication()
-    app.setAiClient({} as never)
     const { sink, log } = makeSink()
 
     await setupOldPrefight('tab-k1b', fake, app, sink)
@@ -1691,7 +1662,6 @@ describe('L01:旧 preflight 恢复后,旧模型请求在发送前被拒', () => 
     providerConfigStore = makeProviderConfig()
     const fake = makeFakeSession()
     const app = new AgentApplication()
-    app.setAiClient({} as never)
     const { sink, log } = makeSink()
 
     await setupOldPreflight2('tab-l1a', fake, app, sink)
@@ -1726,7 +1696,6 @@ describe('L01:旧 preflight 恢复后,旧模型请求在发送前被拒', () => 
     providerConfigStore = makeProviderConfig()
     const fake = makeFakeSession()
     const app = new AgentApplication()
-    app.setAiClient({} as never)
     const { sink, log } = makeSink()
 
     await setupOldPreflight2('tab-l1b', fake, app, sink)
@@ -1768,7 +1737,6 @@ describe('I03:长会话改配置重建,原任务目标仍在', () => {
     providerConfigStore = makeProviderConfig()
     const fake = makeFakeSession()
     const app = new AgentApplication()
-    app.setAiClient({} as never)
     const { sink, log } = makeSink()
 
     const { saveContext } = await import('../agentContextStore')
@@ -1865,7 +1833,6 @@ describe('I04:配置清空后继续被拒绝', () => {
     providerConfigStore = makeProviderConfig()
     const fake = makeFakeSession()
     const app = new AgentApplication()
-    app.setAiClient({} as never)
     const { sink, log } = makeSink()
 
     const bindResult = app.bind({ chatTabId: 'tab-i4', terminalTabId: fake.session.tabId }, sink)
@@ -1904,7 +1871,6 @@ describe('J02:目标补入不与新任务 prompt 重复', () => {
     providerConfigStore = makeProviderConfig()
     const fake = makeFakeSession()
     const app = new AgentApplication()
-    app.setAiClient({} as never)
     const { sink, log } = makeSink()
 
     const { saveContext } = await import('../agentContextStore')

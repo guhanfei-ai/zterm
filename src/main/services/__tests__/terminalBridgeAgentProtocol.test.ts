@@ -165,7 +165,7 @@ describe('Pi Agent 专用终端完成协议', () => {
       commandsUsed: 0, readCallsUsed: 0, budgetExhausted: false, readLimitExhausted: false,
       uncertainResult: false, steps: [], allowWrite: false, boundHost: 'test',
       executedToolCallIds: new Set(), unknownWriteCommands: new Set(),
-      callbacks: { emitMessage() {}, emitStateChange() {}, getTerminalContext: () => null, onStepComplete() {} },
+      callbacks: { emitMessage() {}, emitStateChange() {}, onStepComplete() {} },
     }
     const tools = createBoundTerminalTools({ bridge: fake.bridge, turn })
     const file = tools.find((tool) => tool.name === 'read_bound_file')!
@@ -197,7 +197,7 @@ describe('Pi Agent 专用终端完成协议', () => {
       commandsUsed: 0, readCallsUsed: 0, budgetExhausted: false, readLimitExhausted: false,
       uncertainResult: false, steps: [], allowWrite: true, boundHost: 'test',
       executedToolCallIds: new Set(), unknownWriteCommands: new Set(),
-      callbacks: { emitMessage() {}, emitStateChange() {}, getTerminalContext: () => null, onStepComplete() {} },
+      callbacks: { emitMessage() {}, emitStateChange() {}, onStepComplete() {} },
     }
     const fake = fakeTerminal({ completeAll: true, onProbe: () => { turn.allowWrite = false } })
     const tools = createBoundTerminalTools({ bridge: fake.bridge, turn })

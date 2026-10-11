@@ -15,7 +15,7 @@ function setup() {
     readCallsUsed: 0, budgetExhausted: false, readLimitExhausted: false, uncertainResult: false,
     steps: [], allowWrite: false, boundHost: 'bound-test-target',
     executedToolCallIds: new Set(), unknownWriteCommands: new Set(),
-    callbacks: { emitMessage() {}, emitStateChange() {}, getTerminalContext() { return null }, onStepComplete() {} },
+    callbacks: { emitMessage() {}, emitStateChange() {}, onStepComplete() {} },
   }
   const execute = vi.fn(async (command: string) => ({
     command, output: command.includes('__ZTERM_FILE_V1__')

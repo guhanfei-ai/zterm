@@ -20,8 +20,8 @@ import {
   type PiToolExecutionContext
 } from '../piAgentTools'
 import type { AgentCommandResult, TerminalBridge } from '../terminalBridge'
-import type { AgentGraphCallbacks } from '../agentGraph'
-import type { StepRecord } from '../agentGraphState'
+import type { AgentRuntimeCallbacks } from '../agentRuntime'
+import type { StepRecord } from '../agentTypes'
 
 // ---- 测试脚手架 ----
 
@@ -47,7 +47,6 @@ function makeTurn(overrides?: Partial<PiToolTurnState>): PiToolTurnState {
     callbacks: {
       emitMessage() {},
       emitStateChange() {},
-      getTerminalContext() { return null },
       onStepComplete(data: { steps: StepRecord[]; currentStep: number }) {
         stepSnapshots.push(data.steps)
       },
@@ -85,7 +84,7 @@ function turnStepSnapshots(turn: PiToolTurnState): StepRecord[][] {
   }
   // 包装当前 callbacks 的 onStepComplete(仅在调用时收集)
   const origEmit = turn.callbacks
-  ;(turn as PiToolTurnState & { callbacks: AgentGraphCallbacks }).callbacks = {
+  ;(turn as PiToolTurnState & { callbacks: AgentRuntimeCallbacks }).callbacks = {
     ...origEmit,
     onStepComplete: collecting,
   }
@@ -133,7 +132,7 @@ function makeBridge(overrides?: {
   return Object.assign(bridge, { _writeCommand: writeCommand })
 }
 
-function makeCallbacks(): AgentGraphCallbacks & {
+function makeCallbacks(): AgentRuntimeCallbacks & {
   messages: Array<{ type: string; content: string; details?: Record<string, unknown> }>
   stepSnapshots: StepRecord[][]
 } {
@@ -146,17 +145,16 @@ function makeCallbacks(): AgentGraphCallbacks & {
       messages.push({ ...msg })
     },
     emitStateChange() {},
-    getTerminalContext() { return null },
     onStepComplete(data) {
       stepSnapshots.push(data.steps)
     },
-  } as AgentGraphCallbacks & { messages: typeof messages; stepSnapshots: typeof stepSnapshots }
+  } as AgentRuntimeCallbacks & { messages: typeof messages; stepSnapshots: typeof stepSnapshots }
 }
 
 function makeCtx(
   turn: PiToolTurnState,
   _bridge: TerminalBridge,
-  _callbacks: AgentGraphCallbacks
+  _callbacks: AgentRuntimeCallbacks
 ): PiToolExecutionContext {
   // G01 后生产 ctx 只含 bridge/turn;记录/校验由 bindCallContext
   // 用绑定 turn 实现 —— 测试与生产结构一致。

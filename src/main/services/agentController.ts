@@ -1,18 +1,11 @@
-/**
- * AgentController — thin adapter layer over LangGraph graph runtime.
- *
- * This class preserves the original public API (EventEmitter + method signatures)
- * so the IPC layer and frontend remain compatible.
- *
- * Internal execution is fully delegated to AgentGraphRuntime (LangGraph StateGraph).
- */
+/** Agent 产品状态、事件和任务恢复；执行循环由 Pi runtime 承担。 */
 import { EventEmitter } from 'events'
-import { AiClient, type ProviderConfig } from './aiClient'
+import type { ProviderConfig } from './aiClient'
 import { TerminalBridge } from './terminalBridge'
-import type { AgentRuntime, AgentEngine } from './agentRuntime'
+import type { AgentRuntime, AgentRuntimeCallbacks } from './agentRuntime'
 import { createAgentRuntime } from './agentRuntimeFactory'
-import { AgentGraphCallbacks } from './agentGraph'
-import { GraphPhase, StopReason } from './agentGraphState'
+import type { AgentState, StopReason } from './agentTypes'
+export type { AgentState } from './agentTypes'
 import type { SafetyCheck } from './safetyGuard'
 import {
   saveContext,
@@ -25,7 +18,7 @@ import {
 } from './agentContextStore'
 import type { AgentContextSnapshot, ContextChatTurn, ResumeType } from './agentContextStore'
 
-// ---- Re-exported types (preserved for IPC / preload / frontend compat) ----
+// ---- IPC / preload / frontend 使用的产品契约 ----
 
 /** 读写模式开关操作的结构化返回结果 */
 export interface SetAllowWriteResult {
@@ -33,18 +26,6 @@ export interface SetAllowWriteResult {
   error?: string
   allowWrite?: boolean
 }
-
-export type AgentState =
-  | 'starting'
-  | 'idle'
-  | 'planning'
-  | 'executing'
-  | 'observing'
-  | 'summarizing'
-  | 'completed'
-  | 'failed'
-  | 'stopped'
-  | 'stepLimitReached'
 
 export interface AgentTask {
   id: string
@@ -66,19 +47,11 @@ export interface AgentStep {
 
 export interface AgentMessage {
   id: string
-  type: 'plan' | 'execution' | 'observation' | 'conclusion' | 'thinking' | 'error' | 'status' | 'assistant_reply' | 'user_turn'
+  type: 'plan' | 'execution' | 'observation' | 'thinking' | 'error' | 'status' | 'assistant_reply' | 'user_turn'
   stepNumber?: number
   content: string
   details?: Record<string, unknown>
   createdAt: string
-}
-
-export interface SystemInfo {
-  kernel: string
-  distroName: string
-  distroVersion: string
-  packageManager: string
-  rawOutput: string
 }
 
 export interface AgentStatus {
@@ -107,24 +80,6 @@ function unverifiedHistoryError(command: string): Error {
   )
 }
 
-// ---- Phase → AgentState mapping ----
-function phaseToAgentState(phase: GraphPhase): AgentState {
-  switch (phase) {
-    case 'idle': return 'idle'
-    case 'probing': return 'executing'
-    case 'planning': return 'planning'
-    case 'safety_check': return 'planning'
-    case 'executing': return 'executing'
-    case 'observing': return 'observing'
-    case 'summarizing': return 'summarizing'
-    case 'completed': return 'completed'
-    case 'failed': return 'failed'
-    case 'stopped': return 'stopped'
-    case 'stepLimitReached': return 'stepLimitReached'
-    default: return 'idle'
-  }
-}
-
 /**
  * Agent "任务终态"集合：进入后不再被中间态反向覆盖。
  * 注意：不含 `idle`——`idle` 表示"无任务"，允许被新任务主动推进覆盖。
@@ -149,7 +104,7 @@ const AGENT_FINAL_STATES = new Set<AgentState>([
  *   4. 其余转换允许（含 `idle → planning`、`completed → idle` 等主动推进/重置场景）。
  *
  * 注意：本函数仅用于"异步完成态映射"路径（syncStateFromContext / startTask.then /
- * resumeFromContext.then）的收敛判断，**不**用于 graph 节点的 emitStateChange 回调——
+ * resumeFromContext.then）的收敛判断，**不**用于 runtime 节点的 emitStateChange 回调——
  * 后者是主动推进状态，应允许 completed → planning 等合法转换。
  *
  * @param current Controller 当前已持有的状态
@@ -198,38 +153,15 @@ export class AgentController extends EventEmitter {
 
   private chatTabId: string | null = null
   private stopReason: StopReason = null
-  /** 当前引擎标识,持久化到快照 schemaVersion/engine(总纲 7.4) */
-  private engine: AgentEngine = 'graph'
-  private runtimeEngine: AgentEngine | null = null
   /** 无终端时只追加聊天，不改写原执行任务的恢复事实。 */
   private preserveExecutionContext = false
 
-  init(aiClient: AiClient, bridge: TerminalBridge | null, config: ProviderConfig): void {
-    // 产品的两种权限模式统一走 Pi 内置工具；旧 Graph 实现保留，
-    // 但旧设置或环境变量不能重新开放“读模式拼命令”的入口。
-    const selectedEngine: AgentEngine = 'pi'
-    if (this.runtime && this.runtimeEngine && this.runtimeEngine !== selectedEngine) {
-      if (this.chatTabId && this.runtime.isRunning(this.chatTabId)) {
-        throw new Error('Agent 正在运行，不能切换执行内核')
-      }
-      if (this.chatTabId) this.runtime.removeTab(this.chatTabId)
-      this.runtime = null
-      this.runtimeEngine = null
-    }
-    // 显式释放旧 bridge（若有），避免反复 init 后旧引用长期存活
-    if (this.bridge && this.bridge !== bridge) {
-      this.bridge.dispose()
-    }
+  init(bridge: TerminalBridge | null, config: ProviderConfig): void {
+    if (this.bridge && this.bridge !== bridge) this.bridge.dispose()
     this.bridge = bridge
     this.config = config
-    this.engine = selectedEngine
-    if (!this.runtime) {
-      this.runtime = createAgentRuntime(this.engine, aiClient, config)
-      this.runtimeEngine = this.engine
-    } else {
-      // F04:下一轮同步新配置;Pi 按指纹决定会话复用或重建。
-      this.runtime.updateConfig?.(config)
-    }
+    if (!this.runtime) this.runtime = createAgentRuntime(config)
+    else this.runtime.updateConfig?.(config)
   }
 
   /** Get the currently bound bridge (read-only, for diagnostics) */
@@ -242,10 +174,9 @@ export class AgentController extends EventEmitter {
     return this.runtime
   }
 
-  /** Inject an external runtime (used when sharing across tabs) */
+  /** 注入测试执行体，验证产品生命周期与恢复行为。 */
   setRuntime(runtime: AgentRuntime): void {
     this.runtime = runtime
-    this.runtimeEngine = null // 测试/外部注入的 runtime 无法从类名推断引擎
   }
 
   setChatTabId(chatTabId: string | null): void {
@@ -283,8 +214,8 @@ export class AgentController extends EventEmitter {
     }
   }
 
-  // ---- Callbacks for graph → IPC event bridging ----
-  private createCallbacks(preserveExecutionContext = false): AgentGraphCallbacks {
+  // ---- Callbacks for runtime → IPC event bridging ----
+  private createCallbacks(preserveExecutionContext = false): AgentRuntimeCallbacks {
     const self = this
     return {
       emitMessage(msg) {
@@ -323,19 +254,14 @@ export class AgentController extends EventEmitter {
         }
         self.emit('message', full)
       },
-      emitStateChange(phase: GraphPhase) {
-        const agentState = phaseToAgentState(phase)
-        // 收敛规则：stopped 优先级最高，graph 内部回调不得把已停止的任务
+      emitStateChange(agentState) {
+        // 收敛规则：stopped 优先级最高，runtime 内部回调不得把已停止的任务
         // 反向改写为中间/终态（如任务停止后异步收尾 emit executing/completed）。
         // 主动推进路径（startTask/continueTask/reset 等）直接设置 self.state，
         // 不经过本回调，不受影响。
         if (!shouldEmitStateChange(self.state, agentState)) return
         self.state = agentState
         self.emit('state-change', agentState)
-      },
-      getTerminalContext(lines = 200) {
-        if (!self.bridge || !self.bridge.isConnected()) return null
-        return self.bridge.getTerminalContext(lines)
       },
       onStepComplete(data) {
         // Sync local controller state
@@ -360,17 +286,7 @@ export class AgentController extends EventEmitter {
 
         // Persist to contextStore
         if (self.chatTabId) {
-          // systemInfo / systemSummary 采用"保留式"写入：只有本次 onStepComplete
-          // 显式带 data.systemInfo 时才覆盖；否则沿用持久化中已有的值。
-          // 避免后续 analyze / execute / 总结 等不带系统信息的 onStepComplete 调用
-          // 把 probe 阶段写入的完整结构化 systemInfo 覆盖成 undefined。
           const existing = loadContext(self.chatTabId)
-          const nextSystemInfo: SystemInfo | undefined =
-            data.systemInfo ?? existing?.systemInfo
-          const nextSystemSummary: string | undefined =
-            data.systemDetected && data.systemInfo
-              ? `${data.systemInfo.distroName} ${data.systemInfo.distroVersion} (内核 ${data.systemInfo.kernel})`
-              : existing?.systemSummary
           const nextKeyOutputs = data.steps
             .filter(s => !!s.commandOutput)
             .slice(-6)
@@ -395,8 +311,6 @@ export class AgentController extends EventEmitter {
             recentKeyOutputs: nextKeyOutputs.length > 0 ? nextKeyOutputs : existing?.recentKeyOutputs,
             stopReason: data.stopReason ?? self.stopReason,
             turnCompleted: data.turnCompleted,
-            systemInfo: nextSystemInfo,
-            systemSummary: nextSystemSummary,
             lastConclusion: data.conclusion
           }, { throwOnFailure: true })
         }
@@ -433,7 +347,7 @@ export class AgentController extends EventEmitter {
       (!!persisted.boundTargetId || persisted.steps.length > 0)
     this.preserveExecutionContext = preserveExecutionContext
     const keepTask = !isNewTask && !!persisted?.taskDescription
-    const engineChanged = keepTask && !!persisted?.engine && persisted.engine !== this.engine
+    const engineChanged = keepTask && !!persisted?.engine && persisted.engine !== 'pi'
     if (this.bridge && keepTask && (persisted?.boundTargetId || persisted?.steps.length) && persisted?.boundTargetId !== boundTargetId) {
       throw new Error(persisted?.boundTargetId
         ? '当前终端与历史任务的目标不一致，请重新绑定原终端或开启新任务'
@@ -483,7 +397,7 @@ export class AgentController extends EventEmitter {
       saveContext({
         chatTabId: this.chatTabId,
         schemaVersion: 3,
-        engine: this.engine,
+        engine: 'pi',
         taskId: this.task.id,
         taskDescription,
         createdAt: this.task.createdAt,
@@ -507,7 +421,7 @@ export class AgentController extends EventEmitter {
       saveContext({
         chatTabId: this.chatTabId,
         schemaVersion: 3,
-        engine: this.engine,
+        engine: 'pi',
         taskId: this.task.id,
         taskDescription,
         createdAt: this.task.createdAt,
@@ -536,36 +450,13 @@ export class AgentController extends EventEmitter {
       createdAt: new Date().toISOString()
     }
     appendChatTurn(this.chatTabId, userTurn)
-    const historyForGraph = [...existingHistory, userTurn]
+    const runtimeHistory = [...existingHistory, userTurn]
 
     // 修正：删除原先的 type:'task' emit —— 不再把"用户发言"渲染成"任务目标"卡片。
-    // 真正的时间线条目由前端 onStartAgent 推 user_turn 气泡、后端 graph 推 assistant_reply 气泡。
+    // 真正的时间线条目由前端 onStartAgent 推 user_turn 气泡、后端 runtime 推 assistant_reply 气泡。
 
-    // Fire graph execution (non-blocking — errors handled via callbacks)
-    // 构造 restoredState：follow-up 时把上一轮的 steps / systemInfo / phase 带给 graph；
-    // 真正的 graph 节点用 restoredState 中的当前值起算（runtime.startTask 内部写入 initialState）。
-    // systemInfo 优先用持久化的结构化对象（旧文件只有 systemSummary 时退化为最小对象）
-    const persistedSystemInfo: SystemInfo | undefined = persisted?.systemInfo
-      ? {
-          kernel: persisted.systemInfo.kernel,
-          distroName: persisted.systemInfo.distroName,
-          distroVersion: persisted.systemInfo.distroVersion,
-          packageManager: persisted.systemInfo.packageManager,
-          rawOutput: persisted.systemInfo.rawOutput
-        }
-      : persisted?.systemSummary
-        ? { kernel: '', distroName: '', distroVersion: '', packageManager: '', rawOutput: persisted.systemSummary }
-        : undefined
-    const restoredState = isNewTask
-      ? undefined
-      : {
-          currentStep: effectiveStep,
-          steps: persisted?.steps ?? [],
-          systemDetected: !!persistedSystemInfo,
-          systemInfo: persistedSystemInfo,
-          stopReason: null,
-          phase: 'completed' as const
-        }
+    // Pi 以已有步骤作为预算基准，模型上下文由对话历史恢复。
+    const restoredState = isNewTask ? undefined : { steps: persisted?.steps ?? [] }
 
     this.runtime.startTask(
       this.chatTabId,
@@ -576,9 +467,8 @@ export class AgentController extends EventEmitter {
       {
         allowWrite: this.allowWrite,
         boundHost: this.boundHost,
-        conversationHistory: historyForGraph,
+        conversationHistory: runtimeHistory,
         userMessage: description,
-        recentKeyOutputs: isNewTask ? [] : (persisted?.recentKeyOutputs ?? []),
         restoredState,
         // 新任务或执行内核切换都重建；只有同一内核的普通追问才复用会话。
         sessionPolicy: isNewTask || engineChanged ? 'rebuild' : 'reuse'
@@ -646,7 +536,6 @@ export class AgentController extends EventEmitter {
     this.bridge = null
     this.config = null
     this.runtime = null
-    this.runtimeEngine = null
     this.task = null
     this.removeAllListeners()
   }
@@ -680,7 +569,7 @@ export class AgentController extends EventEmitter {
     const currentTargetId = this.bridge.getBoundTargetId()
     const persisted = loadContext(this.chatTabId)
     const persistedTargetId = persisted?.boundTargetId
-    if (persisted?.engine && persisted.engine !== this.engine) {
+    if (persisted?.engine && persisted.engine !== 'pi') {
       // 内核已经按当前设置重建，不能调用旧 runtime 的 continue；改为从持久化历史重规划。
       this.resumeFromContext(persisted, additionalSteps)
       return
@@ -690,7 +579,7 @@ export class AgentController extends EventEmitter {
     }
 
     // 点"继续"属于人类介入：预算重置为 additionalSteps，而不是累计追加。
-    // 基准同步重算（runtime.continueTask 会把同一基准写入 graph state）。
+    // 基准同步重算（runtime.continueTask 会把同一基准写入 runtime state）。
     this.maxSteps = additionalSteps
     this.turnStartStepCount = this.steps.filter(s => s.stepNumber > 0).length
     updateContext(this.chatTabId, { turnCompleted: false, stopReason: null }, { throwOnFailure: true })
@@ -698,12 +587,12 @@ export class AgentController extends EventEmitter {
     this.state = 'planning'
     this.emit('state-change', 'planning')
 
-    // 后台点火续跑图：不 await，执行期错误由 runGraphContinue 收敛并走事件流
-    void this.runGraphContinue(additionalSteps)
+    // 后台续跑；执行期错误由 runRuntimeContinue 收敛并走事件流。
+    void this.runRuntimeContinue(additionalSteps)
   }
 
   /** 续跑（stepLimitReached 路径）的后台执行体：执行期失败收敛为 failed 终态并走事件流 */
-  private async runGraphContinue(additionalSteps: number): Promise<void> {
+  private async runRuntimeContinue(additionalSteps: number): Promise<void> {
     if (!this.chatTabId || !this.runtime) return
     try {
       // H02/H03:传当前持有的有效绑定(不是 runtime 侧可能已释放的旧对象)
@@ -764,7 +653,7 @@ export class AgentController extends EventEmitter {
     this.boundHost = this.bridge.getDisplayIdentity()?.displayDetail ?? this.boundHost
     updateContext(this.chatTabId, {
       schemaVersion: 3,
-      engine: this.engine,
+      engine: 'pi',
       boundTargetId,
       boundHost: this.boundHost,
       allowWrite: false,
@@ -776,7 +665,7 @@ export class AgentController extends EventEmitter {
     // 预算语义（2026-09-16）：重启恢复同样属于人类介入 —— 无论 continue 还是 replan，
     // 本轮预算都重置为 additionalSteps（默认 100），不再在历史 maxSteps 上累计追加。
     const newMaxSteps = additionalSteps
-    // 本轮基准 = 恢复时已有的业务步骤数；graph 侧 turnStartStepCount 由
+    // 本轮基准 = 恢复时已有的业务步骤数；runtime 侧 turnStartStepCount 由
     // runtime.startTask 以同一口径重算，预算从零重新计数。
     const turnBase = ctx.steps.filter(s => s.stepNumber > 0).length
 
@@ -803,7 +692,7 @@ export class AgentController extends EventEmitter {
     this.emit('state-change', 'planning')
 
     // 总纲 7.6:对跨引擎无法完全恢复的项目明确提示"基于历史重新规划"
-    const engineChanged = ctx.engine && ctx.engine !== this.engine
+    const engineChanged = ctx.engine && ctx.engine !== 'pi'
     const engineNote = engineChanged ? '（历史由另一引擎生成，基于历史重新规划）' : ''
     const resumeLabel = isContinue && !engineChanged
       ? `从上次会话恢复，本轮预算重置为 ${additionalSteps} 步`
@@ -816,20 +705,6 @@ export class AgentController extends EventEmitter {
       createdAt: new Date().toISOString()
     })
 
-    // Start a new graph with restored state from context
-    // 把持久化的结构化 systemInfo 恢复给 graph（无 systemInfo 但有 systemSummary 时退化为最小对象）
-    const ctxSystemInfo: SystemInfo | undefined = ctx.systemInfo
-      ? {
-          kernel: ctx.systemInfo.kernel,
-          distroName: ctx.systemInfo.distroName,
-          distroVersion: ctx.systemInfo.distroVersion,
-          packageManager: ctx.systemInfo.packageManager,
-          rawOutput: ctx.systemInfo.rawOutput
-        }
-      : ctx.systemSummary
-        ? { kernel: '', distroName: '', distroVersion: '', packageManager: '', rawOutput: ctx.systemSummary }
-        : undefined
-
     const callbacks = this.createCallbacks()
     // 后台点火：不 await，完成收尾与失败收敛已由下方 .then/.catch 承接；本方法点火后同步返回
     this.runtime.startTask(
@@ -841,14 +716,11 @@ export class AgentController extends EventEmitter {
       {
         allowWrite: false,
         boundHost: this.boundHost,
-        taskId: ctx.taskId || undefined,
         userMessage: '',
-        recentKeyOutputs: ctx.recentKeyOutputs ?? [],
         // 续接时也把对话历史带回（含工具回合），让 reply 主循环能看到"上次问过什么"
         conversationHistory: ctx.conversationHistory ?? [],
-        // Restore graph state from persisted context
+        // 恢复执行记录；权限与绑定仍由当前会话决定。
         restoredState: {
-          currentStep: ctx.currentStep,
           steps: ctx.steps.map(s => ({
             stepNumber: s.stepNumber,
             plan: s.plan,
@@ -858,11 +730,6 @@ export class AgentController extends EventEmitter {
             startedAt: s.startedAt,
             duration: s.duration
           })),
-          systemDetected: !!ctxSystemInfo,
-          systemInfo: ctxSystemInfo,
-          recentKeyOutputs: ctx.recentKeyOutputs ?? [],
-          stopReason: null,
-          phase: 'planning' as const
         },
         // R05:恢复属于重建 —— 按 zTerm 持久化历史导入 Pi 会话
         sessionPolicy: 'rebuild'
@@ -930,7 +797,7 @@ export class AgentController extends EventEmitter {
     this.boundTerminalTabId = tabId
   }
 
-  /** Sync local controller state from persisted context (called after graph completion) */
+  /** Sync local controller state from persisted context (called after runtime completion) */
   private syncStateFromContext(): void {
     if (!this.chatTabId) return
     const ctx = loadContext(this.chatTabId)

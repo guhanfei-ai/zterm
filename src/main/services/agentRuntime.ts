@@ -1,31 +1,41 @@
 /**
- * AgentRuntime — engine-agnostic contract for the Agent execution layer.
- *
- * zTerm 的产品规则沉淀在 AgentController / AgentApplication / AgentGraphCallbacks
- * 三层;AgentRuntime 只负责"一轮怎么跑、怎么停、怎么释放"。现有 LangGraph 实现与
- * Pi 实现都满足本接口,通过工厂接线切换,不向 UI 扩散引擎类型。
- *
- * 详见 _tacp/20260925-015901-Codex-Pi内核迁移执行总纲.md 第 4 章。
+ * AgentRuntime — Agent 执行层的生命周期契约。
+ * Pi 管理模型与工具循环；Controller / Application 管理产品状态、绑定和恢复。
  */
 import type { TerminalBridge } from './terminalBridge'
-import type { AiClient, ProviderConfig } from './aiClient'
-import type { AgentGraphCallbacks } from './agentGraph'
+import type { ProviderConfig } from './aiClient'
 import type {
+  AgentState,
   StepRecord,
   StopReason,
-  SystemInfo,
-  ChatTurn,
-  KeyOutput
-} from './agentGraphState'
+  ChatTurn
+} from './agentTypes'
 
-/** 启动一轮时传给 runtime 的产品上下文(引擎无关,不含 LangGraph 特有字段)。 */
+/** 执行体向产品层报告消息、状态和可持久化的执行结果。 */
+export interface AgentRuntimeCallbacks {
+  emitMessage: (msg: {
+    type: string
+    content: string
+    stepNumber?: number
+    details?: Record<string, unknown>
+  }) => void
+  emitStateChange: (state: AgentState) => void
+  onStepComplete: (data: {
+    steps: StepRecord[]
+    currentStep: number
+    conclusion?: string
+    stopReason?: StopReason
+    /** 对话轮次已自然结束；不代表执行任务成功。 */
+    turnCompleted?: boolean
+  }) => void
+}
+
+/** 启动一轮时传给 runtime 的产品上下文。 */
 export interface AgentRuntimeStartOptions {
   allowWrite?: boolean
   boundHost?: string
   conversationHistory?: ChatTurn[]
   userMessage?: string
-  taskId?: string
-  recentKeyOutputs?: KeyOutput[]
   restoredState?: AgentRuntimeRestoredState
   /**
    * 会话策略(R05):
@@ -37,17 +47,7 @@ export interface AgentRuntimeStartOptions {
 
 /** 跨重启恢复时回灌给 runtime 的状态快照。 */
 export interface AgentRuntimeRestoredState {
-  currentStep: number
   steps: StepRecord[]
-  systemDetected: boolean
-  systemInfo?: SystemInfo
-  recentKeyOutputs?: KeyOutput[]
-  stopReason: StopReason
-  /**
-   * 引擎特定的阶段标记。LangGraph 用 GraphPhase,Pi 忽略。
-   * 类型为 string 以保持接口引擎无关;各实现自行解读。
-   */
-  phase?: string
 }
 
 /**
@@ -67,7 +67,7 @@ export interface AgentRuntime {
     taskDescription: string,
     maxSteps: number,
     bridge: TerminalBridge | null,
-    callbacks: AgentGraphCallbacks,
+    callbacks: AgentRuntimeCallbacks,
     options?: AgentRuntimeStartOptions
   ): Promise<void>
 
@@ -93,7 +93,7 @@ export interface AgentRuntime {
   removeTab(chatTabId: string): void
 
   /** 更新 callbacks(webContents 切换时重绑事件通道)。 */
-  updateCallbacks(chatTabId: string, callbacks: AgentGraphCallbacks): void
+  updateCallbacks(chatTabId: string, callbacks: AgentRuntimeCallbacks): void
 
   /**
    * 运行中更新 allowWrite(总纲 6.3:运行中降为只读应影响尚未下发的后续命令)。
@@ -106,25 +106,4 @@ export interface AgentRuntime {
    * 可选方法:不支持配置热更新的实现可以不实现。
    */
   updateConfig?(config: ProviderConfig): void
-}
-
-/** 迁移期引擎选择。阶段 B 默认 graph,阶段 E 切换为 pi。 */
-export type AgentEngine = 'pi' | 'graph'
-
-/**
- * 读取引擎选择。优先环境变量 ZTERM_AGENT_ENGINE,其次 storeGet 回调,
- * 最后回退默认值。不向用户暴露"多引擎选型"界面(总纲 7.7)。
- */
-export function readAgentEnginePreference(
-  storeGet?: (key: string) => unknown
-): AgentEngine {
-  const env = process.env.ZTERM_AGENT_ENGINE
-  if (env === 'pi' || env === 'graph') return env
-  if (storeGet) {
-    const v = storeGet('agent_engine')
-    if (v === 'pi' || v === 'graph') return v as AgentEngine
-  }
-  // 阶段 E:默认切换为 pi,旧 Graph 仅作为受控回退(总纲 7.7)。
-  // 仍可通过 ZTERM_AGENT_ENGINE=graph 或 store agent_engine='graph' 回退。
-  return 'pi'
 }

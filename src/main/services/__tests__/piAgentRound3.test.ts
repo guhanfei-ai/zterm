@@ -110,8 +110,8 @@ vi.mock('@earendil-works/pi-coding-agent', async (importOriginal) => {
 
 import { PiAgentRuntime } from '../piAgentRuntime'
 import { TerminalBridge, type AnyTerminalSession } from '../terminalBridge'
-import type { AgentGraphCallbacks } from '../agentGraph'
-import type { StepRecord } from '../agentGraphState'
+import type { AgentRuntimeCallbacks } from '../agentRuntime'
+import type { StepRecord } from '../agentTypes'
 
 // ================================================================
 //  脚手架
@@ -182,7 +182,7 @@ interface RecordedCallbacks {
   stepCompletions: Array<{ steps: StepRecord[]; stopReason?: string | null; conclusion?: string }>
 }
 
-function makeCallbacks(): AgentGraphCallbacks & RecordedCallbacks {
+function makeCallbacks(): AgentRuntimeCallbacks & RecordedCallbacks {
   const cb: RecordedCallbacks = { messages: [], states: [], stepCompletions: [] }
   return {
     ...cb,
@@ -192,11 +192,10 @@ function makeCallbacks(): AgentGraphCallbacks & RecordedCallbacks {
     emitStateChange(phase) {
       cb.states.push(phase as string)
     },
-    getTerminalContext() { return null },
     onStepComplete(data) {
       cb.stepCompletions.push({ steps: data.steps, stopReason: data.stopReason, conclusion: data.conclusion })
     },
-  } as AgentGraphCallbacks & RecordedCallbacks
+  } as AgentRuntimeCallbacks & RecordedCallbacks
 }
 
 function makeConfig(overrides?: Record<string, string>) {
@@ -241,7 +240,7 @@ beforeEach(() => {
 
 describe('G01 旧任务迟到结果不写入新任务', () => {
   it('旧工具挂起→stop→同 tab 新任务新绑定→旧结果到达:新轮无污染', async () => {
-    const runtime = new PiAgentRuntime(undefined as never, makeConfig())
+    const runtime = new PiAgentRuntime(makeConfig())
     // 旧终端:已收到用户命令与部分输出,但结束标记一直未返回。
     const oldLog: string[] = []
     const oldEvents = new EventEmitter()
@@ -320,7 +319,7 @@ describe('G01 旧任务迟到结果不写入新任务', () => {
   })
 
   it('旧 session 迟到事件不进新轮(订阅捕获 turn)', async () => {
-    const runtime = new PiAgentRuntime(undefined as never, makeConfig())
+    const runtime = new PiAgentRuntime(makeConfig())
     const fake = makeFakeSession()
     const bridge = new TerminalBridge(fake.session)
     const callbacks = makeCallbacks()
@@ -372,7 +371,7 @@ describe('G01 旧任务迟到结果不写入新任务', () => {
   })
 
   it('removeTab 后重建:无残留会话/轮,新任务正常', async () => {
-    const runtime = new PiAgentRuntime(undefined as never, makeConfig())
+    const runtime = new PiAgentRuntime(makeConfig())
     const fake = makeFakeSession()
     const bridge = new TerminalBridge(fake.session)
     const callbacks = makeCallbacks()
@@ -399,7 +398,7 @@ describe('G01 旧任务迟到结果不写入新任务', () => {
 
 describe('G02 继续执行时的配置传播', () => {
   it('配置 A 预算暂停 → updateConfig(B) → continueTask → 新请求用 B', async () => {
-    const runtime = new PiAgentRuntime(undefined as never, makeConfig({ baseUrl: 'http://a/v1', apiKey: 'key-a', model: 'model-a' }))
+    const runtime = new PiAgentRuntime(makeConfig({ baseUrl: 'http://a/v1', apiKey: 'key-a', model: 'model-a' }))
     const fake = makeFakeSession()
     const bridge = new TerminalBridge(fake.session)
     const callbacks = makeCallbacks()
@@ -432,7 +431,7 @@ describe('G02 继续执行时的配置传播', () => {
   })
 
   it('配置未变时 continue 沿用会话(不重建)', async () => {
-    const runtime = new PiAgentRuntime(undefined as never, makeConfig())
+    const runtime = new PiAgentRuntime(makeConfig())
     const fake = makeFakeSession()
     const bridge = new TerminalBridge(fake.session)
     const callbacks = makeCallbacks()
@@ -494,7 +493,7 @@ describe('G03 系统提示文件不自动发现', () => {
   })
 
   it('经 runtime 全链路:createAgentSession 收到的 loader 系统提示为宿主内容', async () => {
-    const runtime = new PiAgentRuntime(undefined as never, makeConfig())
+    const runtime = new PiAgentRuntime(makeConfig())
     const fake = makeFakeSession()
     const bridge = new TerminalBridge(fake.session)
 

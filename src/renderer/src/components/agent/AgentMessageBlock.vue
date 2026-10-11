@@ -1,32 +1,19 @@
 <template>
-  <div class="agent-timeline-item" :class="itemClass">
-    <!-- Agent 收尾结论：专属"总结"卡（带复制/保存按钮） -->
-    <div v-if="msg.isAgentConclusion" class="conclusion-chat">
-      <div class="conclusion-bubble">
-        <div class="conclusion-header">
-          <svg class="conclusion-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 0 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
-          总结
-          <div class="conclusion-actions">
-            <CopyMarkdownButton :text="msg.text" />
-            <button class="btn-md-action" @click="emit('save-conclusion', msg)" title="保存为 Markdown 文件">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
-              保存为 Markdown 文件
-            </button>
-          </div>
-        </div>
-        <MarkdownContent class="conclusion-body" :text="msg.text" />
-      </div>
-    </div>
-
-    <!-- Agent 自然聊天：用户气泡 / 助手气泡（用 markdown 渲染，走正式对话视觉） -->
-    <div v-else-if="msg.isAgentUserTurn || (!msg.isAgentCard && msg.role === 'user')" class="bubble bubble-user">
+  <div class="agent-timeline-item">
+    <!-- 当前回复与历史总结统一显示，操作直接读取 Markdown 正文。 -->
+    <div v-if="msg.isAgentUserTurn || (!msg.isAgentCard && msg.role === 'user')" class="bubble bubble-user">
       <div class="bubble-role">你</div>
       <div class="bubble-text">{{ msg.text }}</div>
     </div>
     <div v-else-if="msg.isAgentNaturalReply || (!msg.isAgentCard && msg.role === 'assistant')" class="bubble bubble-assistant">
       <div class="bubble-header">
         <div class="bubble-role">AI</div>
-        <CopyMarkdownButton :text="msg.text" />
+        <div class="reply-actions">
+          <CopyMarkdownButton :text="msg.text" />
+          <button type="button" class="btn-md-action" aria-label="保存 Markdown 原文" title="保存为 Markdown 文件" @click="emit('save-markdown', msg.text)">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+          </button>
+        </div>
       </div>
       <MarkdownContent class="bubble-text" :text="msg.text" />
     </div>
@@ -118,18 +105,10 @@ const props = defineProps<{
   msg: ChatMessage
 }>()
 
-// 保存报告交给父组件构造；复制按钮直接读取消息的 Markdown 原文。
+// 复制与保存都使用消息的 Markdown 原文。
 const emit = defineEmits<{
-  (e: 'save-conclusion', msg: ChatMessage): void
+  (e: 'save-markdown', text: string): void
 }>()
-
-const itemClass = computed(() => {
-  if (props.msg.isAgentUserTurn) return 'kind-user-turn'
-  if (props.msg.isAgentNaturalReply) return 'kind-natural-reply'
-  if (props.msg.isAgentConclusion) return 'kind-conclusion'
-  if (props.msg.isAgentCard) return 'kind-card'
-  return ''
-})
 
 // Thinking block: default expanded when streaming, collapsed when done
 const thinkingUserOverride = ref(false)
@@ -210,31 +189,7 @@ function truncateOutput(text: string): string {
   color: var(--accent);
 }
 
-/* ===== 收尾结论 ===== */
-.conclusion-chat { margin: 0; }
-.conclusion-bubble {
-  background: var(--surface-alt);
-  border: 1px solid var(--border-soft);
-  border-left: 3px solid var(--accent);
-  border-radius: var(--radius-sm);
-  padding: 10px 12px;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
-}
-.conclusion-header {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--accent);
-  margin-bottom: 6px;
-}
-.conclusion-icon { flex-shrink: 0; }
-.conclusion-actions {
-  margin-left: auto;
-  display: flex;
-  gap: 4px;
-}
+.reply-actions { display: flex; align-items: center; gap: 4px; }
 .btn-md-action {
   background: transparent;
   border: 1px solid var(--divider-soft);
@@ -250,76 +205,6 @@ function truncateOutput(text: string): string {
 .btn-md-action:hover {
   border-color: var(--accent);
   color: var(--accent);
-}
-.conclusion-body {
-  font-size: 12px;
-  line-height: 1.65;
-  color: var(--text-primary);
-  word-break: break-word;
-}
-.conclusion-body :deep(.code-block) {
-  background: var(--bg); border: 1px solid var(--divider);
-  border-radius: 4px; padding: 6px 10px;
-  margin: 4px 0; font-size: 11px;
-  font-family: monospace; white-space: pre-wrap;
-  overflow-x: auto;
-}
-.conclusion-body :deep(.inline-code) {
-  background: var(--surface-muted); padding: 1px 4px;
-  border-radius: 3px; font-size: 11px; font-family: monospace;
-}
-.conclusion-body :deep(h1) {
-  font-size: 15px; font-weight: 700; margin: 12px 0 6px;
-  color: var(--text-primary); line-height: 1.3;
-}
-.conclusion-body :deep(h2) {
-  font-size: 13px; font-weight: 700; margin: 12px 0 4px;
-  color: var(--text-primary); line-height: 1.3;
-  padding-bottom: 3px; border-bottom: 1px solid var(--divider-soft);
-}
-.conclusion-body :deep(h3) {
-  font-size: 12px; font-weight: 600; margin: 10px 0 3px;
-  color: var(--text-secondary); line-height: 1.4;
-}
-.conclusion-body :deep(h4),
-.conclusion-body :deep(h5),
-.conclusion-body :deep(h6) {
-  font-size: 12px; font-weight: 600; margin: 8px 0 2px;
-  color: var(--text-secondary);
-}
-.conclusion-body :deep(p) {
-  margin: 4px 0; line-height: 1.65;
-}
-.conclusion-body :deep(ul) {
-  margin: 4px 0; padding-left: 18px;
-}
-.conclusion-body :deep(li) {
-  margin: 2px 0; line-height: 1.65;
-}
-.conclusion-body :deep(blockquote) {
-  margin: 6px 0; padding: 4px 10px;
-  border-left: 3px solid var(--accent-soft);
-  background: rgba(255, 255, 255, 0.02);
-  color: var(--text-secondary);
-}
-.conclusion-body :deep(blockquote p) {
-  margin: 2px 0;
-}
-.conclusion-body :deep(ol) {
-  padding-left: 20px;
-  margin: 4px 0;
-}
-.conclusion-body :deep(ol li) {
-  margin: 2px 0;
-  font-size: 12px;
-  line-height: 1.65;
-}
-.conclusion-body :deep(a) {
-  color: var(--accent);
-  text-decoration: underline;
-}
-.conclusion-body :deep(strong) {
-  font-weight: 600; color: var(--text-primary);
 }
 
 /* ===== 执行卡片 ===== */

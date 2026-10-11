@@ -31,9 +31,8 @@ import {
 } from '@earendil-works/pi-coding-agent'
 import type { ProviderConfig } from './aiClient'
 import type { TerminalBridge } from './terminalBridge'
-import type { AgentGraphCallbacks } from './agentGraph'
-import type { ChatTurn, StepRecord, StopReason } from './agentGraphState'
-import type { AgentRuntime, AgentRuntimeStartOptions } from './agentRuntime'
+import type { ChatTurn, StepRecord, StopReason } from './agentTypes'
+import type { AgentRuntime, AgentRuntimeCallbacks, AgentRuntimeStartOptions } from './agentRuntime'
 import { buildPiModelSetup, PI_SANDBOX_DIR, ensurePiSandboxEnv } from './piModelAdapter'
 import { createBoundTerminalTools, type PiToolTurnState } from './piAgentTools'
 import { activeTerminalToolNames, BUILTIN_READ_TOOL_NAMES } from './agentReadTools'
@@ -66,7 +65,7 @@ interface TurnState extends PiToolTurnState {
   /** 本轮是否发生过工具执行(命令下发)。 */
   sawToolExecution: boolean
   // ---- 回调 ----
-  callbacks: AgentGraphCallbacks
+  callbacks: AgentRuntimeCallbacks
 }
 
 // ---- Tab 级状态(跨轮) ----
@@ -290,8 +289,7 @@ export class PiAgentRuntime implements AgentRuntime {
    */
   private readonly agentDir: string
 
-  constructor(_aiClient: unknown, config: ProviderConfig, options?: { agentDir?: string }) {
-    // aiClient 仅为契约兼容保留;Pi 路径的模型调用全部经 Pi SDK。
+  constructor(config: ProviderConfig, options?: { agentDir?: string }) {
     this.config = config
     this.agentDir = options?.agentDir ?? PI_AGENT_DIR
   }
@@ -357,7 +355,7 @@ export class PiAgentRuntime implements AgentRuntime {
     allowWrite: boolean,
     boundHost: string | undefined,
     restoredSteps: StepRecord[],
-    callbacks: AgentGraphCallbacks
+    callbacks: AgentRuntimeCallbacks
   ): TurnState {
     // 先失效同 tab 的旧轮(新一轮启动 = 旧轮作废)
     this.cancelTurn(chatTabId)
@@ -429,7 +427,7 @@ export class PiAgentRuntime implements AgentRuntime {
     taskDescription: string,
     maxSteps: number,
     bridge: TerminalBridge | null,
-    callbacks: AgentGraphCallbacks,
+    callbacks: AgentRuntimeCallbacks,
     options?: AgentRuntimeStartOptions
   ): Promise<void> {
     // ---- R02:同步段完成占位登记与当前绑定更新 ----
@@ -648,10 +646,7 @@ export class PiAgentRuntime implements AgentRuntime {
           conversationHistory: history,
           userMessage: '继续执行上次任务',
           restoredState: {
-            currentStep: prevTurn.steps.length,
             steps: prevTurn.steps,
-            systemDetected: false,
-            stopReason: null,
           },
           sessionPolicy: 'rebuild',
         }
@@ -753,7 +748,7 @@ export class PiAgentRuntime implements AgentRuntime {
     this.tabs.delete(chatTabId)
   }
 
-  updateCallbacks(chatTabId: string, callbacks: AgentGraphCallbacks): void {
+  updateCallbacks(chatTabId: string, callbacks: AgentRuntimeCallbacks): void {
     const turn = this.tabs.get(chatTabId)?.turn
     if (turn) turn.callbacks = callbacks
   }

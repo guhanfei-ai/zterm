@@ -128,8 +128,8 @@ const api = {
       ipcRenderer.invoke('agent:continueTask', additionalSteps, data),
     bind: (data: { chatTabId: string; terminalTabId: string }): Promise<{ success: boolean; boundHost?: string; error?: string }> =>
       ipcRenderer.invoke('agent:bind', data),
-    saveConclusion: (data: { content: string }): Promise<{ success: boolean; filePath?: string; error?: string; canceled?: boolean }> =>
-      ipcRenderer.invoke('agent:saveConclusion', data),
+    saveMarkdown: (data: { content: string }): Promise<{ success: boolean; filePath?: string; error?: string; canceled?: boolean }> =>
+      ipcRenderer.invoke('agent:saveMarkdown', data),
     onMessage: (callback: (msg: AgentMessage & { chatTabId?: string }) => void): (() => void) => {
       const handler = (_event: Electron.IpcRendererEvent, msg: AgentMessage & { chatTabId?: string }): void => callback(msg)
       ipcRenderer.on('agent:message', handler)

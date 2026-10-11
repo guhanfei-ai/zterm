@@ -5,10 +5,10 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { registerHostsIpc } from './ipc/hosts'
 import { registerJumpserverIpc } from './ipc/jumpserver'
 import { registerKeysIpc } from './ipc/keys'
-import { registerAiIpc, aiClient } from './ipc/ai'
+import { registerAiIpc } from './ipc/ai'
 import { registerTerminalIpc } from './ipc/terminal'
 import { disposeAllLocalSessions, terminalSessionManager } from './data/terminal/terminalSessionRegistry'
-import { registerAgentIpc, setAiClient, disposeAllAgentTabs } from './ipc/agent'
+import { registerAgentIpc, disposeAllAgentTabs } from './ipc/agent'
 import { registerUpdateIpc } from './ipc/update'
 import { restoreOnBoot as restoreUpdateState } from './services/updateService'
 import { registerPreferencesIpc } from './ipc/preferences'
@@ -136,7 +136,6 @@ app.whenReady().then(() => {
   tryInit('keysIpc', () => registerKeysIpc())
   tryInit('aiIpc', () => registerAiIpc())
   tryInit('terminalIpc', () => registerTerminalIpc())
-  tryInit('aiClient', () => setAiClient(aiClient))
   tryInit('agentIpc', () => registerAgentIpc())
   tryInit('updateIpc', () => registerUpdateIpc())
 

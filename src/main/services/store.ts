@@ -3,8 +3,7 @@ import { existsSync, copyFileSync, renameSync } from 'fs'
 import Store from 'electron-store'
 import { getDataRoot } from './dataPath'
 
-// P2-5：当前 schema 版本号。改了 config 字段语义/默认值时递增；
-// 旧版本 store 加载时 migrateLegacyStore 会读出旧 schemaVersion 并按需做一次结构升级。
+// 当前配置版本；旧配置目录迁移完成后由 ensureSchemaVersion 补齐版本标记。
 const CURRENT_SCHEMA_VERSION = 1
 
 // 持久化 store 实例

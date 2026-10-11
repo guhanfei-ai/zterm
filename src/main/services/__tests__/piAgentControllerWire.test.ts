@@ -3,11 +3,11 @@
  * 模块缓存和 mock hoisting 冲突)。
  *
  * 验证路径:设置页改配置 → AgentApplication 重新 init →
- * AgentController.init → readAgentEnginePreference(getStore)(真实链)
+ * AgentController.init → createAgentRuntime → PiAgentRuntime(真实链)
  * → runtime 已存在时 runtime.updateConfig(config) → 新轮用新配置。
  *
  * mock 边界:electron / electron-store / store(virtual,主进程测试无
- * electron 运行时);Controller.init、readAgentEnginePreference、
+ * electron 运行时);Controller.init、
  * agentRuntimeFactory、PiAgentRuntime 全部真实。
  * Pi SDK 的 createAgentSession 亦 mock 为捕获参数的 stub。
  */
@@ -32,7 +32,7 @@ vi.mock('electron-store', () => ({
 }))
 vi.mock('../store', () => ({
   getStore: () => ({
-    get: (key: string) => (key === 'agent_engine' ? 'pi' : undefined),
+    get: () => undefined,
     set: () => {},
     has: () => false,
     delete: () => {},
@@ -64,7 +64,7 @@ const capturedOptions: Array<Record<string, unknown>> = []
 import { AgentController } from '../agentController'
 import { PiAgentRuntime } from '../piAgentRuntime'
 import { TerminalBridge, type AnyTerminalSession } from '../terminalBridge'
-import type { AgentGraphCallbacks } from '../agentGraph'
+import type { AgentRuntimeCallbacks } from '../agentRuntime'
 
 function makeFakeSession(): AnyTerminalSession {
   return {
@@ -79,11 +79,10 @@ function makeFakeSession(): AnyTerminalSession {
   } as unknown as AnyTerminalSession
 }
 
-function makeCallbacks(): AgentGraphCallbacks {
+function makeCallbacks(): AgentRuntimeCallbacks {
   return {
     emitMessage() {},
     emitStateChange() {},
-    getTerminalContext() { return null },
     onStepComplete() {},
   }
 }
@@ -106,21 +105,33 @@ beforeEach(() => {
 })
 
 describe('G04 Controller.init 真实接线', () => {
-  it('init 走真实 getStore 链创建 Pi runtime;再次 init 经 updateConfig 同步新配置', async () => {
+  it('旧引擎环境变量不会重新启用已经退役的引擎', () => {
+    vi.stubEnv('ZTERM_AGENT_ENGINE', 'graph')
+    const controller = new AgentController()
+    try {
+      controller.init(null, makeConfig())
+      expect(controller.getRuntime()).toBeInstanceOf(PiAgentRuntime)
+    } finally {
+      controller.dispose()
+      vi.unstubAllEnvs()
+    }
+  })
+
+  it('init 创建 Pi runtime；再次 init 经 updateConfig 同步新配置', async () => {
     const controller = new AgentController()
     const bridge = new TerminalBridge(makeFakeSession())
     const configA = makeConfig({ baseUrl: 'http://a/v1', apiKey: 'key-a', model: 'model-a' })
     const configB = makeConfig({ baseUrl: 'http://b/v1', apiKey: 'key-b', model: 'model-b' })
 
-    // 首次 init:真实链(getStore → agent_engine='pi' → createAgentRuntime('pi'))
-    controller.init({} as never, bridge, configA)
+    // 首次 init 通过正式工厂创建 Pi runtime。
+    controller.init(bridge, configA)
     const runtime = controller.getRuntime()
     expect(runtime).toBeInstanceOf(PiAgentRuntime)
     if (!runtime) throw new Error('runtime not created')
 
     // G04 接线:runtime 已存在时第二次 init(设置页改配置路径)→
     // updateConfig 同步 B;新轮 model 用 B(而非构造时的 A)
-    controller.init({} as never, bridge, configB)
+    controller.init(bridge, configB)
     await runtime.startTask('tab-g4', '任务', 25, bridge, makeCallbacks(), {})
     expect(capturedOptions.length).toBe(1)
     const opts = capturedOptions[0] as { model?: { baseUrl?: string; id?: string } }

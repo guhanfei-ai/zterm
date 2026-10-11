@@ -1,4 +1,4 @@
-import type { StepRecord } from './agentGraphState'
+import type { StepRecord } from './agentTypes'
 
 /**
  * 只读盘点中缺少可选诊断工具（例如未安装 Docker）是调查结果，不是整轮崩溃。

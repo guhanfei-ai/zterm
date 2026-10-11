@@ -20,9 +20,9 @@ export interface ContextStepSnapshot {
   duration?: number
 }
 
-// 单条自然对话回合（持久化版本，与 graph state 的 ChatTurn 字段语义一致）。
+// 单条自然对话回合（持久化版本，与 agentTypes.ChatTurn 字段语义一致）。
 // 2026-09-16 对话优先重构：新增 tool 角色（命令输出 / 拦截反馈），
-// conversationHistory 成为 reply 主循环的跨重启上下文。
+// conversationHistory 保存 Agent 的跨重启上下文。
 export interface ContextChatTurn {
   role: 'user' | 'assistant' | 'tool'
   content: string
@@ -32,7 +32,7 @@ export interface ContextChatTurn {
   createdAt: string
 }
 
-// 持久化版本的 SystemInfo（与 agentGraphState.SystemInfo 字段一致；单独定义避免主进程渲染层耦合）
+// 持久化版本的系统信息，保留旧任务环境记录。
 export interface ContextSystemInfo {
   kernel: string
   distroName: string
@@ -64,7 +64,7 @@ export interface AgentContextSnapshot {
   steps: ContextStepSnapshot[]
   // 最近一次成功的关键命令输出片段（按 step 截断，限制总大小）
   recentKeyOutputs: Array<{ stepNumber: number; command?: string; output: string }>
-  // 已探测系统的结构化快照（重启 follow-up 时带回 graph state）
+  // 已探测系统的结构化快照，随历史任务保留。
   systemInfo?: ContextSystemInfo
   // 系统探测摘要（人类可读短串）—— 保留为兼容旧持久化文件与 UI 摘要读取
   systemSummary?: string

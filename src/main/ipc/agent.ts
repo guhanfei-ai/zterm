@@ -7,16 +7,15 @@ import {
   type BindAgentCommand,
   type StartAgentTaskCommand
 } from '../application/agent/agentApplication'
-import { AiClient } from '../services/aiClient'
 
 const agentApplication = new AgentApplication()
 
-function buildConclusionFilename(): string {
+function buildMarkdownFilename(): string {
   const now = new Date()
   const pad = (value: number): string => String(value).padStart(2, '0')
   const date = [now.getFullYear(), pad(now.getMonth() + 1), pad(now.getDate())].join('')
   const time = [pad(now.getHours()), pad(now.getMinutes()), pad(now.getSeconds())].join('')
-  return `zterm-${date}-${time}-结论.md`
+  return `zterm-${date}-${time}-回复.md`
 }
 
 function createEventSink(sender: Electron.WebContents): AgentEventSink {
@@ -25,10 +24,6 @@ function createEventSink(sender: Electron.WebContents): AgentEventSink {
       if (!sender.isDestroyed()) sender.send(channel, payload)
     }
   }
-}
-
-export function setAiClient(client: AiClient): void {
-  agentApplication.setAiClient(client)
 }
 
 /** 应用退出时中止所有 Agent 任务并释放生命周期资源。 */
@@ -77,14 +72,14 @@ export function registerAgentIpc(): void {
     agentApplication.bind(data, createEventSink(event.sender))
   )
 
-  registerIpcHandler('agent:saveConclusion', async (_event, data: { content: string }) => {
+  registerIpcHandler('agent:saveMarkdown', async (_event, data: { content: string }) => {
     try {
       const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0]
       if (!win) return { success: false, error: '无可用窗口' }
       const result = await dialog.showSaveDialog(win, {
-        defaultPath: buildConclusionFilename(),
+        defaultPath: buildMarkdownFilename(),
         filters: [{ name: 'Markdown', extensions: ['md'] }],
-        title: '保存结论为 Markdown'
+        title: '保存回复为 Markdown'
       })
       if (result.canceled || !result.filePath) return { success: false, canceled: true }
       writeFileSync(result.filePath, data.content, 'utf-8')

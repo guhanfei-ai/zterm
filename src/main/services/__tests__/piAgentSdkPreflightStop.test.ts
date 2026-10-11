@@ -18,7 +18,7 @@ import {
   unregisterApiProviders,
 } from '@earendil-works/pi-ai/compat'
 import { TEST_SANDBOX } from '../../../test/setup'
-import type { AgentGraphCallbacks } from '../agentGraph'
+import type { AgentRuntimeCallbacks } from '../agentRuntime'
 import type { TerminalBridge } from '../terminalBridge'
 import { PiAgentRuntime } from '../piAgentRuntime'
 
@@ -92,10 +92,9 @@ it('real SDK input gate: stop-only rejects old send before transport; new turn r
   }
   const states: string[] = []
   const messages: Array<{ type: string; content: string }> = []
-  const callbacks: AgentGraphCallbacks = {
+  const callbacks: AgentRuntimeCallbacks = {
     emitMessage: (message) => { messages.push(message) },
     emitStateChange: (state) => { states.push(state) },
-    getTerminalContext: () => null,
     onStepComplete: () => {},
   }
   // SDK receives only custom terminal tools; this bridge must never be called.
@@ -107,7 +106,7 @@ it('real SDK input gate: stop-only rejects old send before transport; new turn r
     getTerminalLockKey: () => bridge,
     writeCommand,
   } as unknown as TerminalBridge
-  const runtime = new PiAgentRuntime(undefined, {
+  const runtime = new PiAgentRuntime({
     providerType: 'openai-compatible', label: 'in-memory M01 test',
     baseUrl: 'http://127.0.0.1:9/v1', apiKey: 'in-memory-only',
     model: 'm01-model', enableStreaming: false, reasoningMode: 'auto',

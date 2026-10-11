@@ -75,8 +75,8 @@ vi.mock('@earendil-works/pi-coding-agent', async (importOriginal) => {
 import { PiAgentRuntime } from '../piAgentRuntime'
 import { createBoundTerminalTools } from '../piAgentTools'
 import { TerminalBridge, type AnyTerminalSession } from '../terminalBridge'
-import type { AgentGraphCallbacks } from '../agentGraph'
-import type { StepRecord } from '../agentGraphState'
+import type { AgentRuntimeCallbacks } from '../agentRuntime'
+import type { StepRecord } from '../agentTypes'
 
 // ================================================================
 //  fake 终端 session(记录 write,可控延迟与并发峰值)
@@ -175,7 +175,7 @@ interface RecordedCallbacks {
   stepCompletions: Array<{ steps: StepRecord[]; stopReason?: string | null; conclusion?: string }>
 }
 
-function makeCallbacks(): AgentGraphCallbacks & RecordedCallbacks {
+function makeCallbacks(): AgentRuntimeCallbacks & RecordedCallbacks {
   const cb: RecordedCallbacks = { messages: [], states: [], stepCompletions: [] }
   return {
     ...cb,
@@ -185,11 +185,10 @@ function makeCallbacks(): AgentGraphCallbacks & RecordedCallbacks {
     emitStateChange(phase) {
       cb.states.push(phase as string)
     },
-    getTerminalContext() { return null },
     onStepComplete(data) {
       cb.stepCompletions.push({ steps: data.steps, stopReason: data.stopReason, conclusion: data.conclusion })
     },
-  } as AgentGraphCallbacks & RecordedCallbacks
+  } as AgentRuntimeCallbacks & RecordedCallbacks
 }
 
 function makeConfig(overrides?: Record<string, string>) {
@@ -231,7 +230,7 @@ afterEach(() => {
 
 describe('F01 第二轮与续跑的真实工具调用', () => {
   it('reuse 第二轮:工具用当前 bridge/turn 执行成功,预算从 0,步骤连续,旧 bridge 不再使用', async () => {
-    const runtime = new PiAgentRuntime(undefined as never, makeConfig())
+    const runtime = new PiAgentRuntime(makeConfig())
     const fake1 = makeFakeSession()
     const fake2 = makeFakeSession()
     const bridge1 = new TerminalBridge(fake1.session)
@@ -258,7 +257,7 @@ describe('F01 第二轮与续跑的真实工具调用', () => {
       {
         userMessage: '第二轮追问',
         sessionPolicy: 'reuse',
-        restoredState: { steps: [{ stepNumber: 1, plan: '', command: 'uptime', observation: 'o', status: 'done' }], currentStep: 1, systemDetected: false, stopReason: null },
+        restoredState: { steps: [{ stepNumber: 1, plan: '', command: 'uptime', observation: 'o', status: 'done' }],},
       }
     )
     // 命令落在当前 bridge2,不是旧 bridge1
@@ -271,7 +270,7 @@ describe('F01 第二轮与续跑的真实工具调用', () => {
   })
 
   it('reuse 第二轮预算从 0 起:maxSteps=1 时第二条被拒', async () => {
-    const runtime = new PiAgentRuntime(undefined as never, makeConfig())
+    const runtime = new PiAgentRuntime(makeConfig())
     const fake = makeFakeSession()
     const bridge = new TerminalBridge(fake.session)
     const callbacks = makeCallbacks()
@@ -296,7 +295,7 @@ describe('F01 第二轮与续跑的真实工具调用', () => {
   })
 
   it('continueTask 实际执行工具(当前轮/当前绑定)', async () => {
-    const runtime = new PiAgentRuntime(undefined as never, makeConfig())
+    const runtime = new PiAgentRuntime(makeConfig())
     const fake = makeFakeSession()
     const bridge = new TerminalBridge(fake.session)
     const callbacks = makeCallbacks()
@@ -337,7 +336,6 @@ describe('F02 两个 bridge 包同一 session:真实终端互斥', () => {
         callbacks: {
           emitMessage() {},
           emitStateChange() {},
-          getTerminalContext() { return null },
           onStepComplete() {},
         },
       }
@@ -378,7 +376,7 @@ describe('F02 两个 bridge 包同一 session:真实终端互斥', () => {
 
 describe('F03 排队期间降为只读', () => {
   it('写命令在队列中等待时 updateAllowWrite(false) → 锁内重判 → 不下发且报安全拦截', async () => {
-    const runtime = new PiAgentRuntime(undefined as never, makeConfig())
+    const runtime = new PiAgentRuntime(makeConfig())
     const fake = makeFakeSession()
     const bridge = new TerminalBridge(fake.session)
     const callbacks = makeCallbacks()
@@ -420,7 +418,7 @@ describe('F03 排队期间降为只读', () => {
 
 describe('F04 配置变化传播到新轮', () => {
   it('reuse 分支:配置变化强制 rebuild,新轮用配置 B(受控 fixture 见 createdOptions)', async () => {
-    const runtime = new PiAgentRuntime(undefined as never, makeConfig({ baseUrl: 'http://a/v1', apiKey: 'key-a', model: 'model-a' }))
+    const runtime = new PiAgentRuntime(makeConfig({ baseUrl: 'http://a/v1', apiKey: 'key-a', model: 'model-a' }))
     const fake = makeFakeSession()
     const bridge = new TerminalBridge(fake.session)
     const callbacks = makeCallbacks()
@@ -502,7 +500,7 @@ describe('F06 历史转换:无孤立 tool role,当前问句恰一次', () => {
 
 describe('F07 真实工具输出进入 observation', () => {
   it('tool_execution_end 的 result.content(CPU=17%)进入 observation 正文', async () => {
-    const runtime = new PiAgentRuntime(undefined as never, makeConfig())
+    const runtime = new PiAgentRuntime(makeConfig())
     const fake = makeFakeSession()
     const bridge = new TerminalBridge(fake.session)
     const callbacks = makeCallbacks()
@@ -549,7 +547,7 @@ function runtimeTabSession(runtime: never): { emit: (e: never) => void } {
 
 describe('F08 重试终态与 thinking 卡片生命周期', () => {
   it('error → 重试成功:终态 completed,不是 failed', async () => {
-    const runtime = new PiAgentRuntime(undefined as never, makeConfig())
+    const runtime = new PiAgentRuntime(makeConfig())
     const fake = makeFakeSession()
     const bridge = new TerminalBridge(fake.session)
     const callbacks = makeCallbacks()
@@ -592,7 +590,7 @@ describe('F08 重试终态与 thinking 卡片生命周期', () => {
   })
 
   it('thinkingId 带轮次 uid:连续两轮的 thinking 卡片各自保留', async () => {
-    const runtime = new PiAgentRuntime(undefined as never, makeConfig())
+    const runtime = new PiAgentRuntime(makeConfig())
     const fake = makeFakeSession()
     const bridge = new TerminalBridge(fake.session)
     const callbacks = makeCallbacks()
@@ -659,7 +657,7 @@ describe('G05/I02 loader 全链路隔离(构造注入)', () => {
 
       // I02:经**生产构造选项**注入 agentDir(不再用 PI_AGENT_DIR 环境变量
       // 冒充被测 loader 目录 —— 生产 loader 目录是常量,环境变量不改变它)
-      const runtime = new PiAgentRuntime(undefined as never, makeConfig(), { agentDir: ownDir })
+      const runtime = new PiAgentRuntime(makeConfig(), { agentDir: ownDir })
       const fake = makeFakeSession()
       const bridge = new TerminalBridge(fake.session)
       const callbacks = makeCallbacks()
@@ -698,7 +696,7 @@ describe('G05/I02 loader 全链路隔离(构造注入)', () => {
 
 describe('S01 补充:ROUND_LIMIT 收尾实断言', () => {
   it('预算耗尽工具触发后:stopReason=ROUND_LIMIT,状态 stepLimitReached,不被 completed 覆盖', async () => {
-    const runtime = new PiAgentRuntime(undefined as never, makeConfig())
+    const runtime = new PiAgentRuntime(makeConfig())
     const fake = makeFakeSession()
     const bridge = new TerminalBridge(fake.session)
     const callbacks = makeCallbacks()
@@ -744,7 +742,7 @@ describe('G04 初始化窗口门控真测', () => {
     } as never
 
     try {
-      const runtime = new PiAgentRuntime(undefined as never, makeConfig())
+      const runtime = new PiAgentRuntime(makeConfig())
       const started = startLegacyTask(runtime, 'tab-w1', '任务', 25, new TerminalBridge(makeFakeSession().session), makeCallbacks())
       // G04:先等生产代码确实进入 loader 窗口,再停止
       await vi.waitFor(() => { if (!entered) throw new Error('not entered') }, { timeout: 2000 })
@@ -771,7 +769,7 @@ describe('G04 初始化窗口门控真测', () => {
     })
 
     try {
-      const runtime = new PiAgentRuntime(undefined as never, makeConfig())
+      const runtime = new PiAgentRuntime(makeConfig())
       const started = startLegacyTask(runtime, 'tab-w2', '任务', 25, new TerminalBridge(makeFakeSession().session), makeCallbacks())
       await vi.waitFor(() => { if (!entered) throw new Error('not entered') }, { timeout: 2000 })
       runtime.stop('tab-w2')
@@ -811,7 +809,7 @@ describe('G04 初始化窗口门控真测', () => {
     })
 
     try {
-      const runtime = new PiAgentRuntime(undefined as never, makeConfig())
+      const runtime = new PiAgentRuntime(makeConfig())
       const started = startLegacyTask(runtime, 'tab-w3', '任务', 25, new TerminalBridge(makeFakeSession().session), makeCallbacks())
       await vi.waitFor(() => { if (!entered) throw new Error('not entered') }, { timeout: 2000 })
       // session 创建挂起中停止

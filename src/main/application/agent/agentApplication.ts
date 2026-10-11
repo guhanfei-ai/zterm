@@ -1,6 +1,6 @@
 import { AgentController, type AgentMessage, type AgentStatus, type SetAllowWriteResult } from '../../services/agentController'
 import { TerminalBridge, type AnyTerminalSession } from '../../services/terminalBridge'
-import { AiClient, type ProviderConfig } from '../../services/aiClient'
+import type { ProviderConfig } from '../../services/aiClient'
 import { getStore } from '../../services/store'
 import { getSecret } from '../../services/secretVault'
 import { isValidAgentMaxSteps, readAgentMaxSteps } from '../../services/agentStepBudget'
@@ -51,11 +51,6 @@ export interface BindAgentCommand {
  */
 export class AgentApplication {
   private readonly tabs = new Map<string, AgentTabState>()
-  private aiClient: AiClient | null = null
-
-  setAiClient(client: AiClient): void {
-    this.aiClient = client
-  }
 
   disposeAll(): void {
     for (const [chatTabId, tab] of this.tabs) {
@@ -89,7 +84,6 @@ export class AgentApplication {
           JSON.stringify(command.conversationHistory).length > 1_000_000)) {
         return { success: false, error: '对话历史无效或超过大小限制' }
       }
-      if (!this.aiClient) return { success: false, error: 'Agent 服务未初始化' }
 
       const config = this.getProviderConfig()
       if (!config) return { success: false, error: '模型未配置' }
@@ -127,10 +121,10 @@ export class AgentApplication {
       }
       this.bindControllerEvents(tab)
       if (session && bridge) this.registerTerminalEventListeners(tab, session)
-      tab.controller.init(this.aiClient, bridge, config)
+      tab.controller.init(bridge, config)
       tab.controller.state = 'starting'
       // 立即通知渲染层进入 starting：
-      // 否则在 graph 首个状态回调（planning）到来之前，renderer 的 agentState
+      // 否则在 runtime 首个状态回调（planning）到来之前，renderer 的 agentState
       // 仍是上一个终态，用户重复提交会绕过前端防重直接打进主进程
       this.send(tab, 'agent:stateChange', { state: 'starting', chatTabId: tab.chatTabId })
 
@@ -252,12 +246,8 @@ export class AgentApplication {
       // 传 controller 当前持有的同一 bridge(init 只在 bridge 变化时 dispose),
       // Runtime 侧的绑定保持有效;终端真正重绑(用户重新 bind)才换 bridge,
       // 且那时 startTask 会把新绑定写入 runtime 的 tab.bridge。
-      if (this.aiClient) {
-        const currentBridge = tab.controller.getBridge()
-        if (currentBridge) {
-          tab.controller.init(this.aiClient, currentBridge, config)
-        }
-      }
+      const currentBridge = tab.controller.getBridge()
+      if (currentBridge) tab.controller.init(currentBridge, config)
       // 同步点火契约（与 startTask 对齐）：controller 同步完成校验与后台点火，
       // 发起级错误在此捕获返回渲染进程；执行期错误走事件流，不再占用本返回
       tab.controller.continueTask(additionalSteps ?? readAgentMaxSteps())
@@ -285,14 +275,14 @@ export class AgentApplication {
       return { success: false, error: 'Windows 本地终端暂不支持 Agent 完成协议；请绑定具有 POSIX Shell 的 SSH 或 Jumpserver 终端' }
     }
     const config = this.getProviderConfig()
-    if (!this.aiClient || !config) return { success: false, error: 'Agent 服务未初始化或模型未配置' }
+    if (!config) return { success: false, error: '模型未配置' }
 
     const bridge = new TerminalBridge(session)
     const identity = bridge.getDisplayIdentity()
     if (!bridge.getBoundTargetId() || !identity) {
       return { success: false, error: '无法验证终端目标身份或 Shell 尚未就绪，请检查连接后重新绑定' }
     }
-    tab.controller.init(this.aiClient, bridge, config)
+    tab.controller.init(bridge, config)
     // 重启后的恢复从 bind → continueTask 发起，不经过 startTask。
     this.bindControllerEvents(tab)
     const host = tab.controller.bind() ?? identity.displayDetail

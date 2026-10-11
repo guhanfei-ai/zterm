@@ -6,7 +6,7 @@ import { readRecentTerminalOutput } from '../data/terminal/terminalContextReposi
 import { ChatHarness, type ChatStreamEvent } from '../harness/chat/chatHarness'
 import { AiClient, type ProviderConfig } from '../services/aiClient'
 
-export const aiClient = new AiClient()
+const aiClient = new AiClient()
 
 const providerSettingsApplication = new ProviderSettingsApplication(aiClient)
 const chatApplication = new ChatApplication(

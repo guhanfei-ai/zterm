@@ -106,7 +106,7 @@ const bracketLabel = computed(() => {
     planning: '·正在回复',
     executing: '·执行中',
     observing: '·观察中',
-    summarizing: '·总结中',
+    summarizing: '·整理上下文',
     completed: '·已完成',
     failed: '·失败',
     stopped: '·已停止',

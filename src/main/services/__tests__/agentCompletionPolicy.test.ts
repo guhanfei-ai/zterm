@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { isMissingOptionalProbe } from '../agentCompletionPolicy'
-import type { StepRecord } from '../agentGraphState'
+import type { StepRecord } from '../agentTypes'
 
 const step = (command: string, exitCode: number, commandOutput: string): StepRecord => ({
   stepNumber: 1, plan: '', command, exitCode, commandOutput,

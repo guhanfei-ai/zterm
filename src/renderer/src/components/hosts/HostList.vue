@@ -494,42 +494,6 @@ async function onResetHostTrust(host: HostRecord): Promise<void> {
   line-height: 1.5;
 }
 
-.jumpserver-placeholder {
-  padding: 24px 16px;
-  text-align: center;
-}
-
-.jumpserver-placeholder-icon {
-  font-size: 28px;
-  margin-bottom: 10px;
-}
-
-.jumpserver-placeholder-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text-primary);
-  margin-bottom: 8px;
-}
-
-.jumpserver-placeholder-detail {
-  font-size: 13px;
-  color: var(--text-secondary);
-  line-height: 1.6;
-  margin-bottom: 12px;
-}
-
-.jumpserver-url {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--text-tertiary);
-}
-
-.jumpserver-placeholder-hint {
-  font-size: 11px;
-  color: var(--text-tertiary);
-  font-style: italic;
-}
-
 /* ===== Jumpserver 资产列表 ===== */
 .jumpserver-error {
   padding-top: 40px;
@@ -678,10 +642,6 @@ async function onResetHostTrust(host: HostRecord): Promise<void> {
   padding: 4px 0 8px;
   font-size: 11px;
   color: var(--text-tertiary);
-}
-
-.host-detail-sep {
-  margin: 0 4px;
 }
 
 /* ===== 本地终端入口 ===== */

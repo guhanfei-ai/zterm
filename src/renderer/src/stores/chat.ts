@@ -176,58 +176,17 @@ export const useChatStore = defineStore('chat', () => {
     return msg
   }
 
-  function appendToLastMessage(text?: string, reasoning?: string): void {
-    const tab = activeTab.value
-    const last = tab.messages[tab.messages.length - 1]
-    if (last && last.role === 'assistant') {
-      if (text) last.text += text
-      if (reasoning) last.reasoning = (last.reasoning || '') + reasoning
-    }
-  }
-
-  function finishLastMessage(err?: string): void {
-    const tab = activeTab.value
-    const last = tab.messages[tab.messages.length - 1]
-    if (last && last.role === 'assistant') {
-      last.status = err ? 'error' : 'done'
-      if (err) last.text = last.text || err
-    }
-    tab.isStreaming = false
-    const fn = cleanupFns.get(tab.id)
-    if (fn) { fn(); cleanupFns.delete(tab.id) }
-  }
-
   // ---- Agent mode functions (active tab) ----
   function setMode(m: PanelMode): void {
     activeTab.value.mode = m
-  }
-
-  function setAgentTask(desc: string): void {
-    activeTab.value.agentTask = desc
-  }
-
-  function finalizeExecutionMessages(stepNumber?: number): void {
-    finalizeExecutionMessagesByTabId(activeTab.value.id, stepNumber)
   }
 
   function addAgentMessage(msg: AgentDisplayMessage): void {
     addAgentMessageByTabId(activeTab.value.id, msg)
   }
 
-  function setAgentState(state: AgentState): void {
-    setAgentStateByTabId(activeTab.value.id, state)
-  }
-
-  function setAllowWrite(v: boolean): void {
-    setAllowWriteByTabId(activeTab.value.id, v)
-  }
-
   function clearMessages(): void {
     activeTab.value.messages = []
-  }
-
-  function finalizeThinkingOnStop(): void {
-    finalizeThinkingOnStopByTabId(activeTab.value.id)
   }
 
   function resetAgent(): void {
@@ -240,12 +199,6 @@ export const useChatStore = defineStore('chat', () => {
       (m) => !m.isAgentConclusion && !m.isAgentNaturalReply && !m.isAgentUserTurn && !m.isAgentCard
     )
     // 主人明确开启新任务时也会调用本函数；pendingContext 由调用方显式维护
-  }
-
-  function fullResetAgent(): void {
-    resetAgent()
-    activeTab.value.allowWrite = false
-    activeTab.value.boundHost = ''
   }
 
   function setStreaming(v: boolean): void {
@@ -444,22 +397,6 @@ export const useChatStore = defineStore('chat', () => {
   function addAgentMessageByTabId(tabId: string, msg: AgentDisplayMessage): void {
     const tab = getTab(tabId)
     if (!tab) return
-
-    // 1) conclusion — 任务收尾，进入时间线标记 isAgentConclusion
-    if (msg.type === 'conclusion') {
-      finalizeExecutionMessagesByTabId(tabId)
-      const chatMsg: ChatMessage = {
-        id: msg.id,
-        role: 'assistant',
-        text: msg.content,
-        status: 'done',
-        createdAt: msg.createdAt,
-        isAgentConclusion: true,
-        agentDetails: msg.details
-      }
-      tab.messages.push(chatMsg)
-      return
-    }
 
     // 2) user_turn — Agent 模式用户发言
     if (msg.type === 'user_turn') {
@@ -666,19 +603,11 @@ export const useChatStore = defineStore('chat', () => {
     // Chat (active tab)
     addUserMessage,
     addAssistantMessage,
-    appendToLastMessage,
-    finishLastMessage,
     clearMessages,
     // Agent (active tab)
     setMode,
-    setAgentTask,
     addAgentMessage,
-    setAgentState,
-    setAllowWrite,
-    finalizeExecutionMessages,
-    finalizeThinkingOnStop,
     resetAgent,
-    fullResetAgent,
     setStreaming,
     setError,
     setCleanup,
