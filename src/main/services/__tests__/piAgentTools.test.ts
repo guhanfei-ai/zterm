@@ -350,6 +350,17 @@ describe('R01 停止后工具拒绝执行', () => {
 // ================================================================
 
 describe('R07 读取工具总上限', () => {
+  it('工具预算调到 60 后读取可超过 50 次，扩大的读取上限仍会终止循环', async () => {
+    const turn = makeTurn({ maxSteps: 60 })
+    const read = findTool(createBoundTerminalTools({ turn, bridge: makeBridge() }), 'read_bound_terminal_context')
+    for (let i = 0; i < 120; i++) {
+      expect((await callTool(read, `large-read-${i}`, {})).details.error).toBeUndefined()
+    }
+    const over = await callTool(read, 'large-read-over', {})
+    expect(over.details.error).toBe('read_limit_exhausted')
+    expect(over.terminate).toBe(true)
+  })
+
   it(`连续 ${READ_CALLS_LIMIT} 次后拒绝,且终止轮次`, async () => {
     const turn = makeTurn()
     const callbacks = makeCallbacks()

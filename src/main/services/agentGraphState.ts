@@ -160,7 +160,7 @@ export function createInitialState(): AgentGraphState {
     userMessage: '',
     chatTabId: '',
     currentStep: 0,
-    maxSteps: 25,
+    maxSteps: 100,
     planText: '',
     pendingCommand: '',
     pendingCommands: [],

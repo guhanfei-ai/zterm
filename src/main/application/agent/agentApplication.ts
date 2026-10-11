@@ -3,6 +3,7 @@ import { TerminalBridge, type AnyTerminalSession } from '../../services/terminal
 import { AiClient, type ProviderConfig } from '../../services/aiClient'
 import { getStore } from '../../services/store'
 import { getSecret } from '../../services/secretVault'
+import { isValidAgentMaxSteps, readAgentMaxSteps } from '../../services/agentStepBudget'
 import { terminalSessionManager, getLocalSession } from '../../data/terminal/terminalSessionRegistry'
 import {
   clearContext,
@@ -78,7 +79,7 @@ export class AgentApplication {
       if (typeof command?.chatTabId !== 'string' || typeof command.description !== 'string' || !command.chatTabId || !command.description.trim()) {
         return { success: false, error: '缺少对话标签或任务描述' }
       }
-      if (command.maxSteps !== undefined && (!Number.isSafeInteger(command.maxSteps) || command.maxSteps < 1 || command.maxSteps > 1000)) {
+      if (command.maxSteps !== undefined && !isValidAgentMaxSteps(command.maxSteps)) {
         return { success: false, error: '命令预算必须是 1～1000 的整数' }
       }
       if (command.conversationHistory !== undefined && (!Array.isArray(command.conversationHistory) ||
@@ -134,7 +135,7 @@ export class AgentApplication {
       this.send(tab, 'agent:stateChange', { state: 'starting', chatTabId: tab.chatTabId })
 
       // Controller 的发起级校验现在同步 throw；执行期错误仍由回调上报。
-      tab.controller.startTask(command.description, command.maxSteps || 25, {
+      tab.controller.startTask(command.description, command.maxSteps ?? readAgentMaxSteps(), {
         isNewTask: command.isNewTask === true, conversationHistory: command.conversationHistory
       })
       releaseLock()
@@ -226,7 +227,7 @@ export class AgentApplication {
   }
 
   continueTask(additionalSteps?: number, chatTabId?: string): { success: boolean; error?: string } {
-    if (additionalSteps !== undefined && (!Number.isSafeInteger(additionalSteps) || additionalSteps < 1 || additionalSteps > 1000)) {
+    if (additionalSteps !== undefined && !isValidAgentMaxSteps(additionalSteps)) {
       return { success: false, error: '命令预算必须是 1～1000 的整数' }
     }
     const tab = chatTabId ? this.tabs.get(chatTabId) : undefined
@@ -259,7 +260,7 @@ export class AgentApplication {
       }
       // 同步点火契约（与 startTask 对齐）：controller 同步完成校验与后台点火，
       // 发起级错误在此捕获返回渲染进程；执行期错误走事件流，不再占用本返回
-      tab.controller.continueTask(additionalSteps)
+      tab.controller.continueTask(additionalSteps ?? readAgentMaxSteps())
       return { success: true }
     } catch (err: unknown) {
       return { success: false, error: err instanceof Error ? err.message : '续跑失败' }
@@ -443,6 +444,6 @@ export class AgentApplication {
   }
 
   private emptyStatus(error: string) {
-    return { state: 'idle' as const, maxSteps: 25, elapsedSteps: 0, allowWrite: false, steps: [], error }
+    return { state: 'idle' as const, maxSteps: readAgentMaxSteps(), elapsedSteps: 0, allowWrite: false, steps: [], error }
   }
 }

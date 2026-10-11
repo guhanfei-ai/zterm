@@ -359,7 +359,7 @@ export function updateContext(
       createdAt: patch.createdAt || nowIso(),
       updatedAt: nowIso(),
       currentStep: patch.currentStep || 0,
-      maxSteps: patch.maxSteps || 25,
+      maxSteps: patch.maxSteps || 100,
       stopReason: patch.stopReason ?? null,
       stoppedAt: patch.stoppedAt,
       steps: patch.steps || [],

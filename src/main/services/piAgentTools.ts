@@ -137,8 +137,13 @@ type ExecuteCommandArgs = Static<typeof ExecuteCommandParams>
 
 // ---- 上限常量 ----
 
-/** 读取工具本轮总调用上限(总纲 6.4:非执行工具也要有限总上限,防无限循环)。 */
+/** 默认读取上限；较大的工具预算同步扩大读取额度，仍保持有限总上限。 */
 export const READ_CALLS_LIMIT = 50
+
+function readCallsLimit(turn: PiToolTurnState): number {
+  // 预留读取上下文的额度，避免内置查询先被独立的 50 次限制截断。
+  return Math.max(READ_CALLS_LIMIT, turn.maxSteps * 2)
+}
 /** 工具返回给模型的输出上限(总纲 6.6:输出大小有界,截断可见)。 */
 const MAX_TOOL_OUTPUT_CHARS = 8000
 /** 与现有 graph 对齐的步超时(agentGraphConfig.ts)。 */
@@ -233,7 +238,7 @@ export function createBoundTerminalTools(
       }
 
       // R07:读取工具本轮总上限
-      if (turn.readCallsUsed >= READ_CALLS_LIMIT || turn.readLimitExhausted) {
+      if (turn.readCallsUsed >= readCallsLimit(turn) || turn.readLimitExhausted) {
         turn.readLimitExhausted = true
         return reply('[本轮读取调用已达上限,请总结当前发现或请用户介入]', { error: 'read_limit_exhausted' }, true)
       }
@@ -603,7 +608,7 @@ export function createBoundTerminalTools(
       content: [{ type: 'text', text: '重复调用已跳过。' }],
       details: { error: 'duplicate_tool_call_id' }, terminate: true,
     }
-    if (turn.readCallsUsed >= READ_CALLS_LIMIT || turn.readLimitExhausted) {
+    if (turn.readCallsUsed >= readCallsLimit(turn) || turn.readLimitExhausted) {
       turn.readLimitExhausted = true
       return { content: [{ type: 'text', text: '本轮读取调用已达上限，请总结当前发现。' }],
         details: { error: 'read_limit_exhausted' }, terminate: true }

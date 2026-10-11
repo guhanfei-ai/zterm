@@ -47,6 +47,7 @@ vi.mock('../store', () => ({
     get: (key: string) =>
       key === 'agent_engine' ? 'pi'
         : key === 'provider_config' ? providerConfigStore
+        : key === 'ui_agentMaxSteps' ? agentMaxStepsStore
         : undefined,
     set: () => {},
     has: () => false,
@@ -71,6 +72,7 @@ const createdOptions: Array<Record<string, unknown>> = []
 const createdSessions: Array<{ prompts: string[]; disposed: boolean; emit: (e: AgentSessionEvent) => void } & AgentSession> = []
 /** provider_config 的 store 值(Application.getProviderConfig 读取,模拟设置页)。 */
 let providerConfigStore: Record<string, unknown> | undefined
+let agentMaxStepsStore: unknown
 /** 终端注册表容器:测试注入 fake session(等效用户连接的终端)。 */
 const registeredSessions = new Map<string, unknown>()
 
@@ -285,6 +287,7 @@ beforeEach(async () => {
   createdOptions.length = 0
   createdSessions.length = 0
   providerConfigStore = undefined
+  agentMaxStepsStore = undefined
   registeredSessions.clear()
   // 同文件多用例共用测试沙箱；上一个随机 fake terminal 的快照
   // 不能成为下一个 tab-h 用例的历史绑定。
@@ -879,6 +882,62 @@ describe('矩阵1:首轮 → 同 session 追问(H01)', () => {
 // ================================================================
 //  矩阵行 2:预算暂停 → 配置不变 → Application 点击继续(H01/H02)
 // ================================================================
+
+describe('设置中的工具步数上限', () => {
+  it('当前轮保持 30；暂停后使用新设置 60 续跑，内置读取不在 25 或 50 次中断', async () => {
+    providerConfigStore = makeProviderConfig()
+    agentMaxStepsStore = 30
+    const fake = makeFakeSession()
+    const app = new AgentApplication()
+    app.setAiClient({} as never)
+    const { sink, log } = makeSink()
+    expect(app.bind({ chatTabId: 'tab-h', terminalTabId: fake.session.tabId }, sink).success).toBe(true)
+    promptScripts.push(async tools => {
+      agentMaxStepsStore = 60 // 模拟执行期间在设置中保存新值。
+      for (let i = 0; i < 30; i++) {
+        expect((await execTool(tools, `first-read-${i}`, {}, 'read_bound_system')).details.error).toBeUndefined()
+      }
+      expect((await execTool(tools, 'first-over', {}, 'read_bound_system')).details.error).toBe('budget_exhausted')
+    })
+    expect((await app.startTask({ chatTabId: 'tab-h', description: '检查系统' }, sink)).success).toBe(true)
+    await waitForSettled(log)
+    expect(app.getStatus('tab-h')).toMatchObject({ state: 'stepLimitReached', maxSteps: 30, elapsedSteps: 30 })
+
+    promptScripts.push(async tools => {
+      for (let i = 0; i < 60; i++) {
+        expect((await execTool(tools, `next-read-${i}`, {}, 'read_bound_system')).details.error).toBeUndefined()
+      }
+      expect((await execTool(tools, 'next-over', {}, 'read_bound_system')).details.error).toBe('budget_exhausted')
+    })
+    expect(app.continueTask(undefined, 'tab-h').success).toBe(true)
+    await waitForSettled(log)
+    expect(app.getStatus('tab-h')).toMatchObject({ state: 'stepLimitReached', maxSteps: 60, elapsedSteps: 60 })
+    expect(fake.writes.filter(w => w.trim()).length).toBe(90)
+    expect(createdSessions.length).toBe(1)
+    app.disposeAll()
+  })
+
+  it('恢复旧任务时采用当前设置，不沿用快照中的 25', async () => {
+    providerConfigStore = makeProviderConfig()
+    agentMaxStepsStore = 70
+    const fake = makeFakeSession()
+    const tabId = 'tab-configured-budget-restore'
+    await seedPendingContext(tabId, fake)
+    const app = new AgentApplication()
+    app.setAiClient({} as never)
+    const { sink, log } = makeSink()
+    expect(app.bind({ chatTabId: tabId, terminalTabId: fake.session.tabId }, sink).success).toBe(true)
+    promptScripts.push(async tools => {
+      expect((await execTool(tools, 'restored-read', {}, 'read_bound_system')).details.error).toBeUndefined()
+    })
+    expect(app.continueTask(undefined, tabId).success).toBe(true)
+    await waitForSettled(log)
+    expect(app.getStatus(tabId)).toMatchObject({ state: 'completed', maxSteps: 70, elapsedSteps: 1 })
+    const { loadContext } = await import('../agentContextStore')
+    expect(loadContext(tabId)).toMatchObject({ maxSteps: 70, taskDescription: '检查原主机' })
+    app.disposeAll()
+  })
+})
 
 describe('矩阵2:预算暂停 → 配置不变 → 点继续', () => {
   it('当前 bridge 有效,第二轮命令真正下发,事件不丢,旧 bridge 未被释放', async () => {

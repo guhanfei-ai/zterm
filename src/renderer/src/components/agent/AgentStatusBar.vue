@@ -115,7 +115,7 @@ const bracketLabel = computed(() => {
   const statePart = stateMap[props.agentState] || ''
   // 单轮预算：人类每次介入（发消息 / 续跑）计数从零重记，x 始终是"本轮"进度
   const count = props.elapsedSteps ?? 0
-  const steps = count > 0 ? `：本轮工具 ${count}/${props.maxSteps ?? 25}` : ''
+  const steps = count > 0 ? `：本轮工具 ${count}/${props.maxSteps ?? 100}` : ''
   return `对话${statePart}${steps}`
 })
 </script>

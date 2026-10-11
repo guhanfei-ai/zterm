@@ -187,7 +187,7 @@ export class AgentController extends EventEmitter {
   private task: AgentTask | null = null
   private steps: AgentStep[] = []
   // 单轮预算：一次人类介入后无人值守下最多执行的命令轮数（人类介入即重置）
-  private maxSteps = 25
+  private maxSteps = 100
   private currentStep = 0
   // 本轮（自上次人类介入以来）开始时已有的业务步骤数，是预算计数的基准，
   // 同时用于 getStatus 的 elapsedSteps 展示（本轮 x / maxSteps 步）
@@ -406,7 +406,7 @@ export class AgentController extends EventEmitter {
 
   // ---- Public API ----
 
-  startTask(description: string, maxSteps = 25, options?: { isNewTask?: boolean; conversationHistory?: ContextChatTurn[] }): void {
+  startTask(description: string, maxSteps = 100, options?: { isNewTask?: boolean; conversationHistory?: ContextChatTurn[] }): void {
     // 允许从任意合法终态启动新任务；运行中（planning/executing/observing/summarizing）仍然拒绝
     // 'starting' 是 IPC handler 预设的乐观锁状态，此处不应拦截
     const terminalStates: AgentState[] = ['starting', 'idle', 'completed', 'failed', 'stopped', 'stepLimitReached']
@@ -467,7 +467,7 @@ export class AgentController extends EventEmitter {
     const taskDescription = keepTask ? persisted!.taskDescription : description
     this.task = { id: taskId, description: taskDescription, createdAt: taskCreatedAt }
     // 预算语义（2026-09-16）：maxSteps 是"单轮预算"——一次人类介入后无人值守状态下
-    // 最多执行的命令轮数。人类每发一次消息即重置，预算恒为本次传入值（默认 25），
+    // 最多执行的命令轮数。人类每发一次消息即重置，预算恒为本次传入值（默认 100），
     // 不随任务生命周期累计（旧"触顶后追加"逻辑已随累计制一并移除）。
     this.maxSteps = maxSteps
     // 本轮基准：follow-up = 已有业务步骤数（预算从零重记）；新任务 = 0。
@@ -657,7 +657,7 @@ export class AgentController extends EventEmitter {
    * 图执行后台点火，执行期错误收敛为 failed 终态并走事件流（state-change / message）。
    * 与 startTask 的"点火即返回"对齐，避免 await 本调用的 UI 动作（如清决策条）被挂到任务终态。
    */
-  continueTask(additionalSteps = 25): void {
+  continueTask(additionalSteps = 100): void {
     this.preserveExecutionContext = false
     // 重启后是 idle；同进程 stop/failed 后恢复条也走同一持久化重规划入口。
     if (['idle', 'stopped', 'failed'].includes(this.state) && this.chatTabId) {
@@ -774,7 +774,7 @@ export class AgentController extends EventEmitter {
 
     const isContinue = ctx.stopReason === 'ROUND_LIMIT'
     // 预算语义（2026-09-16）：重启恢复同样属于人类介入 —— 无论 continue 还是 replan，
-    // 本轮预算都重置为 additionalSteps（默认 25），不再在历史 maxSteps 上累计追加。
+    // 本轮预算都重置为 additionalSteps（默认 100），不再在历史 maxSteps 上累计追加。
     const newMaxSteps = additionalSteps
     // 本轮基准 = 恢复时已有的业务步骤数；graph 侧 turnStartStepCount 由
     // runtime.startTask 以同一口径重算，预算从零重新计数。

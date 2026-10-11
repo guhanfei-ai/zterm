@@ -15,6 +15,7 @@
       <!-- 模型设置 -->
       <div v-if="activeSection === 'model'" class="settings-section">
         <ModelProviderSettingsForm />
+        <AgentSettings />
       </div>
 
       <!-- 外观设置 -->
@@ -59,6 +60,7 @@ import { ref, watch } from 'vue'
 import { useUpdateStore } from '@/stores/update'
 import SettingsSidebar from './SettingsSidebar.vue'
 import ModelProviderSettingsForm from './ModelProviderSettingsForm.vue'
+import AgentSettings from './AgentSettings.vue'
 import AppearanceSettings from './AppearanceSettings.vue'
 import TerminalSettings from './TerminalSettings.vue'
 import ShortcutSettings from './ShortcutSettings.vue'

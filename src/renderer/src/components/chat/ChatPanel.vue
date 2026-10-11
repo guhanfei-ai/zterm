@@ -396,7 +396,7 @@ function cleanupAgentListeners(chatTabId: string): void {
 // 此前用本地 refs 只在组件内刷新路径更新，全局监听器迁到应用级后 stateChange
 // 不再驱动本地 refs，任务执行期间状态栏步数会停更；派生 computed 恒定跟随 store
 const elapsedSteps = computed(() => chatStore.agentStatus?.elapsedSteps ?? 0)
-const maxSteps = computed(() => chatStore.agentStatus?.maxSteps ?? 25)
+const maxSteps = computed(() => chatStore.agentStatus?.maxSteps ?? 100)
 
 const boundHostDisplay = computed(() => chatStore.boundHost || chatStore.agentStatus?.boundHost || '')
 const linkedTerminalDisplay = computed(() => {
@@ -649,7 +649,6 @@ async function onStartAgent(): Promise<void> {
     const result = await window.electronAPI.agent.startTask({
       chatTabId,
       description: text,
-      maxSteps: 25,
       conversationHistory,
       isNewTask
     })
@@ -737,7 +736,7 @@ async function onAgentContinue(): Promise<void> {
   agentScrollState.set(chatTabId, false)
   forceScrollAgentToBottom()
 
-  const result = await window.electronAPI.agent.continueTask(25, { chatTabId })
+  const result = await window.electronAPI.agent.continueTask(undefined, { chatTabId })
   if (!result.success && result.error) {
     chatStore.setError(result.error)
     cleanupAgentListeners(chatTabId)
@@ -801,7 +800,7 @@ async function onAcceptPendingContext(): Promise<void> {
   forceScrollAgentToBottom()
 
   try {
-    const result = await window.electronAPI.agent.continueTask(25, { chatTabId })
+    const result = await window.electronAPI.agent.continueTask(undefined, { chatTabId })
     if (!result.success && result.error) {
       chatStore.setError(`恢复失败：${result.error}`)
       cleanupAgentListeners(chatTabId)
