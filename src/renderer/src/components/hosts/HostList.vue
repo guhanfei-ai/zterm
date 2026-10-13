@@ -2,7 +2,7 @@
   <div class="host-list">
     <!-- 直连主机与文件夹共用持久化排序。 -->
     <DirectHostTree v-if="hostsStore.activeMode === 'direct'" :connected-host-ids="connectedHostIds"
-      @add-host="$emit('add-host')" @connect="onHostClick" @edit="onEdit" @delete="onDelete" @context="showContextMenu" />
+      @add-host="$emit('add-host')" @connect="onHostClick" @edit="onEdit" @delete="onDelete" @context="showContextMenu" @folder-context="showFolderContextMenu" />
 
     <!-- 本地终端模式 -->
     <template v-else-if="hostsStore.activeMode === 'local'">
@@ -145,7 +145,8 @@
     <HostFormDialog
       v-if="editTarget !== undefined"
       :host="editTarget"
-      @close="editTarget = undefined"
+      :folder-id="createFolderId"
+      @close="editTarget = undefined; createFolderId = undefined"
     />
 
     <!-- 多实例（P14）：Jumpserver 配置对话框挂在 HostList 内部，
@@ -165,11 +166,16 @@
     <!-- 右键菜单 -->
     <Teleport to="body">
       <div
-        v-if="contextMenuHost !== null"
+        v-if="contextMenuHost !== null || contextMenuFolder !== null"
         class="host-context-menu"
         :style="{ left: contextMenuPos.x + 'px', top: contextMenuPos.y + 'px' }"
         @click.stop
       >
+        <button v-if="contextMenuFolder" class="ctx-item ctx-item-button" :disabled="!hostsStore.treeLoaded || hostsStore.loading || hostsStore.treeSaving" @click="onCreateHostInFolder">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+          创建主机
+        </button>
+        <template v-else-if="contextMenuHost">
         <div class="ctx-item" @click="onContextMenuConnect">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
           连接服务器
@@ -187,8 +193,9 @@
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
           删除主机
         </div>
+        </template>
       </div>
-      <div v-if="contextMenuHost !== null" class="ctx-overlay" @click="hideContextMenu" />
+      <div v-if="contextMenuHost !== null || contextMenuFolder !== null" class="ctx-overlay" @click="hideContextMenu" @contextmenu.prevent="hideContextMenu" />
     </Teleport>
   </div>
 </template>
@@ -200,6 +207,7 @@ import { useJumpserverStore } from '@/stores/jumpserver'
 import { useTerminalStore } from '@/stores/terminal'
 import { useConfirm } from '@/composables/useConfirm'
 import type { HostRecord } from '@/types/host'
+import type { HostTreeFolder } from '@/utils/hostTree'
 import type { JumpserverAsset } from '@/types/jumpserver'
 import HostFormDialog from './HostFormDialog.vue'
 import DirectHostTree from './DirectHostTree.vue'
@@ -240,7 +248,9 @@ const connectedHostIds = computed(() => new Set(terminalStore.tabs
   .map((tab) => tab.hostId)
   .filter((id): id is string => typeof id === 'string')))
 const editTarget = ref<HostRecord | null | undefined>(undefined)
+const createFolderId = ref<string | undefined>()
 const contextMenuHost = ref<HostRecord | null>(null)
+const contextMenuFolder = ref<HostTreeFolder | null>(null)
 const contextMenuPos = ref({ x: 0, y: 0 })
 const accountDialogAsset = ref<JumpserverAsset | null>(null)
 const jumpserverAssetHint = ref<string | null>(null)
@@ -276,12 +286,28 @@ function onRetry(): void {
 
 function showContextMenu(e: MouseEvent, host: HostRecord): void {
   e.preventDefault()
+  contextMenuFolder.value = null
   contextMenuHost.value = host
   contextMenuPos.value = { x: e.clientX, y: e.clientY }
 }
 
+function showFolderContextMenu(e: MouseEvent, folder: HostTreeFolder): void {
+  e.preventDefault()
+  contextMenuHost.value = null
+  contextMenuFolder.value = folder
+  contextMenuPos.value = { x: e.clientX, y: e.clientY }
+}
+
+function onCreateHostInFolder(): void {
+  if (!contextMenuFolder.value) return
+  createFolderId.value = contextMenuFolder.value.id
+  editTarget.value = null
+  hideContextMenu()
+}
+
 function hideContextMenu(): void {
   contextMenuHost.value = null
+  contextMenuFolder.value = null
 }
 
 /** 手动刷新当前 Jumpserver 视图（搜索 / 根层 / 选中节点 / 快捷入口 + 账号偏好） */
@@ -363,6 +389,7 @@ async function onHostClick(host: HostRecord): Promise<void> {
 }
 
 function onEdit(host: HostRecord): void {
+  createFolderId.value = undefined
   editTarget.value = { ...host }
 }
 
@@ -441,6 +468,9 @@ async function onResetHostTrust(host: HostRecord): Promise<void> {
 .ctx-item:hover {
   background: var(--surface-alt);
 }
+
+.ctx-item-button { width: 100%; border: 0; background: transparent; text-align: left; font-family: inherit; }
+.ctx-item-button:disabled { opacity: .5; cursor: default; }
 
 .ctx-item svg {
   flex-shrink: 0;

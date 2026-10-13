@@ -65,7 +65,7 @@ import { normalizeHostTree, resolveHostTreeDropTarget, type HostTreeItem, type H
 import HostFolderDialog from './HostFolderDialog.vue'
 
 const props = defineProps<{ connectedHostIds: Set<string> }>()
-const emit = defineEmits<{ 'add-host': []; connect: [host: HostRecord]; edit: [host: HostRecord]; delete: [host: HostRecord]; context: [event: MouseEvent, host: HostRecord] }>()
+const emit = defineEmits<{ 'add-host': []; connect: [host: HostRecord]; edit: [host: HostRecord]; delete: [host: HostRecord]; context: [event: MouseEvent, host: HostRecord]; 'folder-context': [event: MouseEvent, folder: HostTreeFolder] }>()
 const store = useHostsStore()
 const { confirm } = useConfirm()
 const filter = ref('')
@@ -117,7 +117,7 @@ function activate(row: TreeRow): void {
 }
 function onContextMenu(event: MouseEvent, row: TreeRow): void {
   if (row.host) emit('context', event, row.host)
-  else event.preventDefault()
+  else if (row.item.kind === 'folder') emit('folder-context', event, row.item)
 }
 function lineBefore(row: TreeRow): boolean {
   return !!dropTarget.value && !dropTarget.value.inside && dropTarget.value.folderId === row.folderId && dropTarget.value.index === row.index

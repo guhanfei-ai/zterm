@@ -860,6 +860,55 @@ describe('矩阵1:首轮 → 同 session 追问(H01)', () => {
     expect(log.messages.some((m) => m.type === 'error' && m.content.includes('模型服务过载'))).toBe(true)
     expect(log.states[log.states.length - 1]).toBe('failed')
   })
+
+  it.each(['stop', 'length'])('工具后只有思考(%s)失败；下一次指令重建并保留目标、历史与绑定', async reason => {
+    providerConfigStore = makeProviderConfig()
+    const fake = makeFakeSession()
+    const app = new AgentApplication()
+    const { sink, log } = makeSink()
+    const { loadContext } = await import('../agentContextStore')
+
+    await bootAndFirstTurn(app, sink, fake)
+    await waitForSettled(log)
+    const firstSession = createdSessions[0]
+    promptScripts.push(async tools => {
+      await execTool(tools, 'before-empty', { command: 'df -h' })
+      firstSession.emit(thinkingDelta('Let'))
+      firstSession.emit({ type: 'message_end', message: {
+        role: 'assistant', stopReason: reason, content: [{ type: 'thinking', thinking: 'Let' }],
+      } } as unknown as AgentSessionEvent)
+    })
+    expect((await app.startTask({ chatTabId: 'tab-h', description: '磁盘呢?', maxSteps: 25 }, sink)).success).toBe(true)
+    await waitForSettled(log)
+
+    expect(app.getStatus('tab-h').state).toBe('failed')
+    expect(loadContext('tab-h')).toMatchObject({ stopReason: 'ERROR', turnCompleted: false })
+    const saved = loadContext('tab-h')!
+    expect(saved.steps).toHaveLength(2)
+    const oldWrites = fake.writes.length
+
+    promptScripts.push(async tools => {
+      expect(createdSessions).toHaveLength(2)
+      const sm = createdOptions.at(-1)!.sessionManager as { getEntries: () => Array<Record<string, unknown>> }
+      const imported = JSON.stringify(sm.getEntries())
+      expect(imported).toContain('检查负载')
+      expect(imported).toContain('磁盘呢?')
+      expect(imported).toContain('df -h')
+      expect(imported).toContain('首轮回复:负载正常')
+      expect(fake.writes).toHaveLength(oldWrites)
+      await execTool(tools, 'after-recovery', { command: 'hostname' })
+      createdSessions.at(-1)!.emit(assistantMessageEnd('恢复后的回答'))
+    })
+    expect((await app.startTask({ chatTabId: 'tab-h', description: '目前是什么情况？', maxSteps: 25 }, sink)).success).toBe(true)
+    await waitForSettled(log)
+
+    expect(firstSession.disposed).toBe(true)
+    expect(app.getStatus('tab-h')).toMatchObject({ state: 'completed', allowWrite: true, boundTerminalTabId: fake.session.tabId })
+    expect(loadContext('tab-h')).toMatchObject({ taskId: saved.taskId, boundTargetId: saved.boundTargetId, turnCompleted: true })
+    expect(loadContext('tab-h')!.steps).toHaveLength(3)
+    expect(log.messages.filter(msg => msg.type === 'assistant_reply' && msg.content === '恢复后的回答')).toHaveLength(1)
+    app.disposeAll()
+  })
 })
 
 // ================================================================

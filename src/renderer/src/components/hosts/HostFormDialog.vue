@@ -5,7 +5,8 @@
         <span>{{ isEdit ? '编辑主机' : '添加主机' }}</span>
         <button class="btn-icon" @click="$emit('close')">✕</button>
       </div>
-      <div class="dialog-body">
+      <div class="dialog-body" :inert="createdHostId ? true : undefined">
+        <p v-if="!isEdit && targetFolder" class="target-folder">创建到目录：{{ targetFolder.name }}</p>
         <label>名称</label>
         <input v-model="form.name" placeholder="我的服务器" />
 
@@ -126,7 +127,7 @@
         <span v-if="saveError" class="error-msg">{{ saveError }}</span>
         <button class="btn btn-cancel" @click="$emit('close')">取消</button>
         <button class="btn btn-save" :disabled="!valid || saving" @click="onSave">
-          {{ saving ? '保存中…' : isEdit ? '更新' : '创建' }}
+          {{ saving ? '保存中…' : createdHostId ? '重试加入目录' : isEdit ? '更新' : '创建' }}
         </button>
       </div>
     </div>
@@ -138,9 +139,11 @@ import { ref, reactive, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useHostsStore } from '@/stores/hosts'
 import { useKeysStore } from '@/stores/keys'
 import type { HostRecord } from '@/types/host'
+import type { HostTreeFolder } from '@/utils/hostTree'
 
 const props = defineProps<{
   host?: HostRecord | null
+  folderId?: string
 }>()
 
 const emit = defineEmits<{
@@ -151,6 +154,8 @@ const hostsStore = useHostsStore()
 const keysStore = useKeysStore()
 
 const isEdit = computed(() => !!props.host?.id)
+const targetFolder = computed(() => hostsStore.treeItems.find((item): item is HostTreeFolder => item.kind === 'folder' && item.id === props.folderId))
+const createdHostId = ref<string | null>(null)
 const originalAuthType = props.host?.authType as HostRecord['authType'] | undefined
 const saveError = ref('')
 const saving = ref(false)
@@ -365,7 +370,7 @@ const validationError = computed(() => {
   return null
 })
 
-const valid = computed(() => validationError.value === null)
+const valid = computed(() => !!createdHostId.value || validationError.value === null)
 
 async function onSave(): Promise<void> {
   if (saving.value) return
@@ -413,11 +418,21 @@ async function onSave(): Promise<void> {
     if (isEdit.value && props.host?.id) {
       await hostsStore.updateHost(props.host.id, data)
     } else {
-      await hostsStore.createHost(data)
+      if (props.folderId && !targetFolder.value) throw new Error('目标目录已不存在，请关闭表单后重新选择目录')
+      // 分组保存失败时，重试只移动已创建的主机，避免再次创建相同配置。
+      if (!createdHostId.value) createdHostId.value = (await hostsStore.createHost(data)).id
+      if (props.folderId) {
+        const folder = targetFolder.value
+        if (!folder) throw new Error('目标目录已不存在')
+        await hostsStore.moveTreeItem({ kind: 'host', id: createdHostId.value }, { folderId: folder.id, index: folder.hostIds.length })
+      }
     }
     emit('close')
   } catch (err: unknown) {
-    saveError.value = err instanceof Error ? err.message : '保存失败'
+    const message = err instanceof Error ? err.message : '保存失败'
+    saveError.value = createdHostId.value && props.folderId
+      ? `主机已创建，加入目录失败：${message}。请重试加入目录，或关闭表单后从根列表移入。`
+      : message
   } finally {
     saving.value = false
   }
@@ -472,6 +487,8 @@ async function onSave(): Promise<void> {
   margin-top: 4px;
   font-weight: 500;
 }
+
+.target-folder { margin: 0 0 4px; color: var(--text-secondary); font-size: 12px; }
 
 .dialog-body input,
 .dialog-body select {

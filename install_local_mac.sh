@@ -22,6 +22,11 @@ TARGET_APP="${INSTALL_DIR}/${APP_BUNDLE}"
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 BUILDS_DIR="${ROOT_DIR}/builds"
 
+# Electron 二进制下载镜像：electron-builder 打包时每次都要拉 SHASUMS256.txt 校验文件，
+# 默认直连 GitHub，国内网络下会 fetch failed，改走 npmmirror 镜像。
+# 外部已设置同名环境变量时尊重外部值。
+export ELECTRON_MIRROR="${ELECTRON_MIRROR:-https://npmmirror.com/mirrors/electron/}"
+
 # 用户数据目录（这些目录不会被触碰）
 DATA_DIRS=(
   "$HOME/.zterm"

@@ -64,6 +64,8 @@ export class TerminalSession extends EventEmitter {
   public generation: number
   private conn: Client | null = null
   private stream: ClientChannel | null = null
+  /** 前端测得的准确尺寸；SSH ready 到 Shell channel 就绪之间也必须保留。 */
+  private terminalSize: { cols: number; rows: number } | null = null
   public connected = false
   public currentHost?: SshConnectionIdentity
   public sessionMeta?: SessionMeta
@@ -286,11 +288,12 @@ export class TerminalSession extends EventEmitter {
         return
       }
 
+      const requestedSize = this.terminalSize ?? { cols, rows }
       this.conn.shell(
         {
           term: 'xterm-256color',
-          cols,
-          rows
+          cols: requestedSize.cols,
+          rows: requestedSize.rows
         },
         (err: Error | undefined, stream: ClientChannel) => {
           if (err) {
@@ -299,6 +302,11 @@ export class TerminalSession extends EventEmitter {
           }
 
           this.stream = stream
+          // 打开 Shell 的异步窗口里可能再次缩放；用最后一次准确尺寸修正远端 PTY。
+          const latestSize = this.terminalSize
+          if (latestSize && (latestSize.cols !== requestedSize.cols || latestSize.rows !== requestedSize.rows)) {
+            stream.setWindow(latestSize.rows, latestSize.cols, 0, 0)
+          }
 
           stream.on('data', (data: Buffer) => {
             this.outputBuffer.push(data.toString())
@@ -336,6 +344,8 @@ export class TerminalSession extends EventEmitter {
   }
 
   resize(cols: number, rows: number): void {
+    if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols < 1 || rows < 1) return
+    this.terminalSize = { cols, rows }
     if (this.stream) {
       this.stream.setWindow(rows, cols, 0, 0)
     }
@@ -370,6 +380,7 @@ export class TerminalSession extends EventEmitter {
       // ignore cleanup errors
     }
     this.connected = false
+    this.terminalSize = null
     this.currentHost = undefined
     this.sessionMeta = undefined
     this.outputBuffer.clear()

@@ -63,6 +63,8 @@ interface TurnState extends PiToolTurnState {
   lastAssistantText: string
   /** 模型错误(stopReason=error);成功消息会清除(F08)。 */
   modelError: string | null
+  /** 最后一条回答是否无效；SDK 同轮恢复成功后清除，收尾时再判失败。 */
+  responseIssue: 'empty_response' | 'output_truncated' | null
   /** 本轮是否发生过工具执行(命令下发)。 */
   sawToolExecution: boolean
   // ---- 回调 ----
@@ -385,6 +387,7 @@ export class PiAgentRuntime implements AgentRuntime {
       assistantMsgSeq: 0,
       lastAssistantText: '',
       modelError: null,
+      responseIssue: null,
       sawToolExecution: false,
       callbacks,
     }
@@ -832,10 +835,9 @@ export class PiAgentRuntime implements AgentRuntime {
   /**
    * 共享收尾(S02):startTask/continueTask 的正常与异常路径共用。
    * 终态优先级:cancelled/stopped > 模型错误 > 命令结束未验证
-   * > 预算耗尽(ROUND_LIMIT) > 本轮真实完成的命令(COMPLETED) > 自然聊天(idle)。
+   * > 预算耗尽(ROUND_LIMIT) > 无效回答 > 本轮真实完成的命令(COMPLETED) > 自然聊天(idle)。
    */
   private finishTurn(chatTabId: string, turn: TurnState): void {
-    void chatTabId
     turn.running = false
     const callbacks = turn.callbacks
 
@@ -891,6 +893,28 @@ export class PiAgentRuntime implements AgentRuntime {
         stopReason: 'ROUND_LIMIT',
       })
       callbacks.emitStateChange('stepLimitReached')
+      return
+    }
+
+    if (turn.responseIssue) {
+      // 丢弃异常模型上下文；下一次人类指令从已保存的目标、对话与工具结果重建。
+      // 延迟到收尾判断，允许 SDK 在同一轮压缩/重试后产出完整回复。
+      const tab = this.tabs.get(chatTabId)
+      if (tab?.turn === turn) tab.sessionConfigKey = null
+      callbacks.emitMessage({
+        type: 'error',
+        content: turn.responseIssue === 'output_truncated'
+          ? '模型回答被截断，本轮未完成。已保留执行结果，请重新发送指令以恢复会话。'
+          : '模型未返回有效回复（正文和工具调用均为空），本轮未完成。已保留执行结果，请重新发送指令以恢复会话。',
+        details: { error: turn.responseIssue },
+      })
+      callbacks.onStepComplete({
+        steps: [...turn.steps],
+        currentStep: turn.steps.length,
+        stopReason: 'ERROR',
+        turnCompleted: false,
+      })
+      callbacks.emitStateChange('failed')
       return
     }
 
@@ -998,6 +1022,15 @@ export class PiAgentRuntime implements AgentRuntime {
             .filter((c) => c.type === 'text' && typeof c.text === 'string')
             .map((c) => c.text as string)
             .join('')
+          const hasToolCall = (assistant.content ?? []).some(c => c.type === 'toolCall')
+          turn.responseIssue = assistant.stopReason === 'length'
+            ? 'output_truncated'
+            : !text.trim() && !hasToolCall ? 'empty_response' : null
+          if (turn.responseIssue) {
+            // 只留下思考或部分正文不能算回答，也不把截断正文写回权威历史。
+            turn.modelError = null
+            break
+          }
           if (hasTextToolCall(text)) {
             // Pi 内存里仍有原始异常正文；下一轮重建并从已校验的历史恢复，避免反复模仿。
             tab.sessionConfigKey = null

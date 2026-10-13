@@ -441,6 +441,86 @@ describe('R06 事件映射', () => {
     expect(callbacks.stepCompletions[0].stopReason).toBe('ERROR')
   })
 
+  it.each([
+    { reason: 'stop', content: [], error: '有效回复' },
+    { reason: 'stop', content: [{ type: 'thinking', thinking: 'Let' }], error: '有效回复' },
+    { reason: 'stop', content: [{ type: 'text', text: ' \n ' }], error: '有效回复' },
+    { reason: 'length', content: [{ type: 'thinking', thinking: '继续' }], error: '截断' },
+    { reason: 'length', content: [{ type: 'text', text: '尚未写完的分析' }], error: '截断' },
+  ])('无效回答($reason/$error)明确失败，不落为正常结论', async ({ reason, content, error }) => {
+    const runtime = new PiAgentRuntime(makeConfig())
+    const { callbacks, session, started } = await startArrested(runtime)
+    session.emit({ type: 'message_end', message: {
+      role: 'assistant', stopReason: reason, content,
+    } } as unknown as AgentSessionEvent)
+    session.releasePrompt()
+    await started
+
+    expect(callbacks.states.at(-1)).toBe('failed')
+    expect(callbacks.stepCompletions.at(-1)).toMatchObject({ stopReason: 'ERROR', turnCompleted: false })
+    expect(callbacks.messages.some(msg => msg.type === 'error' && msg.content.includes(error))).toBe(true)
+    expect(callbacks.messages.some(msg => msg.type === 'assistant_reply')).toBe(false)
+    runtime.removeTab('tab-ev')
+  })
+
+  it('前面说过话、后面只剩思考，也不能拿旧回复冒充本轮结论', async () => {
+    const runtime = new PiAgentRuntime(makeConfig())
+    const { callbacks, session, started } = await startArrested(runtime)
+    session.emit({ type: 'message_end', message: {
+      role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: '继续读取配置' }],
+    } } as unknown as AgentSessionEvent)
+    session.emit({ type: 'message_end', message: {
+      role: 'assistant', stopReason: 'stop', content: [{ type: 'thinking', thinking: 'Important' }],
+    } } as unknown as AgentSessionEvent)
+    session.releasePrompt()
+    await started
+
+    expect(callbacks.states.at(-1)).toBe('failed')
+    expect(callbacks.stepCompletions.at(-1)?.conclusion).toBeUndefined()
+    runtime.removeTab('tab-ev')
+  })
+
+  it('SDK 在同一轮恢复截断后给出完整回复，正常完成且保留会话', async () => {
+    const runtime = new PiAgentRuntime(makeConfig())
+    const bridge = makeBridge()
+    const { callbacks, session, started } = await startArrested(runtime, bridge)
+    session.emit({ type: 'message_end', message: {
+      role: 'assistant', stopReason: 'length', content: [{ type: 'thinking', thinking: 'Let' }],
+    } } as unknown as AgentSessionEvent)
+    session.emit({ type: 'compaction_end', reason: 'overflow', willRetry: true } as unknown as AgentSessionEvent)
+    session.emit({ type: 'message_end', message: {
+      role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: '恢复后的完整分析' }],
+    } } as unknown as AgentSessionEvent)
+    session.releasePrompt()
+    await started
+
+    expect(callbacks.states.at(-1)).toBe('idle')
+    expect(callbacks.messages.some(msg => msg.type === 'error')).toBe(false)
+    expect(callbacks.stepCompletions.at(-1)?.conclusion).toBe('恢复后的完整分析')
+    await runtime.startTask('tab-ev', '任务', 25, bridge, makeCallbacks(), { sessionPolicy: 'reuse' })
+    expect(createdSessions).toHaveLength(1)
+    expect(session.disposed).toBe(false)
+    runtime.removeTab('tab-ev')
+  })
+
+  it('只有原生工具调用的中间消息不算空答，随后正常回答', async () => {
+    const runtime = new PiAgentRuntime(makeConfig())
+    const { callbacks, session, started } = await startArrested(runtime)
+    session.emit({ type: 'message_end', message: {
+      role: 'assistant', stopReason: 'toolUse',
+      content: [{ type: 'toolCall', id: 'read-1', name: 'read_bound_system', arguments: {} }],
+    } } as unknown as AgentSessionEvent)
+    session.emit({ type: 'message_end', message: {
+      role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: '当前系统正常' }],
+    } } as unknown as AgentSessionEvent)
+    session.releasePrompt()
+    await started
+
+    expect(callbacks.states.at(-1)).toBe('idle')
+    expect(callbacks.messages.some(msg => msg.type === 'error')).toBe(false)
+    runtime.removeTab('tab-ev')
+  })
+
   it('prompt reject(执行期错误)→ failed + ERROR', async () => {
     const runtime = new PiAgentRuntime(makeConfig())
     arrestNextSession = true

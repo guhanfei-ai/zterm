@@ -128,6 +128,7 @@ let xtermCleanup: (() => void) | null = null
 let cursorStyleInterceptor: { dispose: () => void } | null = null
 
 let fitTimer: ReturnType<typeof setTimeout> | null = null
+let lastSyncedSize: { cols: number; rows: number; generation: number } | null = null
 
 // ---- Terminal search state ----
 const searchVisible = ref(false)
@@ -250,6 +251,16 @@ async function exportOutput(): Promise<void> {
 // 暴露给父组件（PanelCenter 工具栏）调用
 defineExpose({ openSearch, exportOutput })
 
+function syncTerminalSize(): void {
+  if (!term || tabData.value.status !== 'connected' || !wrapperRef.value?.clientWidth || !wrapperRef.value?.clientHeight) return
+  const size = { cols: term.cols, rows: term.rows, generation: tabData.value.generation }
+  if (lastSyncedSize?.cols === size.cols && lastSyncedSize.rows === size.rows && lastSyncedSize.generation === size.generation) return
+  lastSyncedSize = size
+  void window.electronAPI.terminal.resize(props.tabId, size.cols, size.rows).catch(() => {
+    if (lastSyncedSize === size) lastSyncedSize = null
+  })
+}
+
 function scheduleFit(delay = 0): void {
   if (fitTimer) clearTimeout(fitTimer)
   fitTimer = setTimeout(() => {
@@ -257,6 +268,8 @@ function scheduleFit(delay = 0): void {
     if (fitAddon && wrapperRef.value?.clientWidth && wrapperRef.value?.clientHeight) {
       try {
         fitAddon.fit()
+        // 本地尺寸可能在 connecting 期间已稳定；fit 不触发 onResize 时也要同步新连接。
+        syncTerminalSize()
       } catch {
         // ignore fit errors
       }
@@ -337,11 +350,7 @@ onMounted(() => {
   void refreshBusy()
 
   // Handle resize — send with tabId
-  term.onResize(({ cols, rows }) => {
-    if (tabData.value.status === 'connected') {
-      window.electronAPI.terminal.resize(props.tabId, cols, rows)
-    }
-  })
+  term.onResize(() => syncTerminalSize())
 
   // Listen for terminal data — filter by tabId
   unsubscribeData = window.electronAPI.terminal.onData((payload) => {
@@ -381,17 +390,19 @@ onMounted(() => {
 
   // Watch tab status changes
   const stopWatch = watch(
-    () => tabData.value.status,
-    (status) => {
+    () => [tabData.value.status, tabData.value.generation] as const,
+    ([status]) => {
       if (!term) return
       // 重新断言用户偏好的光标样式（DECSCUSR 已被拦截，此处兜底）
       term.options.cursorStyle = prefsStore.prefs.cursorStyle
       term.options.cursorBlink = prefsStore.prefs.cursorBlink
       if (status === 'connected') {
+        lastSyncedSize = null
         void refreshBusy()
         scheduleFit(50)
         scheduleFit(200)
       } else if (status === 'connecting') {
+        lastSyncedSize = null
         busyRevision++
         setBusy(false)
         term.clear()
@@ -465,6 +476,7 @@ onMounted(() => {
     }
     fitAddon = null
     searchAddon = null
+    lastSyncedSize = null
   }
 
   // 仅当本标签可见（活动）时接管 Cmd/Ctrl+F，避免多标签重复响应
